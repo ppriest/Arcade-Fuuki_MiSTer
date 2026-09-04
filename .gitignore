@@ -1,3 +1,6 @@
+# ---------------------------------------------------------------------------
+# Quartus build products
+# ---------------------------------------------------------------------------
 db
 greybox_tmp
 incremental_db
@@ -10,9 +13,6 @@ vip
 *_sim
 .qsys_edit
 PLLJ_PLLSPE_INFO.txt
-*.bak
-*.orig
-*.rej
 *.qdf
 *.rpt
 *.smsg
@@ -24,8 +24,6 @@ PLLJ_PLLSPE_INFO.txt
 *.qws
 *.ppf
 *.ddb
-build_id.v
-c5_pin_model_dump.txt
 *.sopcinfo
 *.csv
 *.f
@@ -33,8 +31,75 @@ c5_pin_model_dump.txt
 *.sip
 *.spd
 *.bsf
-*~
-*.xml
 *_netlist
 *.cdf
+c5_pin_model_dump.txt
+build_id.v
+
+# Staged-build worktree (scripts/build_staged.py): each build compiles a
+# snapshot of HEAD there, so Quartus scratch stays out of the repo root and
+# the main tree stays editable during the compile.
+build/
+quartus_*.log
+q_*.log
+sta*.log
+worst_*.rpt
+
+# ---------------------------------------------------------------------------
+# ModelSim
+# ---------------------------------------------------------------------------
+work/
+transcript
+vsim.wlf
+modelsim.ini
+*.vstf
+sim/**/*.log
+sim/**/*.bin
+sim/**/*.lst
+sim/**/*.hex
+sim/**/*.raw
+sim/**/*.dec
+sim/**/*dump*.txt
+
+# ---------------------------------------------------------------------------
+# Copyrighted MAME ROM dumps -- used locally for bring-up and for building
+# the ROM images the .mra files describe. NEVER committed, in any
+# subdirectory.
+# ---------------------------------------------------------------------------
+roms/
+
+# ---------------------------------------------------------------------------
+# Local hardware-debug scratch: screenshots pulled back off the MiSTer,
+# decoded probe captures, ad-hoc analysis output. Regenerable, and only
+# meaningful alongside the temporary debug build that produced them.
+# ---------------------------------------------------------------------------
+debug/
+/*.png
+/*.txt
+scratch_*.png
+scratch_*.txt
+cfg.bin
+outfile.bin
+
+# Local MiSTer connection settings (host/user/password) for the deploy
+# scripts -- never committed.
+mister.env
+
+# ---------------------------------------------------------------------------
+# releases/ IS the right home for built bitstreams, but only a build VERIFIED
+# to actually run the games belongs in git. Committing one that merely
+# compiles is actively misleading. Add a good one deliberately:
+#   git add -f "releases/<name>.rbf"
+# ---------------------------------------------------------------------------
+releases/*.rbf
+
+# ---------------------------------------------------------------------------
+# Editor / OS / Python scratch
+# ---------------------------------------------------------------------------
+*.bak
+*.orig
+*.rej
+*~
 **/.DS_Store
+__pycache__/
+*.pyc
