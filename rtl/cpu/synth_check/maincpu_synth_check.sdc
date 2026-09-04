@@ -1,22 +1,9 @@
-## ---------------------------------------------------------------------------
-## Fuuki core timing constraints.
-##
-## The stock MiSTer .sdc is derive_pll_clocks + derive_clock_uncertainty and
-## nothing else: it constrains internal register-to-register paths and leaves
-## every external interface, SDRAM included, unanalyzed. "Timing passed" here
-## therefore says nothing about the memory interface.
-##
-## ALWAYS read output_files/<rev>.sta.summary after a build. Quartus reports
-## "Fitter was successful" on a design that grossly fails timing, and nothing
-## in the default flow warns you. Read the Fmax Summary first.
-##
-## The constraints below were DERIVED AND PROVEN in the standalone harness at
-## rtl/cpu/synth_check/, which takes the CPU from -10.960 ns setup slack
-## (TNS -4613) to +0.927 ns (TNS 0.000) on the real device and speed grade.
-## Each carries its audit; keep the reasoning with the constraint.
-## ---------------------------------------------------------------------------
-
-derive_pll_clocks
+# clk_sys is 14.318181... MHz x 6 = 945/11 MHz = 85.909091 MHz.
+#
+# Constraining it is the whole point: Quartus reports "Fitter was successful"
+# on a design that grossly fails timing, and nothing in the default flow
+# warns. Read output_files/*.sta.summary -- Fmax Summary first.
+create_clock -name clk -period 11.6414 [get_ports clk]
 derive_clock_uncertainty
 
 # ---------------------------------------------------------------------------
@@ -66,10 +53,7 @@ set_multicycle_path -hold  -from $kernel -to $kernel 3
 # extAddr_Mode, MUL/DIV width, BitField -- all "switchable with CPU") shows up
 # as combinational depth that nothing can close.
 # ---------------------------------------------------------------------------
-# In the core, name the actual register that holds the mod-byte board select:
-#   set_false_path -from [get_registers {*board_fg3*}]
-# Left commented until that register exists and can be named exactly; a
-# false path aimed at nothing silently constrains nothing.
+set_false_path -from [get_registers {*pat[31]*}]
 
 # ---------------------------------------------------------------------------
 # Kernel outputs into maincpu's access state machine: 2 cycles, by design.
@@ -102,3 +86,9 @@ set kernel_k [get_keepers {*TG68KdotC_Kernel*}]
 set maincpu_k [remove_from_collection [get_keepers {*maincpu*}] $kernel_k]
 set_multicycle_path -setup -from $kernel_k -to $maincpu_k 2
 set_multicycle_path -hold  -from $kernel_k -to $maincpu_k 1
+
+# HARNESS ARTIFACT, not a core constraint. maincpu_synth_top XOR-reduces every
+# DUT output onto one pin to keep the design alive without spending a pin per
+# bit; that reduction tree is ~100 bits deep and is not part of the core. The
+# real top level consumes these outputs as ordinary distributed loads.
+set_false_path -to [get_keepers {result*}]

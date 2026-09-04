@@ -1,3 +1,17 @@
+# TG68K.C -- 68000 (FG-2) and 68EC020 (FG-3). Vendored UNTOUCHED; see
+# rtl/cpu/tg68k/PROVENANCE.md. TG68K.vhd is deliberately NOT compiled: the
+# kernel is instantiated directly, and that wrapper's falling-edge bus
+# emulator is what makes a clock-enabled 68k dangerous to constrain.
+set_global_assignment -name VHDL_FILE rtl/cpu/tg68k/TG68K_Pack.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/tg68k/TG68K_ALU.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/tg68k/TG68KdotC_Kernel.vhd
+
+# Main CPU bus wrapper: address decode, bus sequencing, the three IRQs.
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/maincpu.sv
+
+# Video helpers vendored from MiSTer-devel.
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/screen_rotate_two.sv
+
 set_global_assignment -name VERILOG_FILE rtl/lfsr.v
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cos.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mycore.v

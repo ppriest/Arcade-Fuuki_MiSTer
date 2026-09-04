@@ -22,11 +22,131 @@ Several of its findings bind decisions in this document directly and are cited i
 
 ## Progress (kept current — last updated 2026-09-04)
 
-**Phase 0 — repository setup: in progress.** Repo seeded from `MiSTer-devel/Template_MiSTer`
-(kept as a `template` remote for upstream pulls), project renamed to the `Fuuki` revision,
-Quartus-13 variants removed outside `sys/`, `.gitignore` written (ROMs never committed),
-`LESSONS_LEARNED.md` carried over, `screen_rotate_two.sv` vendored. Nothing else built yet — no
-core RTL, no `.mra`, no bitstream.
+**Phase 0 — repository setup: done.** Repo seeded from `MiSTer-devel/Template_MiSTer` (kept as a
+`template` remote for upstream pulls), project renamed to the `Fuuki` revision, Quartus-13
+variants removed outside `sys/`, `.gitignore` written (ROMs never committed),
+`LESSONS_LEARNED.md` carried over, `screen_rotate_two.sv` vendored, ModelSim `work` library and
+`modelsim.ini` established with `scripts/run_sim.sh` as the single entry point.
+
+**Phase 1 — CPU spike: passing in simulation.** TG68K.C vendored untouched from the Psikyo tree
+(`rtl/cpu/tg68k/`, see its `PROVENANCE.md` — the copy carries two load-bearing fixes and is
+deliberately not pristine upstream). `rtl/cpu/maincpu.sv` instantiates `TG68KdotC_Kernel`
+directly, with the full Fuuki address decode, an exact Bresenham clock enable (176/945 for FG-2's
+16 MHz, 220/945 for FG-3's 20 MHz — both zero-error on this `clk_sys`), and all three
+HOLD_LINE interrupts.
+
+`sim/maincpu_tb/` runs the **real gogomile program ROM** and passes 9/9:
+
+- Smoke: no X propagation, fetches happen, the ROM transport serves reads.
+- Boot trace: the CPU fetches the reset vector, reaches `0x400`, and walks
+  `0x400, 0x402 ... 0x40E` — the `CLR.L D0`-`CLR.L D7` preamble.
+- Interrupts: level 3 is acknowledged (FC=7), the ISR is entered through the level-3 autovector
+  at `0x6C`, and — the decisive check — `irq3_pending` clears **while the source is still held
+  high**, which is the exact set-vs-clear priority bug that hid in Psikyo for an entire project.
+
+**ROM interleaves proved offline for all four parent sets, before any build**
+(`scripts/build_maincpu_hex.py --check`, 3/3 each). Every set puts its reset SP at the top of
+work RAM and its PC at a sane ROM address running plausible 68k code: both FG-2 sets open with
+`CLR.L D0-D7`; `asurabld` opens `NOP NOP / MOVEQ #1,D0 / MOVEC D0,CACR` — the 68020 cache-enable
+sequence; `asurabus` puts its SP at `0x0041FFFC`, the top of the **second** work RAM, which
+independently confirms MAME's "Work RAM (used by asurabus)" comment.
+
+**Fmax measured, and timing closed for the CPU.** `rtl/cpu/synth_check/` synthesizes and fits
+`maincpu` + TG68K standalone on the real 5CSEBA6U23I7 speed grade 7. Raw Fmax is **44.25 MHz**
+against an 85.909091 MHz clock (setup slack -10.960 ns, TNS -4613) -- independently confirming
+Psikyo's 48.74 MHz for the same core, and confirming this roadmap's own instruction to budget for
+the 68k to be the limiting block. Three audited constraints take the same netlist to **+0.927 ns,
+TNS 0.000**, and now live in `Fuuki.sdc` with their reasoning attached:
+
+1. **Kernel-internal multicycle 4** -- the CPU advances only on `cpu_ce`, and the tighter of the two
+   enable ratios (220/945) puts consecutive ticks at minimum 4 clocks apart. Safe here specifically
+   because the `falling_edge` count is **0** in both kernel files; LESSONS_LEARNED's warning about
+   multicycles concerns `TG68K.vhd`, the wrapper this design does not instantiate.
+2. **Board select is a false path** -- it comes from the `.mra` mod byte and never changes while the
+   game runs. Not merely a harness detail: once the kernel multicycle was in, *every* remaining
+   failing path started at the board-select driver, because the CPU-mode generics are all
+   "switchable with CPU" and fan out through mode-dependent logic.
+3. **Kernel to `maincpu` multicycle 2** -- `maincpu.sv`'s phase counter already spends `acc_ph == 0`
+   letting the address settle and acts at `acc_ph == 1`. The constraint states what the RTL assumes.
+
+Worth knowing for later: `get_registers` does **not** match RAM ports, so the `altsyncram` register
+file needs `get_keepers`. The first attempt used `get_registers`, missed the register file, and
+stalled at -4.320 ns with no hint from the report that the collection came back short.
+
+### Ground truth from MAME (2026-09-04)
+
+A real MAME debugger trace and a set of memory dumps now back the work, in
+`debug/` (gitignored -- derived from ROMs, never committed).
+
+**The boot trace diff passes 84/84.** `scripts/parse_mame_trace.py` turns the
+trace into an expected fetch list -- expanding MAME's instruction starts into
+the words actually fetched -- and `tb_maincpu` matches it as an in-order
+subsequence of its own fetch trace. The RTL executes gogomile's boot exactly as
+MAME does, which makes the CPU spike ground truth rather than self-consistency.
+The list stops at the boot delay loop, 131,068 instructions the regression
+deliberately does not grind through.
+
+Four things the trace and dumps settled that reading the driver could not:
+
+1. **All three interrupts are load-bearing, and the game SPIN-WAITS on them.**
+   Each ISR sets a bit in a flag word at `$403446` -- level 5 sets bit 1,
+   level 3 bit 2, level 1 bit 5 -- and the main code blocks on those bits
+   (`btst #$2,$403446 / beq $-` at `$015830`, and the same shape at `$0157FE`
+   for bit 5). If any one interrupt fails to reach the CPU, the game does not
+   run degraded, it hangs. Worth knowing before blaming the video engine for a
+   black screen.
+2. **Interrupts nest, at boot, by design.** Every handler does
+   `ori #$700,SR` ... `andi #$f8ff,SR` -- raising the mask, setting its flag,
+   then dropping the mask to ZERO before the `RTE`. The trace shows level 3
+   preempting a level 5 handler and level 1 then preempting that. So multiple
+   levels are pending simultaneously and each needs its own acknowledge; a
+   single shared pending flag would lose interrupts here.
+3. **The x/y offset pairing is confirmed empirically.** At the title screen the
+   game writes `0x01f3` to the Y offset register and `0x03f6` to the X offset
+   register -- exactly the board's `XOFFS` and `YOFFS` constants -- so the
+   paired subtraction gives a net offset of **zero** on both axes. "Correcting"
+   the pairing to match the register names would give -0x203 and +0x203 and put
+   the picture 515 pixels out. Now a test case in `tb_vregs`.
+4. **The layout constants are confirmed from what the game writes.** Sprite RAM
+   init writes `0x400` (bit 10, "do not draw") to word 0 of 1024 records
+   stepping 8 bytes, confirming the record size and the disable bit; the VRAM
+   clear covers exactly 32 KB from `0x500000`; the backdrop is written as 0 to
+   `$703ffe`, the last palette word, confirming pen `0x1fff`; and layer 2's
+   palette is written at `0x701800`, i.e. word `0xC00` = `0x400*3`.
+
+**Phase 2 -- the renderer: started.** `rtl/video/video_timing.sv` (456 x 262, `ce_pix` = clk/12, the
+three interrupt sources at their exact raster positions) and `rtl/video/vregs.sv` (register file,
+live scroll decode, layer-order table) are built and pass 9/9 and 25/25 respectively.
+
+**The tilemap line engine renders real frames correctly.** `rtl/video/tilemap_line_engine.sv`
+draws one scanline of one layer into a line buffer; three instances serve the three layers, which
+differ only in configuration. `sim/tilemap_tb/` renders all 240 scanlines from the **captured
+gogomile title screen** -- MAME's own VRAM, scroll registers and palette, plus the real tile ROM
+assembled by `scripts/prep_tilemap_tb.py` -- and all three layers come out matching MAME's
+screenshot:
+
+| Layer | Format | Content | Worst line |
+|---|---|---|---|
+| 0 | 16x16x4 | sky gradient, skyline, flowered ground | 723 clk (13%) |
+| 1 | 16x16x8 | the "Mile Smile" title logo | 1023 clk (18%) |
+| 2 | 8x8x4 | clouds | 1123 clk (20%) |
+
+Against the 5,472-clk scanline budget, so all three layers together are about half of it before
+any sharing or overlap -- comfortable, and measured rather than estimated. The engine currently
+writes one pixel per cycle with no overlap between fetching tile N+1 and writing tile N; that
+headroom is where the sprite path's budget will come from if it turns out to need it.
+
+Two things this test caught that nothing else would have:
+
+- **Layer 1 rendered as a solid block** because the prep script built only half its ROM region.
+  gogomile's `tiles_l1` is 8 MB from **four** ROMs -- two `ROM_LOAD32_WORD_SWAP` pairs at
+  `0x000000` and `0x400000` -- and building only the first pair left every tile in the upper half
+  reading a zero-filled gap. It did not error; it drew a plausible rectangle.
+- The whole 8bpp path -- the four-groups-of-four-bytes layout, granularity 16 with pens that
+  legitimately exceed it -- is confirmed by the logo rendering with correct gradients.
+
+Still to build: the sprite path, the compositor, the SDRAM backend, sound, `.mra` files, and a
+whole-core bitstream. Flip screen is not yet honoured by the engine (the port exists).
 
 Hardware facts below are read directly from the MAME drivers, not recalled.
 
@@ -222,18 +342,98 @@ reference rather than merely match it — and it sets a hard architectural const
 register must be sampled per scanline, live, never latched once per frame.**
 
 The corollary from Psikyo is mechanical: any module feeding the compositor directly must consume at
-`ce_pix`, and only a module rendering a frame ahead into a buffer may run at full clock
+`ce_pix`; only a module rendering *ahead* into a buffer may run at full clock
 (LESSONS_LEARNED, "Prefer a hypothesis that predicts the number exactly" — a missing `ce_pix` port
 rendered exactly 28 of 320 columns).
 
-**Open question, per board: are sprites also per-scanline?** MAME draws them once, at the last
-visible line, and says why: *"as we're likely framebuffered (sprites are delayed by 2-3 frames, at
-least on FG3, and doing rasters on sprites causes glitches) we only draw the sprites when MAME wants
-to draw the final screen line. Ideally we should framebuffer them instead."* FG-3 demonstrably
-buffers spriteram by two frames in hardware. FG-2 has no such buffering in the driver. Design the
-sprite engine so live-per-scanline vs. frame-buffered is a **per-board switch**, not a baked-in
-assumption, and settle it against real games. If a game does drive per-scanline sprite effects, that
-is behaviour MAME cannot currently show.
+## Sprite rendering architecture — buffered sprite RAM, per-scanline, no frame buffer
+
+**Decided.** Sprites are rendered **per scanline into a line buffer**, from a **buffered copy of
+sprite RAM**. There is no whole-frame pixel buffer anywhere in this design.
+
+This is the shape real arcade hardware used, the shape the rest of the MiSTer ecosystem uses
+(JTFRAME's `JTFRAME_LF_BUFFER`, including `JTFRAME_LF_ZOOM` for zoomed sprites) — and, importantly,
+it is where `Arcade-Psikyo_MiSTer` **ended up**, not where it started. Psikyo shipped a whole-frame
+sprite buffer first and **retired it on 2026-08-30**. Its `sprite_frame_buffer.sv` survives in that
+tree only as the golden reference for the line path's differential testbench. Do not resurrect it,
+and treat any older Psikyo prose describing "renders a full frame ahead" as superseded.
+
+### Why the frame buffer was abandoned
+
+From `sprite_line_buffer.sv`'s own header: the frame buffer held 2 x 71,680 x 12 bits (~1.7 Mbit)
+and needed a 71,680-cycle clear per frame. Both of its defects were structural, not bugs to fix:
+
+- the display bank toggled **mid-scanout**, tearing the visible line;
+- the clear overlapped the next render pass while the buffer ignored writes, giving dropped sprites
+  and stale pixels.
+
+Two 320-entry banks are 7.7 kbit — about **220x smaller** — and neither failure mode remains
+possible: the swap happens at hblank so it cannot tear a visible line, and a bank is cleared while
+it is neither displayed nor rendered into.
+
+### The three pieces
+
+1. **Buffered sprite RAM.** The CPU sees one persistent RAM; its contents are **copied** into a
+   snapshot at the frame boundary, and the renderer reads only the frozen copy. **A swap is not a
+   copy** — Psikyo tried ping-pong banks and got two-frame-stale reads for any entry the CPU did not
+   rewrite every frame, including end-of-list markers, which compounded into per-scene sprite
+   freezes (LESSONS_LEARNED, "A swap is not a copy"). Fuuki's copy is 4096 words.
+   **FG-3 needs two generations**, not one: its hardware buffers sprites by two frames
+   (`buf[1] <= buf[0]; buf[0] <= live` on vblank rising edge), along with the sprite tile bank.
+   FG-2 has no such buffering in MAME. This is the one place a per-board difference is real, and it
+   is a depth-of-buffering parameter, not a different architecture.
+
+2. **A once-per-frame candidate list.** Built during vblank: scan the sprite records, decode them,
+   coarsely reject any whose bounding box misses the screen, and store the survivors — position,
+   Y extent and the raw record — in depth order. **This is the difference between a line renderer
+   that works and one that does not.** Psikyo's first line-renderer attempt (parked 2026-08-29)
+   re-walked and re-fetched every record on *every line*, ~10 cycles per sprite per line, which
+   burned most of the line budget before drawing a pixel and blew it entirely on large sprites. The
+   hoist collapses the per-line cost to **one cycle per candidate** (a pipelined read of a small
+   y-test word) plus real rendering work. The per-line test stays deliberately coarse; the engine
+   re-does the exact per-sub-tile-row math on every hit, so a conservative false hit costs cycles,
+   never a wrong pixel.
+
+3. **A double-buffered 320-pixel line buffer.** Per scanline, driven from `line_start`: swap banks,
+   clear the render bank (320 cycles), then render the *next* line into it while the other bank is
+   displayed. The clear is a separate pass rather than clear-on-read, because read and clear would
+   hit the same address in the same cycle and inferred RAM read-during-write behaviour is not
+   something to depend on.
+
+### Budgets (same video timing as Psikyo, so these transfer)
+
+| Quantity | Value |
+|---|---|
+| Cycles per line | htotal 456 x 12 = **5,472 clk** |
+| Line-buffer clear | 320 clk (6% of the line) |
+| Vblank | (262 - 240) = 22 lines x 5,472 = **120,384 clk** |
+| Candidate-list build | 1024 records x ~9 cycles = **~9.2K clk** — about 8% of vblank |
+
+Comfortable, but note Fuuki's worst case is **larger than Psikyo's**: sprites are up to 16 x 16
+tiles (256 sub-tiles) against Psikyo's 8 x 8, so a single large sprite costs proportionally more per
+line. Budget the engine against a worst-case list, not an average one — Psikyo left whole-frame
+sprite throughput unbudgeted and paid for it.
+
+### Two traps carried forward
+
+- **The line-start pulse must hard-resync the engine, not be consumed only when idle.** Psikyo's
+  engine consumed `line_start` in `S_IDLE` only, so an engine still busy at a line boundary **ate
+  the pulse**, finished the previous line's sprites into the freshly swapped bank, then idled a full
+  line. One overrun corrupted every line below it — the signature being *correct at the top,
+  degrading downward*. The fix: a raw per-line tick aborts rendering immediately, drains any
+  in-flight memory request per the req/valid contract during the buffer's clear, and starts the next
+  line clean, so an overrun clips at worst the tail sprites of one line and raises a counted event.
+- **Depth order is the inverse of Psikyo's.** Psikyo stored candidates in display-list order, where
+  later entries overwrite earlier. Fuuki has **no display list** — sprite RAM is a flat array of
+  1024 four-word records — and MAME walks it **backwards** so that record 0 is drawn last and wins.
+  Whichever way the candidate list is built, state explicitly which end wins and prove it; this is
+  exactly the "read both halves of a mechanism" trap that Psikyo's sprite depth inversion fell into.
+
+Psikyo's decode and render stages are reusable as-is in shape — record decode, position transform,
+zoom LUT, sub-tile step, zoom source index, tile row decode — with Fuuki's own record format and
+zoom curve substituted. Note Fuuki has **no `spritelut` indirection**: the tile code addresses
+graphics directly (FG-3 adding a 2-bit bank lookup), which removes one fetch stage and one SDRAM
+client from Psikyo's pipeline.
 
 ### Screen timing — must be chosen, not copied
 
@@ -315,11 +515,13 @@ commit, licence and any integration notes. That is Psikyo's convention, and the 
 | YMF278B / OPL4 (FG-3) | **No third-party core exists.** Psikyo has a from-scratch one: full bus protocol, timers/IRQ, and the 24-channel PCM wavetable engine working on hardware; **FM synthesis was milestone 2 and is not built**. Whether FG-3 needs the FM half must be measured, not assumed — Psikyo added `dbg_fm_keyon` instrumentation for exactly that question. | `Arcade-Psikyo_MiSTer/rtl/sound/opl4/` |
 | SDRAM controller | **Psikyo's `psikyo_sdram_top.sv` stack** — burst-4 `sdram.sv` (Sorgelig, extended), multi-port arbiters, `sdram_download.sv` HPS wrapper, granule cache. Needs address widening for FG-3. | `Arcade-Psikyo_MiSTer/rtl/memory/` |
 | **Video mixer / scaling** | **`sys/arcade_video.v`** — the MiSTer-devel standard (`video_mixer` + `video_freak`), already present in the template's `sys/`. | Template_MiSTer `sys/` |
-| **Screen rotation** | **`screen_rotate_two.sv`** (Sorgelig) — vendored. Fuuki games are all ROT0 horizontal, so this is not needed for orientation, but it is the standard path and is wired the same way. | vendored to `rtl/video/` |
+| **Screen rotation** | **`screen_rotate_two.sv`** (Sorgelig) -- vendored. A TAP on the video output, not a filter: analog keeps the native raster while a rotated copy goes to DDR3 for the HDMI framebuffer. Fuuki is ROT0, so this serves rotated displays rather than correcting orientation. See "Output chain". | vendored to `rtl/video/` |
 | Framework | **MiSTer-devel/Template_MiSTer**, tracked as a `template` remote so upstream fixes can be pulled | github.com/MiSTer-devel/Template_MiSTer |
 | Tilemap + sprite engines (FI-002K / FI-003K) | **Custom RTL, no shortcut.** This is the project. | `fuukispr.cpp`, `fuukitmap.cpp` |
+| Sprite pipeline *shape* | Psikyo's per-scanline path is the template: buffered sprite RAM, a once-per-frame candidate list, a per-scanline engine, a double-buffered line buffer, plus the reusable decode stages (record decode, position transform, zoom LUT, sub-tile step, zoom source index, tile row decode). Fuuki's record format, zoom curve and depth order are substituted; the `spritelut` stage is dropped entirely. | `Arcade-Psikyo_MiSTer/rtl/video/sprite_*.sv`, `spriteram_dbuf.sv`, `docs/sprite_buffering.md` |
 | DIPs / inputs | From each driver's `INPUT_PORTS_START`, per game. DIPs arrive as an **ioctl download, index 254**, not through the status word. | `fuukifg2.cpp`, `fuukifg3.cpp`; `Arcade-Psikyo_MiSTer/docs/mister_framework_notes.md` |
-| High scores | `hiscore.v` — standard module, polish item | MiSTer-devel |
+| High scores | **`hiscore.v`** (Hiscores_MiSTer, GPLv3) -- vendored from the Psikyo tree, proven on hardware. All four parent sets have `hiscore.dat` entries, all in work RAM. See "High scores". | github.com/JimmyStones/Hiscores_MiSTer |
+| Crop / integer scaling | **`sys/video_freak.sv`** -- present but NOT wrapped by `arcade_video.v`; instantiate explicitly if those OSD options are wanted | Template_MiSTer `sys/` |
 
 ## Phased roadmap
 
@@ -350,7 +552,10 @@ Sound is stubbed silent throughout; the sound CPU and chips come later.
 3. Video timing plus a per-scanline tilemap engine for one layer, live vreg sampling,
    `ce_pix`-correct.
 4. The remaining two layers, layer-2 VRAM double buffering, the layer-order table.
-5. Sprite engine: record walk, zoom/position, gfx fetch, pixel output, per-board buffering switch.
+5. Sprite path, in the order the dependencies run: buffered sprite RAM (a real copy), the
+   once-per-frame candidate list, then the per-scanline engine and its double-buffered line
+   buffer. See "Sprite rendering architecture" — build it in that order, because the candidate
+   list is what makes the per-line budget close.
 6. Compositor: bit-indexed priority resolve, backdrop = pen `0x1fff`, palette lookup.
 7. Inputs and DIPs from `INPUT_PORTS_START`; `.mra` `<switches>` per game.
 
@@ -367,8 +572,77 @@ sound RAM, sprite tile bank and its 2-frame buffering, per-board tile depths and
 Sound is the OPL4 core from Psikyo — with the open question of whether FM synthesis is needed.
 **Gated on the memory decision below**, which must be settled before this phase starts.
 
-**Phase 5 — polish.** CRT offset, hiscore, remaining clone sets and region variants, savestates
-(Psikyo's `docs/savestates.md` is the feasibility study; the same TG68K/RAM/audio arguments apply).
+**Phase 5 -- output chain, hiscores and polish.** See the two sections below; then remaining
+clone sets and region variants, and savestates (Psikyo's `docs/savestates.md` is the feasibility
+study; the same TG68K/RAM/audio arguments apply).
+
+## Output chain: scaler, rotation, flip
+
+Three separate things that are easy to conflate. Only one of them is a game feature.
+
+**Scaling and filtering -- `sys/arcade_video.v`.** Already vendored with the template. It wraps
+`video_mixer` and gives the scandoubler (so a CRT/VGA setup gets a real 15 kHz picture), gamma,
+scanline FX and the `gamma_bus`. Feed it the packed RGB, `ce_pix`, and the raw blank/sync signals
+from `video_timing.sv`.
+
+**It does NOT wrap `video_freak`.** That is where cropping and the integer-scaling modes live
+(`CROP_SIZE`, `CROP_OFF`, `SCALE`), and `sys/video_freak.sv` is present but unconnected. If those
+OSD options are wanted, instantiate it explicitly between the core and `VIDEO_ARX/ARY` -- do not
+assume `arcade_video` is doing it.
+
+**Rotation -- `rtl/video/screen_rotate_two.sv`, and it is a TAP, not a filter.** `VGA_R/G/B/HS/VS/DE`
+still drive the analog output directly with the native raster, while the rotator writes a rotated
+(and optionally 180-flipped) copy into DDR3 and points the HPS framebuffer at it. So CRT keeps the
+untouched raster and **HDMI** gets rotation. Wire it after `arcade_video`, and set `VIDEO_ARX/ARY`
+to swap when rotation is enabled.
+
+- **Fuuki games are all ROT0 horizontal**, so unlike Psikyo (vertical) rotation is not needed for
+  correct orientation -- it is there for users running a rotated display. Aspect handling is
+  correspondingly simpler: 4:3 normally, 3:4 when rotated.
+- **DDR3 is free for the rotator here**, because every memory client is on SDRAM by decision. That
+  avoids the arbitration Psikyo needed: its ROM loader shared DDRAM, and the rotator has no reset
+  port and samples `DDRAM_BUSY` to decide whether a write was accepted, so between loader
+  transactions it took phantom writes as accepted and left a permanent stale band in the frame
+  buffer. Keep DDR3 single-owner and that whole class of bug does not exist.
+
+**Flip screen is a GAME feature and belongs in the renderer, not the output.** It comes from
+video register `0x1e` bit 0 (and a DIP), and MAME does not implement it as a 180-degree rotation of
+an otherwise identical image: `fuukitmap.cpp` substitutes **different offset constants** when
+flipped (`xoffs_flip` / `yoffs_flip`, and FG-2 and FG-3 differ in the latter), and `fuukispr.cpp`
+recomputes every sprite position as `sx = max_x - sx - xnum * 16` with the flip bits inverted. So
+the flipped image is not a transform of the unflipped one, and doing it with the rotator's 180
+flip -- which is what Psikyo did, because its flip was not in the pipeline at all -- would leave
+the picture shifted.
+
+Both drivers warn "the scroll values are generally wrong when flip screen is on", so MAME is not a
+trustworthy reference for this specific case. `vregs.sv` already carries the flip constants; the
+tilemap and sprite engines must honour `flip` themselves.
+
+## High scores
+
+`rtl/hiscore.v` -- Hiscores_MiSTer (Alan Steremberg / Jim Gregory, GPLv3), the standard module,
+vendored from the Psikyo tree where it is proven on hardware. It pauses the core and borrows a BRAM
+port; `maincpu.sv` already has the `pause` input this needs.
+
+**Checked against MAME's `hiscore.dat`, and all four parent sets have entries** -- every one of them
+reading from work RAM at `0x40xxxx`, which is already exposed as a BRAM port:
+
+| Set | Entries | Region | Largest block |
+|---|---|---|---|
+| gogomile | 1 | `0x40660d` | **0x161 = 353 bytes** |
+| pbancho | 3 | `0x402e1f`, `0x400ad3`, `0x400b41` | 0x3b |
+| asurabld | 5 | `0x4036ea` - `0x40378a` | 4 |
+| asurabus (+ `asurabusj/ja/jr`) | 1 | `0x40326d` | **0x132 = 306 bytes** |
+
+Two things fall straight out of that table:
+
+- **`HS_SCOREWIDTH` must be at least 9**, not the default 8. gogomile and asurabus both need more
+  than the 256 bytes an 8-bit score width allows.
+- **`gogomileo` and `pbanchoa` have no `hiscore.dat` entry at all**, so those clone `.mra` files
+  either ship without hiscore data or borrow the parent's -- a decision to make deliberately rather
+  than discover.
+
+`CFG_ADDRESSWIDTH`'s default of 4 (16 entries) is ample; the worst case here is 5.
 
 ## Verification strategy
 
@@ -429,6 +703,13 @@ Dev repo: `D:\Arcade-Fuuki_MiSTer`, `origin` = github.com/ppriest/Arcade-Fuuki_M
 `MiSTer-devel/Template_MiSTer` (kept as a `template` remote for upstream pulls). ROMs live in
 `roms/` and are **gitignored** — no ROM data is ever committed.
 
+**Branching.** `develop` is the working branch and carries granular commits. At intervals that
+work is **squashed onto `master`**, and `master` is what gets pushed to `origin`. So `master` is a
+curated history of meaningful milestones, not a replay of every bisection step; `develop` is where
+the detail lives. Never switch branches while a Quartus process is reading the source tree — it
+silently kills the run and leaves a truncated log that reads like a tool crash
+(LESSONS_LEARNED, "Tooling and workflow").
+
 **Builds are staged, not run in-tree.** `scripts/build_staged.py` (to be ported from Psikyo)
 snapshots HEAD into a git worktree at `build/` (gitignored) and runs the full Quartus flow there,
 so the main tree stays editable during the compile and all Quartus scratch — `db/`,
@@ -454,18 +735,49 @@ and Quartus must never be launched wrapped in `nohup ... &`.
    7.16 MHz pixel clock, 456 x 262, 59.92 Hz, identical to Psikyo.** One timing module, one PLL, no
    per-board switch. FG-3's parts list transcribes 28.432 MHz; that figure is deliberately not used
    (see "Screen timing"). Revisit only if a real FG-3 board measurement contradicts it.
-3. **Per-scanline sprites** — settle per board whether sprites are live or frame-buffered, and
-   whether any game drives sprite raster effects that MAME cannot currently show.
+3. ~~**Per-scanline sprites**~~ **DECIDED: buffered sprite RAM, per-scanline render into a line
+   buffer, no frame buffer** (see "Sprite rendering architecture"). What remains open is narrower:
+   FG-3 needs a **two-generation** snapshot to match its 2-frame hardware buffering while FG-2
+   needs one, and it is unconfirmed whether any game drives per-scanline sprite effects that MAME
+   cannot currently show.
 4. **OPL4 FM synthesis** — unbuilt in the inherited core. Measure whether Asura Blade/Buster key on
    any FM channel before deciding to build milestone 2.
-5. **Layer-order values 6-15** — MAME reads past the end of a 6-entry table. Choose and document a
+5. ~~**Raster interrupt comparator width**~~ **SETTLED 2026-09-04 from captured
+   traces: 9 bits.** The register at `0x1c` is 16 bits but only some of them can reach a 0..261
+   line counter, and MAME cannot answer how many. Real vreg write traces of both games driving
+   raster effects settle it:
+
+   - **gogomile drives an interrupt on EVERY scanline** — 240 writes per frame, cycling
+     `240 -> 1 -> 2 -> ... -> 239 -> 240`. Values 1-5 are in real use.
+   - **pbancho** uses lines `0xA8`-`0xDF` (168-223) with a per-line layer-0 Y scroll, exactly the
+     "changing the vertical scroll value of the layers each scanline" the driver describes.
+
+   With an **8-bit** comparator against vtotal 262, lines 256-261 alias onto 0-5 and gogomile's
+   sequence self-destructs — simulated against the real trace:
+
+   | width | fires at lines |
+   | --- | --- |
+   | 8-bit | 240, **257, 258, 259, 260, 261**, 6, 7, 8 ... |
+   | 9-bit | 240, **1, 2, 3, 4, 5**, 6, 7, 8 ... |
+
+   The 8-bit version consumes the values for lines 1-5 during vblank, so the effect loses its
+   first five scanlines, starts at line 6, and takes five spurious interrupts every frame. 9 bits
+   reproduces the game's intent exactly. `RASTER_CMP_BITS` in `video_timing.sv` makes this a
+   one-line change, and `tb_video_timing` has a case that fails at 8.
+
+   **The divergence from MAME stands, and is unrelated to width.** gogomile parks the register at
+   `0xfffe` when it wants no raster interrupt; the low 9 bits are `0x1fe` = 510, unreachable, so
+   the RTL fires nothing. MAME's `time_until_pos()` takes vpos modulo the screen height, wraps
+   that onto a real scanline and raises a level-5 interrupt the hardware almost certainly does
+   not — plausibly part of why both drivers call rasters "often incorrect".
+6. **Layer-order values 6-15** — MAME reads past the end of a 6-entry table. Choose and document a
    defined behaviour; check whether any game writes them.
-6. **Flip screen** — both drivers state scroll values are wrong when flipped. The FPGA can be
+7. **Flip screen** — both drivers state scroll values are wrong when flipped. The FPGA can be
    correct here, but the reference cannot be trusted to show what correct looks like.
-7. **The `508000-517fff` region on FG-3** — MAME calls it "more tilemap, or linescroll? Seems to be
+8. **The `508000-517fff` region on FG-3** — MAME calls it "more tilemap, or linescroll? Seems to be
    empty all of the time". Verify it stays empty before treating it as plain RAM.
-8. **Clone sets** — `gogomileo`, `pbanchoa`, `asurabusj`/`asurabusja`/`asurabusjr` all need their
+9. **Clone sets** — `gogomileo`, `pbanchoa`, `asurabusj`/`asurabusja`/`asurabusjr` all need their
    own `.mra`, built from their own `ROM_START` and DIP tables. Region encodings differ per game and
    are never assumed to match.
-9. **`pbancho` layer-2 ROM** — MAME loads `60.rom3` into both `tiles_l0` and `tiles_l2` with the
+10. **`pbancho` layer-2 ROM** — MAME loads `60.rom3` into both `tiles_l0` and `tiles_l2` with the
    comment "?maybe?". Confirm before duplicating 2 MB in the SDRAM map.

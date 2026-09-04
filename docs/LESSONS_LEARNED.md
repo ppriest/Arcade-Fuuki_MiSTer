@@ -104,6 +104,13 @@ would give a ragged, load-dependent boundary, not the same column every line. Co
 feeding the compositor directly must consume at `ce_pix`; only a module rendering a frame ahead into
 a buffer (the sprite path) may run at full clock.
 
+> **[Fuuki] Partially superseded by Psikyo's own later work.** The `ce_pix` rule stands. The
+> parenthetical does not: Psikyo **retired** its whole-frame sprite buffer on 2026-08-30 for a
+> per-scanline path (`sprite_line_list` + `sprite_line_engine` + `sprite_line_buffer`), because the
+> frame buffer tore mid-scanout and its 71,680-cycle clear overlapped the next render pass. Read the
+> rule as "only a module rendering *ahead* into a buffer -- line or frame -- may run at full clock".
+> This core uses the line-buffer form; see `docs/ROADMAP.md`, "Sprite rendering architecture".
+
 ### Do not re-guess a sign from the reasoning that produced the wrong one
 
 A one-tile X offset on both layers was patched with -16 on `base_x_scroll`, derived from
@@ -456,6 +463,20 @@ The cheapest check, and it was skipped for days. See "Timing closure".
   unavoidably on the first active line after reset (no prior hblank to prefetch into) and once
   latched is indistinguishable from a real later failure. Replicate the DUT's trigger condition with
   a non-sticky per-cycle check instead.
+- **[Fuuki] A block-local variable WITH an initializer is implicitly STATIC, and the initializer
+  runs once before time 0 -- not on entry to the block.** `bit seq_ok = ((start + 8) <= trace_i);`
+  inside a `begin`/`end` evaluated against `trace_i == 0` at elaboration and stayed false forever,
+  failing a check the RTL was passing. The trap is that it reads exactly like a local variable in
+  any C-family language. ModelSim names it precisely -- `vlog-2244: Variable 'seq_ok' is implicitly
+  static` -- and that warning was skipped past as noise on the way to a "real" failure. Split the
+  declaration from the assignment. Same family as the Quartus rule below about non-blocking
+  assignments to automatic variables: block-local storage class is not what it looks like.
+- **[Fuuki] Before concluding an interrupt path is broken, check the CPU's interrupt MASK.** A
+  68000 boots at SR mask 7 with every maskable level blocked, and a game may not lower it for a
+  long time -- gogomile still had mask 7 after 952 instruction fetches. "No interrupt was taken"
+  and "the interrupt was correctly masked" are indistinguishable from outside the core, so expose
+  the mask in the testbench and test the IRQ path with a synthetic program that enables interrupts,
+  rather than waiting on a real game's init and guessing.
 - **Re-run the regression on a clean stash before debugging your change.** A missing or stale
   fixture looks identical to a real regression; `git stash` plus a re-run rules it out cheaply.
 - **Write a smoke test (elaborate, run N cycles, check for crash and X-propagation) before a
@@ -712,6 +733,25 @@ hierarchical access to the core's own `MCycle`/`TState`, not by "the test passes
   window: the init burst runs from boot code, and the chip's own timer interrupt -- how arcade
   drivers sequence music -- was not reaching the CPU. (The eventual cause was transport bugs
   elsewhere; the IRQ is required for music.)
+
+## Driving MAME as a reference generator (Lua)
+
+- **[Fuuki] Keep every MAME Lua subscription in a variable that outlives the call.**
+  `emu.add_machine_frame_notifier` and `install_write_tap` return subscription objects, and
+  dropping the return value lets the garbage collector reclaim them, after which the callback
+  **silently stops firing**. The failure is thoroughly misleading: a capture at frame 120 worked
+  (the callback ran long before any collection), the identical capture at frame 1100 produced no
+  files, no error, and MAME exited with status 0. Store them in a global.
+- **[Fuuki] Check `mame.ini` for `debug 1` before automating anything.** With it set, every launch
+  opens the debugger and halts at startup. An autoboot script still loads and still prints, so it
+  looks like it is working, but the machine never advances a frame. Pass `-nodebug` explicitly
+  rather than trusting the ini. Same for `window 1` when running headless.
+- **[Fuuki] Snapshots work fine under `-video none`**, and land in
+  `<snapshot_directory>/<system>/0000.png` -- one level deeper than the directory given. Search
+  recursively for them rather than globbing the directory itself.
+- **[Fuuki] Read dumps through the CPU's own address space**, not out of MAME's internal
+  structures: `devices[":maincpu"].spaces["program"]:read_u16(addr)` returns what the CPU would
+  read, device handlers included, which is the thing the RTL has to match.
 
 ## Hardware bring-up (MiSTer / DE10-nano)
 

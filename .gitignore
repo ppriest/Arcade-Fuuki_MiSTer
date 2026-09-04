@@ -103,3 +103,9 @@ releases/*.rbf
 **/.DS_Store
 __pycache__/
 *.pyc
+
+# tb_tilemap working data: ROM images and rendered frames, all regenerable
+# from a capture plus the ROM set (scripts/prep_tilemap_tb.py).
+sim/tilemap_tb/*.txt
+sim/tilemap_tb/*.png
+!sim/tilemap_tb/config.txt

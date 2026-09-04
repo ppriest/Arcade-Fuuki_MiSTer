@@ -1,0 +1,35 @@
+# Standalone synthesis + timing check for rtl/cpu/maincpu.sv and the TG68K.C
+# core underneath it. NOT part of the core build -- this exists to answer two
+# questions cheaply, before a whole-core build exists:
+#
+#   1. Does it elaborate for QUARTUS? ModelSim accepts SystemVerilog that
+#      Quartus rejects outright (non-blocking assignment to an automatic
+#      variable, RAMSTYLE in a .qsf, hierarchical references into VHDL), so
+#      "it simulates" is not evidence that it synthesizes.
+#   2. What is Fmax? Psikyo measured 48.74 MHz for this core on this exact
+#      device and speed grade, with ALL 50 worst-slack paths inside
+#      TG68KdotC_Kernel and nothing else in the design failing timing at all.
+#      Budget for the 68k to be the limiting block and confirm the number
+#      EARLY -- discovering it after a video engine exists is expensive.
+#
+# Device settings mirror sys/sys.tcl exactly; a different speed grade makes
+# the Fmax number meaningless.
+set_global_assignment -name FAMILY "Cyclone V"
+set_global_assignment -name DEVICE 5CSEBA6U23I7
+set_global_assignment -name DEVICE_FILTER_PACKAGE UFBGA
+set_global_assignment -name DEVICE_FILTER_PIN_COUNT 672
+set_global_assignment -name DEVICE_FILTER_SPEED_GRADE 7
+
+set_global_assignment -name TOP_LEVEL_ENTITY maincpu_synth_top
+set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files
+
+set_global_assignment -name VHDL_FILE ../tg68k/TG68K_Pack.vhd
+set_global_assignment -name VHDL_FILE ../tg68k/TG68K_ALU.vhd
+set_global_assignment -name VHDL_FILE ../tg68k/TG68KdotC_Kernel.vhd
+set_global_assignment -name SYSTEMVERILOG_FILE ../maincpu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE maincpu_synth_top.sv
+set_global_assignment -name SDC_FILE maincpu_synth_check.sdc
+
+set_global_assignment -name VERILOG_MACRO "SYNTH_CHECK=1"
+
+set_global_assignment -name LAST_QUARTUS_VERSION "17.0.2 Lite Edition"
