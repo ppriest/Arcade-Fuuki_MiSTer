@@ -109,7 +109,10 @@ module fuuki_sdram_top (
 	// reached the chip" are different claims and the first bitstream
 	// satisfied only the first: the download FSM was held in reset, so bytes
 	// arrived and nothing was written, with no symptom but a black screen.
-	output logic        dbg_dl_wr
+	output logic        dbg_dl_wr,
+	// The address that write went to, so a trace of the download stream shows
+	// WHERE it stopped, not merely that it did.
+	output logic [24:0] dbg_dl_addr
 );
 
 	// ---- address map, FG-2 ----
@@ -268,13 +271,16 @@ module fuuki_sdram_top (
 	// Port 2 -- main CPU program fetch, and the ROM download.
 	// =====================================================================
 	logic        dl_req, dl_we16, dl_busy;
+	logic [24:0] dl_addr;
+	logic [15:0] dl_data;
 	logic        dl_busy_d;
 	// The arbiter latches a download request by raising dl_busy, so its rising
 	// edge is exactly one accepted write.
 	always_ff @(posedge clk) dl_busy_d <= dl_busy;
-	assign dbg_dl_wr = dl_busy & ~dl_busy_d;
-	logic [24:0] dl_addr;
-	logic [15:0] dl_data;
+	assign dbg_dl_wr   = dl_busy & ~dl_busy_d;
+	// dl_addr is declared ABOVE this use. vlog rejects use-before-declare;
+	// Quartus quietly accepts it, which is how it reached hardware.
+	assign dbg_dl_addr = dl_addr;
 
 	sdram_download u_dl (
 		.clk(clk), .reset(reset),
@@ -295,8 +301,14 @@ module fuuki_sdram_top (
 
 	logic [15:0] cpu_word_le;
 
+	// inval = ioctl_download, exactly as every bridge instance in the Psikyo
+	// core has it. This is the cache's ONLY invalidation (the module's own
+	// header says so), and it was left UNCONNECTED in the first bitstreams:
+	// the cache then served a granule fetched during the CPU's pre-download
+	// run -- the previous load's image, partly decayed during reconfiguration
+	// -- after the new ROM had been written underneath it.
 	sdram_narrow_bridge #(.WORD_BYTES(2)) u_cpu_bridge (
-		.clk(clk), .reset(reset),
+		.clk(clk), .reset(reset), .inval(ioctl_download),
 		.req(cpu_req), .addr(cpu_addr + BASE_MAINCPU),
 		.valid(cpu_valid), .data(cpu_word_le),
 		.g_req(cpu_g_req), .g_addr(cpu_g_addr),

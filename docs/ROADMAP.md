@@ -20,7 +20,7 @@ Its hard-won rules live in **[`docs/LESSONS_LEARNED.md`](LESSONS_LEARNED.md)**, 
 verbatim — read the relevant section before starting a subsystem, not after it misbehaves.
 Several of its findings bind decisions in this document directly and are cited inline.
 
-## Progress (kept current — last updated 2026-09-04)
+## Progress (kept current)
 
 **Phase 0 — repository setup: done.** Repo seeded from `MiSTer-devel/Template_MiSTer` (kept as a
 `template` remote for upstream pulls), project renamed to the `Fuuki` revision, Quartus-13
@@ -260,6 +260,17 @@ Still to build: sound, `.mra` files, and a whole-core bitstream. Flip screen is
 not yet honoured by the tilemap or sprite engines (the ports exist).
 
 Hardware facts below are read directly from the MAME drivers, not recalled.
+
+**First hardware run: both FG-2 sets boot.** gogomile reaches its title screen and pbancho its
+attract intro on the DE10-nano (`releases/Arcade-Fuuki_20260905.rbf`, clk_sys slack +0.166 ns).
+The blocker was work RAM indexed by `workram_addr[16:1]` -- a word address halved again -- so the
+first `rte` popped a zero frame; nothing before the first interrupt reads RAM back, and the CPU
+testbench models the RAM itself. It was found with the on-screen trace ring frozen on the first
+exception-vector read (`scripts/boot_trace.py --trig`). On the way, the SDRAM path was proved
+exact on hardware with known patterns (`scripts/sdram_pattern_test.py`, 256/256 for walking ones
+and the real vector page), and what had looked like SDRAM corruption turned out to be the
+framework's gamma LUT on the readout pixels, now forced off under the overlay. Sound, hiscore,
+rotation and FG-3 (SDRAM widening) remain.
 
 ## Hardware reality (from the drivers, not assumption)
 

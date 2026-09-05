@@ -39,7 +39,13 @@ module  pll_0002(
 	output wire outclk_1,
 
 	// interface 'locked'
-	output wire locked
+	output wire locked,
+
+	// interface 'reconfig_to_pll' / 'reconfig_from_pll' -- added by hand so the
+	// SDRAM_CLK counter (C1) can be phase-stepped at runtime by a pll_cfg
+	// instance in Fuuki.sv. Same form as sys/pll_hdmi/pll_hdmi_0002.v.
+	input  wire [63:0] reconfig_to_pll,
+	output wire [63:0] reconfig_from_pll
 );
 
 	altera_pll #(
@@ -109,7 +115,9 @@ module  pll_0002(
 		.locked	(locked),
 		.fboutclk	( ),
 		.fbclk	(1'b0),
-		.refclk	(refclk)
+		.refclk	(refclk),
+		.reconfig_to_pll	(reconfig_to_pll),
+		.reconfig_from_pll	(reconfig_from_pll)
 	);
 endmodule
 

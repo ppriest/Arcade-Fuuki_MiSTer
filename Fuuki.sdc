@@ -125,3 +125,11 @@ set kernel_k [get_keepers {*TG68KdotC_Kernel*}]
 set core_k [remove_from_collection [get_keepers {*fuuki_core*}] $kernel_k]
 set_multicycle_path -setup -from $kernel_k -to $core_k 2
 set_multicycle_path -hold  -from $kernel_k -to $core_k 1
+
+# The runtime phase stepper in Fuuki.sv lives in the CLK_50M domain and hands
+# probe_src / phase_pos across to clk_sys through synchronisers. No constraint
+# is needed here: sys/sys_top.sdc already places the core PLL's outputs and
+# FPGA_CLK1_50 in separate EXCLUSIVE clock groups, so those crossings are cut
+# by the framework. (Two scoped false paths were added for this and removed
+# again once that was checked -- a constraint that duplicates an existing cut
+# only invites a wrong comment about why it is there.)

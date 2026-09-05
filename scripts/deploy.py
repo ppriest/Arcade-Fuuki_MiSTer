@@ -42,7 +42,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 REMOTE_CORES = "/media/fat/_Arcade/cores"
-REMOTE_ARCADE = "/media/fat/_Arcade"
+# The .mra files live in their own folder, clones in _alternatives beneath it.
+REMOTE_ARCADE = "/media/fat/_Arcade/_Fuuki"
 SUCCESS = "Full Compilation was successful"
 
 # FG-3 needs the SDRAM controller widened past 32 MB before it can run at all
@@ -111,6 +112,38 @@ class Mister:
                      f"{p.stderr.strip()}")
 
 
+def print_timing(sta):
+    """Print every clock's worst setup/hold slack from the STA summary.
+
+    Always printed, met or not, so the timing of the build being deployed is
+    on the record next to the deploy rather than having to be dug out of
+    output_files/ afterwards.
+    """
+    kind = None
+    rows = []
+    for line in sta.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("Type"):
+            kind = line.split(":", 1)[1].strip()
+        elif line.startswith("Slack") and kind:
+            slack = float(line.split(":", 1)[1])
+            typ, _, clk = kind.partition(" ")
+            clk = clk.strip("'")
+            # the PLL outputs are all called divclk; name them by their PLL
+            for key, name in (("emu|pll|", "clk_sys (emu pll)"), ("pll_hdmi", "hdmi pll"),
+                              ("pll_audio", "audio pll")):
+                if key in clk:
+                    clk = name; break
+            else:
+                clk = clk.split("|")[-1]
+            rows.append((typ, clk, slack))
+            kind = None
+    print(f"\n  timing ({sta.name}):")
+    for typ, clk, slack in rows:
+        flag = "  <-- NEGATIVE" if slack < 0 else ""
+        print(f"    {typ:9s} {slack:+8.3f} ns  {clk}{flag}")
+
+
 def check_build(rbf, log, sta, allow_timing_miss=False):
     """Refuse to deploy a bitstream the build did not actually produce.
 
@@ -146,6 +179,7 @@ def check_build(rbf, log, sta, allow_timing_miss=False):
     if not sta.exists():
         problems.append(f"{sta} does not exist -- STA did not run")
     else:
+        print_timing(sta)
         neg = [l.strip() for l in sta.read_text(encoding="utf-8").splitlines()
                if l.strip().startswith("Slack") and ": -" in l]
         if neg:
@@ -158,7 +192,11 @@ def check_build(rbf, log, sta, allow_timing_miss=False):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rbf", default=str(REPO / "output_files" / "Fuuki.rbf"))
-    ap.add_argument("--log", default=str(REPO / "output_files" / "compile.log"))
+    # Default to the NEWEST compile*.log: several build flows write differently
+    # named logs (compile.log, compile_fix.log, compile_phase.log), and the
+    # guard must check the log of the build that actually produced the .rbf.
+    logs = sorted((REPO / "output_files").glob("compile*.log"), key=lambda f: f.stat().st_mtime)
+    ap.add_argument("--log", default=str(logs[-1]) if logs else str(REPO / "output_files" / "compile.log"))
     ap.add_argument("--sta", default=str(REPO / "output_files" / "Fuuki.sta.summary"))
     ap.add_argument("--name", default="Arcade-Fuuki.rbf",
                     help="remote core filename; the .mra's <rbf> tag must match "

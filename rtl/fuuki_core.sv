@@ -97,7 +97,18 @@ module fuuki_core (
 	output logic [20:0] dbg_rom_addr,
 	output logic        dbg_rom_valid,
 	output logic [15:0] dbg_rom_data,
-	output logic        dbg_dl_wr
+	output logic        dbg_dl_wr,
+	output logic [24:0] dbg_dl_addr,
+
+	// ---- trace-to-screen controls (see the debug_tracer instance) ----
+	input  logic        dbg_overlay,
+	input  logic [1:0]  dbg_src,
+	input  logic [3:0]  dbg_window,
+	input  logic        dbg_ring,
+	input  logic        dbg_rearm,
+	input  logic [2:0]  dbg_page,     // which 40-entry page of the buffer to show
+	input  logic        dbg_trig,     // ring mode: freeze on the first exception-vector read
+	output logic        dbg_frozen
 );
 
 	// =====================================================================
@@ -147,6 +158,13 @@ module fuuki_core (
 
 	logic [4:0]   vregs_addr;
 	logic [1:0]   vregs_sel;
+	logic [24:0]  dl_addr_dbg;
+	logic [2:0]   cpu_fc;
+	// Declared here, ABOVE the maincpu instance that pauses on it, not at the
+	// walker where it is defined: vlog rejects use-before-declare (vlog-2388)
+	// and Quartus silently resolves it, which is how it reached hardware.
+	wire          walk_active = (dbg_src == 2'd3);
+	assign dbg_dl_addr = dl_addr_dbg;
 	logic         vregs_wel, vregs_weh;
 	logic [15:0]  vregs_wdata, vregs_rdata;
 
@@ -185,7 +203,8 @@ module fuuki_core (
 		.latch_data(latch_data), .latch_write(latch_write),
 		.tilebank(tilebank),
 		.irq1_trig(irq1_trig), .irq3_trig(irq3_trig), .irq5_trig(irq5_trig),
-		.pause(pause_cpu)
+		.pause(pause_cpu | walk_active),   // the walker owns the ROM port
+		.dbg_fc(cpu_fc)
 	);
 
 	assign dbg_cpu_req   = rom_req;
@@ -200,12 +219,22 @@ module fuuki_core (
 
 	// =====================================================================
 	// Work RAM -- 64K x 16, one array serves both boards
+	//
+	// workram_addr is already a WORD address (maincpu.sv: addr24[17:1]), like
+	// every other *_addr here, and is used whole. It was indexed [16:1] --
+	// halved again -- so consecutive words shared one entry. The boot code
+	// only wrote RAM until the first interrupt; then the 68000 stacked PC.lo,
+	// PC.hi and SR into three words that occupied two entries, the ISR's
+	// movem overwrote the SR's, and rte popped SR=0, PC=0: user mode at
+	// address 0, then vector 4. The CPU testbench models this RAM itself
+	// (sim/maincpu_tb, `BRAM), so it could not see the core's indexing.
+	// Bit 16 is dropped: 0x410000-0x41FFFF mirrors 0x400000-0x40FFFF.
 	// =====================================================================
 	logic [15:0] workram [0:65535];
 	always_ff @(posedge clk) begin
-		if (workram_wel) workram[workram_addr[16:1]][7:0]  <= workram_wdata[7:0];
-		if (workram_weh) workram[workram_addr[16:1]][15:8] <= workram_wdata[15:8];
-		workram_rdata <= workram[workram_addr[16:1]];
+		if (workram_wel) workram[workram_addr[15:0]][7:0]  <= workram_wdata[7:0];
+		if (workram_weh) workram[workram_addr[15:0]][15:8] <= workram_wdata[15:8];
+		workram_rdata <= workram[workram_addr[15:0]];
 	end
 
 	// =====================================================================
@@ -473,6 +502,178 @@ module fuuki_core (
 	// =====================================================================
 	// Compositor and palette lookup
 	// =====================================================================
+	// =====================================================================
+	// Trace to screen.
+	//
+	// 128 bits of JTAG probe answers "how much" and "where is it now". It
+	// cannot answer "what happened in the run-up", which is the question that
+	// identifies a cause. This buffers 256 events and reads them out one per
+	// scanline, so a single screenshot carries 256 consecutive samples -- the
+	// technique the sibling Psikyo core used for its bring-up, module
+	// vendored from it unchanged.
+	//
+	// RING MODE first: it holds the LATEST 256 events and freezes when the
+	// stream goes quiet, so a stopped download freezes the buffer on the last
+	// writes before it stopped.
+	//
+	// The module has NO RESET PORT, deliberately -- its header explains why,
+	// and this core was already bitten by exactly that: counters cleared by
+	// the very reset under investigation.
+	// =====================================================================
+	logic [23:0] trace_data;
+	logic        trace_stb;
+
+	// CPU accesses are captured on the VALID that completes them, paired with
+	// the address that was requested, and tagged with the kernel's function
+	// code. Capturing on rom_req alone gave a scrambled order on hardware
+	// (0, 3, 1, ...) that no 68000 sequence produces; the completed access
+	// is the one the CPU actually consumed. FC separates a vector/data read
+	// (5) from a program fetch (6) from an interrupt acknowledge (7), which is
+	// the difference between "the core is being reset" and "the CPU is taking
+	// exceptions".
+	//
+	// GATED ON THE DOWNLOAD HAVING FINISHED. The CPU runs for ~3,000 fetches
+	// on empty SDRAM before MiSTer asserts RESET for the transfer; ungated,
+	// those fill a first-N capture and window 0 never shows the real boot.
+	// dl_done has no reset, on purpose (see debug_tracer.sv's header).
+	logic        dl_seen0 = 1'b0, dl_done = 1'b0;
+	logic [20:0] pend_addr;
+	always_ff @(posedge clk) begin
+		if (ioctl_wr && ioctl_index == 16'd0) dl_seen0 <= 1'b1;
+		if (dl_seen0 && !ioctl_download)      dl_done  <= 1'b1;
+		if (rom_req)                          pend_addr <= rom_addr;
+	end
+
+	// =====================================================================
+	// SDRAM read-back walker -- trace source 3.
+	//
+	// Reads 256 consecutive words through the CPU's OWN path (bridge, cache,
+	// arbiter, controller) with the CPU paused, and hands each one to the
+	// tracer as {word index, data}: one page of what the CPU would see, per
+	// screenshot, to diff against the ROM image. dbg_window picks the page,
+	// so pages 0-15 cover the first 8 KB -- vector table and boot code.
+	//
+	// Runs one pass when it becomes active or dbg_rearm toggles, and only
+	// once the download has finished, for the same reason the fetch sources
+	// are gated. A short settle after the kick lets any in-flight CPU access
+	// drain, so its valid is not mistaken for the walker's first.
+	// =====================================================================
+	// walk_active is declared with the other core-level signals near the top.
+	logic        walk_active_d = 1'b0, walk_rearm_d = 1'b0, dl_done_d = 1'b0;
+	logic        walking = 1'b0, walk_wait = 1'b0, walk_req = 1'b0, walk_stb = 1'b0;
+	logic [7:0]  walk_idx = 8'd0, walk_settle = 8'd0;
+	logic [23:0] walk_data = 24'd0;
+
+	// Kick on ANY of: the download finishing while the source is already
+	// selected, the source being selected after the download, or a re-arm.
+	// The first version kicked only on the source's rising edge AND
+	// dl_done, but the OSD bits arrive from the HPS before the download ends,
+	// so that edge always passed with dl_done low and the walker never ran --
+	// the dump decoded as 256 zeros.
+	wire walk_kick = walk_active && dl_done &&
+	                 ((dl_done && !dl_done_d) || !walk_active_d ||
+	                  (dbg_rearm ^ walk_rearm_d));
+
+	always_ff @(posedge clk) begin
+		walk_active_d <= walk_active;
+		walk_rearm_d  <= dbg_rearm;
+		dl_done_d     <= dl_done;
+		walk_req      <= 1'b0;
+		walk_stb      <= 1'b0;
+		if (!walking) begin
+			if (walk_kick) begin
+				walking     <= 1'b1;
+				walk_idx    <= 8'd0;
+				walk_wait   <= 1'b0;
+				walk_settle <= 8'd255;
+			end
+		end else if (walk_settle != 8'd0) begin
+			walk_settle <= walk_settle - 8'd1;
+		end else if (!walk_wait) begin
+			walk_req  <= 1'b1;
+			walk_wait <= 1'b1;
+		end else if (rom_valid) begin
+			walk_stb  <= 1'b1;
+			walk_data <= {walk_idx, rom_data};
+			walk_wait <= 1'b0;
+			if (walk_idx == 8'd255) walking <= 1'b0;
+			else                    walk_idx <= walk_idx + 8'd1;
+		end
+	end
+
+	// Byte address of the word being walked: page (dbg_window) x 256 words.
+	wire [24:0] walk_addr = {12'd0, dbg_window, walk_idx, 1'b0};
+
+	always_comb begin
+		case (dbg_src)
+			// The download stream: word address of each accepted write.
+			2'd0: begin trace_stb = dbg_dl_wr; trace_data = dl_addr_dbg[24:1]; end
+			// Completed CPU accesses: {FC, word address}.
+			2'd1: begin trace_stb = rom_valid && dl_done;
+			            trace_data = {cpu_fc, pend_addr}; end
+			// Completed CPU accesses: {returned word, low 8 bits of address}.
+			2'd2: begin trace_stb = rom_valid && dl_done;
+			            trace_data = {rom_data, pend_addr[7:0]}; end
+			// SDRAM read-back: {word index within the page, data}.
+			default: begin trace_stb = walk_stb; trace_data = walk_data; end
+		endcase
+	end
+
+	// TRIGGER: the first supervisor-data read inside vectors 2..4 (bus error,
+	// address error, illegal instruction; byte 0x08..0x13, word 4..9). The
+	// boot never reads those legitimately, so in ring mode the buffer freezes
+	// holding the 255 ROM reads that led to the exception plus the vector
+	// read itself as the newest entry. The readout rotates on that entry.
+	wire vec_trig = rom_valid && dl_done && (cpu_fc == 3'd5) &&
+	                (pend_addr >= 21'd4) && (pend_addr <= 21'd9);
+
+	// Band and row-in-band are counted, not divided: `vcnt / 6` synthesised
+	// to an lpm_divide on the tracer's BRAM address and missed clk_sys by
+	// 2.671 ns. The counters lag vcnt by one clock, which lands in hblank.
+	logic [23:0] trace_rd;
+	logic [5:0]  trace_band     = '0;   // 0..39 on the visible lines
+	logic [2:0]  trace_row      = '0;   // 0..5 within the band
+	logic        trace_inv      = '0;   // rows 3..5 of each band show ~value
+	logic [8:0]  trace_rd_index = '0;
+	logic [8:0]  trace_vcnt_q   = '0;
+	always_ff @(posedge clk) begin
+		trace_vcnt_q <= vcnt;
+		if (vcnt != trace_vcnt_q) begin
+			if (vcnt == 9'd0) begin
+				trace_band <= '0; trace_row <= '0;
+			end else if (trace_row == 3'd5) begin
+				trace_band <= trace_band + 6'd1; trace_row <= '0;
+			end else begin
+				trace_row  <= trace_row + 3'd1;
+			end
+		end
+		trace_inv      <= trace_row >= 3'd3;
+		trace_rd_index <= 9'(dbg_page * 9'd40) + 9'(trace_band);
+	end
+
+	// IDLE_BITS 28 = 2**28 clk = 3.1 s of quiet before the ring freezes. The
+	// default 22 is 49 ms, which the pause between .mra parts trips -- the
+	// buffer then froze mid-transfer and looked exactly like the end of it.
+	debug_tracer #(.DEPTH(256), .WIDTH(24), .IDLE_BITS(28)) u_trace (
+		.clk(clk),
+		.cap_stb(trace_stb), .cap_data(trace_data),
+		// The walker reuses dbg_window as its PAGE selector, so the tracer
+		// must not also treat it as an event-skip: with window=2 it skipped
+		// 16,382 events and the 256-word dump recorded nothing.
+		.ctl_rearm(dbg_rearm), .ctl_window(walk_active ? 4'd0 : dbg_window),
+		.ctl_ring(dbg_ring), .ctl_trig_en(dbg_trig), .cap_trig(vec_trig),
+		// BANDED, SELF-CHECKING READOUT. Each entry occupies SIX scanlines:
+		// three showing the value, three its bitwise INVERSE. The decoder pairs
+		// (v, ~v) runs by content and requires v ^ ~v == all ones, so any
+		// transform between this pixel and the PNG is detected instead of being
+		// read as data. That check is what exposed the framework's gamma LUT
+		// (now forced off under the overlay in Fuuki.sv), which the one-row
+		// readout had reported as SDRAM corruption. 40 entries per screen,
+		// page-selected over JTAG; 7 pages cover the 256-entry buffer.
+		.rd_index(trace_rd_index), .rd_data(trace_rd),
+		.frozen(dbg_frozen)
+	);
+
 	logic [2:0] dbg_pri;
 
 	compositor u_comp (
@@ -511,9 +712,12 @@ module fuuki_core (
 		q_ce <= {q_ce[0], ce_pix};
 	end
 
-	assign video_r  = pal5bit(pal_rd_data[14:10]);
-	assign video_g  = pal5bit(pal_rd_data[9:5]);
-	assign video_b  = pal5bit(pal_rd_data[4:0]);
+	// The overlay REPLACES the picture rather than blending: the decoder reads
+	// exact 24-bit values back out of the PNG, so blending would corrupt them.
+	wire [23:0] trace_px = trace_inv ? ~trace_rd : trace_rd;
+	assign video_r  = dbg_overlay ? trace_px[23:16] : pal5bit(pal_rd_data[14:10]);
+	assign video_g  = dbg_overlay ? trace_px[15:8]  : pal5bit(pal_rd_data[9:5]);
+	assign video_b  = dbg_overlay ? trace_px[7:0]   : pal5bit(pal_rd_data[4:0]);
 	assign video_hs = q_hs[1];
 	assign video_vs = q_vs[1];
 	assign video_hb = q_hb[1];
@@ -546,9 +750,10 @@ module fuuki_core (
 		.spr_valid(spr_valid), .spr_data(spr_gdata),
 		// rom_addr is a WORD address; the backend takes an even BYTE address
 		// and adds BASE_MAINCPU itself.
-		.cpu_req(rom_req), .cpu_addr(25'({rom_addr, 1'b0})),
+		.cpu_req (walk_active ? walk_req  : rom_req),
+		.cpu_addr(walk_active ? walk_addr : 25'({rom_addr, 1'b0})),
 		.cpu_valid(rom_valid), .cpu_data(rom_data),
-		.dbg_dl_wr(dbg_dl_wr)
+		.dbg_dl_wr(dbg_dl_wr), .dbg_dl_addr(dl_addr_dbg)
 	);
 
 endmodule

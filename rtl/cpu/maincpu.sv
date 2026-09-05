@@ -117,7 +117,11 @@ module maincpu (
 	input  logic         irq3_trig,    // vblank start
 	input  logic         irq5_trig,    // programmable raster line
 
-	input  logic         pause
+	input  logic         pause,
+
+	// Debug: the kernel's function code, so a trace can tell a program
+	// fetch (6) from a vector/data read (5) from an interrupt acknowledge (7).
+	output logic [2:0]   dbg_fc
 );
 
 	// =====================================================================
@@ -400,6 +404,7 @@ module maincpu (
 	end
 
 	assign cpu_din = acc_data;
+	assign dbg_fc  = fc;
 
 	// =====================================================================
 	// Interrupts

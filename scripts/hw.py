@@ -23,6 +23,7 @@ where each cost a false positive:
    POST does not help, so each attempt re-triggers.
 """
 import argparse
+import re
 import json
 import os
 import shutil
@@ -125,10 +126,14 @@ class Mister:
 
     def screenshot(self, out_path, core=None, settle=4,
                    poll_timeout=15, attempts=4):
+        # Settle BEFORE reading /tmp/CORENAME: straight after a launch it
+        # still names the previous core, so the poll watched the wrong
+        # folder and every trigger looked dropped (twice, after each of the
+        # first two game launches). A retry seconds later always worked.
+        time.sleep(settle)              # let the core actually render a frame
         core = core or self.core_name()
         print(f"  screenshot folder: {REMOTE_SHOTS}/{core}")
         before = self.shots(core)
-        time.sleep(settle)              # let the core actually render a frame
         for attempt in range(1, attempts + 1):
             self.post("/screenshots")
             deadline = time.time() + poll_timeout
@@ -151,11 +156,18 @@ class Mister:
 
 def resolve_mra(m, name):
     """Find the .mra on the device, so a typo fails here and not silently."""
+    # Git Bash rewrites a leading-slash argument into a Windows path before
+    # python sees it ("/media/fat/x" -> "C:/Program Files/Git/media/fat/x"),
+    # which silently launched nothing. Recover the MiSTer path from wherever
+    # the mangling left it.
+    hit = re.search(r"/media/fat/.*", name)   # not `m` -- that is the Mister object
+    if hit:
+        return hit.group(0)
     if name.startswith("/"):
         return name
     if not name.endswith(".mra"):
         name += ".mra"
-    for cand in (f"{REMOTE_ARCADE}/{name}",):
+    for cand in (f"{REMOTE_ARCADE}/_Fuuki/{name}", f"{REMOTE_ARCADE}/{name}"):
         if m.sh(f'test -f "{cand}" && echo yes || echo no', check=False).strip() == "yes":
             return cand
     hits = m.sh(f'find {REMOTE_ARCADE} -name "{name}" 2>/dev/null | head -5',

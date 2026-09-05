@@ -24,7 +24,15 @@ by anyone else with a MAME install and the ROM sets.
 | `video_png.py` | turn `tb_video`'s composed frame into a PNG and diff it pixel-for-pixel against MAME's screenshot of the same state |
 | `build_mra.py` | generate every `.mra`, both boards, and prove each one byte-for-byte: each region is built from the driver's ROM_START semantics, the map digits are found by TESTING against that rather than derived, and the finished file is re-read and compared. Offsets come from `fuuki_sdram_top.sv`, never duplicated here. Parents land in `releases/`, clones in `releases/_alternatives/_<parent>/`, named from the MAME description |
 | `mra.py` | build the SDRAM image an `.mra` describes, the way mra-tools-c would, so an `.mra`'s output can be checked byte-for-byte against an image built directly from the driver's `ROM_START` |
+| `hw.py` | launch a game via MiSTer Remote's API (bouncing through `menu.rbf` so the FPGA is really reprogrammed) and pull screenshots; the screenshot folder is named from the MRA setname, which it reads from the device |
+| `cfg.py` | set OSD status bits in a per-core `.CFG` by read-modify-write, so untouched bits survive; the CFG is only read when the core loads |
+| `sweep.py` | launch every deployed set in turn and tabulate the JTAG probe side by side, because one black screen is consistent with several different faults and comparing sets separates them |
+| `sdram_dump_check.py` | diff an SDRAM read-back dump (trace source 3, the walker in `fuuki_core.sv`) against the program ROM, keyed by the index each row carries so dropped or duplicated scanlines cannot mis-attribute a word |
+| `sdram_pattern_test.py` | known-pattern SDRAM write/read test through the real download path -- inline-hex `.mra` files, no ROM -- so address-dependent, data-dependent and timing faults can be told apart; every result is guarded by checking the device actually loaded the test |
+| `phase_sweep.py` | walk the SDRAM_CLK phase at runtime over JTAG with a pattern loaded, and report errors against phase: the DQ eye, so the shipped phase is its centre rather than the first value that happened to work |
+| `decode_debug_screenshot.py` | read exact 24-bit values back out of a trace-overlay screenshot, one per scanline (vendored from the Psikyo core) |
 | `read_issp.tcl` | read the core's debug counters over JTAG via In-System Sources and Probes (`quartus_stp -t`), since SignalTap acquisition is GUI-only in Quartus Prime Lite 17.0 |
+| `report_worst_paths.tcl` | `quartus_sta -t scripts/report_worst_paths.tcl Fuuki` -- the 15 worst clk_sys setup paths from the compiled database, to `output_files/worst_paths_Fuuki.rpt`. |
 
 MAME lives wherever `MAME_DIR` points (default `C:\Emulation\Emulators\MAME`).
 

@@ -16,7 +16,9 @@ module pll (
 		input  wire  rst,      //   reset.reset
 		output wire  outclk_0, // outclk0.clk
 		output wire  outclk_1, // outclk1.clk
-		output wire  locked    //  locked.export
+		output wire  locked,   //  locked.export
+		input  wire [63:0] reconfig_to_pll,
+		output wire [63:0] reconfig_from_pll
 	);
 
 	pll_0002 pll_inst (
@@ -24,7 +26,9 @@ module pll (
 		.rst      (rst),      //   reset.reset
 		.outclk_0 (outclk_0), // outclk0.clk
 		.outclk_1 (outclk_1), // outclk1.clk
-		.locked   (locked)    //  locked.export
+		.locked   (locked),   //  locked.export
+		.reconfig_to_pll   (reconfig_to_pll),
+		.reconfig_from_pll (reconfig_from_pll)
 	);
 
 endmodule

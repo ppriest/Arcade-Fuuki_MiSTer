@@ -97,6 +97,15 @@ localparam CONF_STR = {
 	"P1O[41],Tilemap 1,On,Off;",
 	"P1O[42],Tilemap 2,On,Off;",
 	"P1O[43],Sprites,On,Off;",
+	"P1-;",
+	// Trace to screen. Live from the OSD so the capture can be moved without
+	// a rebuild -- which is the whole point, at ~13 minutes a build.
+	"P1O[50],Trace overlay,Off,On;",
+	"P1O[52:51],Trace source,Download addr,CPU FC+addr,CPU data+addr,SDRAM dump;",
+	"P1O[56:53],Trace window,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15;",
+	"P1O[57],Trace mode,First N,Ring (latest);",
+	"P1O[58],Re-arm capture,A,B;",
+	"P1O[59],Ring trigger,Off,Vector 2-4 read;",
 	"-;",
 	"R[0],Reset;",
 	// This list MUST agree with the .mra <buttons> positions, because the
@@ -114,9 +123,19 @@ localparam CONF_STR = {
 // "cannot be assigned more than one value" pointing at the DECLARATION, not
 // at the use. rtl/cpu/maincpu.sv carries the same note for the same reason.
 wire clk_sys, clk_sdram_shifted, pll_locked;
+wire [7:0] probe_src;   // ISSP source bits; driven by issp_probe below, consumed above it
 
 wire        forced_scandoubler;
 wire [21:0] gamma_bus;
+// GAMMA IS FORCED OFF UNDER THE DEBUG OVERLAY. The framework applies the
+// user's gamma LUT (MiSTer.ini preset, e.g. Pure_Gamma/gamma_110.txt) to the
+// core's RGB before the scaler and before screenshots, so a trace value drawn
+// as a pixel came back remapped (0x40 -> 0x38, 0x02 -> 0x01: lossy) and
+// looked like memory corruption. Bit 19 is gamma_en (sys/gamma_corr.sv);
+// bit 21 is driven back by the consumer, so it is passed through untouched.
+wire [21:0] gamma_bus_video;
+assign gamma_bus_video[20:0] = {gamma_bus[20], gamma_bus[19] & ~status[50], gamma_bus[18:0]};
+assign gamma_bus[21]         = gamma_bus_video[21];
 wire  [1:0] buttons;
 wire [127:0] status;
 wire [10:0] ps2_key;
@@ -176,7 +195,75 @@ pll pll
 	.rst(0),
 	.outclk_0(clk_sys),
 	.outclk_1(clk_sdram_shifted),
-	.locked(pll_locked)
+	.locked(pll_locked),
+	.reconfig_to_pll(rcfg_to_pll),
+	.reconfig_from_pll(rcfg_from_pll)
+);
+
+// ---------------------------------------------------------------------------
+// RUNTIME SDRAM_CLK PHASE STEPPING, driven over JTAG.
+//
+// The known-pattern SDRAM test measured DQ being sampled at the transition
+// edge: a walking one reads back as the OR of its neighbours, with lanes
+// moving in groups. That is a phase problem, and a phase is only trustworthy
+// when it has been placed in the MIDDLE of the working window, which means
+// measuring the window -- a build per point is 13 minutes, this is 30 s.
+//
+// Mechanism: the framework's pll_cfg (altera_pll_reconfig) on the core PLL,
+// clocked from CLK_50M so it keeps running whatever the PLL does. A write to
+// its dynamic-phase-shift register (address 6) moves one counter by N steps
+// of VCO/8 -- ~132 ps here (VCO 945 MHz), ~88 steps per 11.64 ns period.
+// Counter select 3 is C1, the SDRAM_CLK output. C0 (clk_sys) is left alone.
+//
+// Control comes from the ISSP probe's source bits, which are the only thing
+// that can be poked without reconfiguring the FPGA (a relaunch reloads the
+// build's phase):
+//     bit 0     clear the debug counters (as before)
+//     bit 1     rising edge: step SDRAM_CLK phase UP   by 8 steps (~1 ns)
+//     bit 2     rising edge: step SDRAM_CLK phase DOWN by 8 steps
+//     bits 7,4,3 which 40-entry page of the trace buffer the overlay shows (0-6)
+//     bit 6     toggles the walker / tracer re-arm, for a fresh dump in place
+// phase_pos (signed steps from the build's phase) is in the probe.
+// ---------------------------------------------------------------------------
+wire [63:0] rcfg_to_pll, rcfg_from_pll;
+
+reg [7:0] psrc_s1 = 8'd0, psrc_s2 = 8'd0, psrc_d = 8'd0;
+always @(posedge CLK_50M) begin
+	psrc_s1 <= probe_src;
+	psrc_s2 <= psrc_s1;
+	psrc_d  <= psrc_s2;
+end
+wire        dps_up   = psrc_s2[1] & ~psrc_d[1];
+wire        dps_dn   = psrc_s2[2] & ~psrc_d[2];
+wire [15:0] dps_n    = 16'd8;   // ~1 ns per command; bits 4:3 now select the readout page
+
+reg         cfg_write = 1'b0;
+reg  [5:0]  cfg_addr  = 6'd0;
+reg  [31:0] cfg_data  = 32'd0;
+wire        cfg_wait;
+reg  signed [15:0] phase_pos = 16'sd0;
+
+always @(posedge CLK_50M) begin
+	cfg_write <= 1'b0;
+	if (!cfg_wait && !cfg_write && (dps_up | dps_dn)) begin
+		cfg_write <= 1'b1;
+		cfg_addr  <= 6'd6;                                  // DPS_REG
+		cfg_data  <= {10'd0, dps_up, 5'd3, dps_n};          // [21] up, [20:16] C1, [15:0] steps
+		phase_pos <= dps_up ? phase_pos + $signed(dps_n) : phase_pos - $signed(dps_n);
+	end
+end
+
+pll_cfg u_pll_cfg (
+	.mgmt_clk(CLK_50M),
+	.mgmt_reset(~pll_locked),
+	.mgmt_waitrequest(cfg_wait),
+	.mgmt_read(1'b0),
+	.mgmt_write(cfg_write),
+	.mgmt_readdata(),
+	.mgmt_address(cfg_addr),
+	.mgmt_writedata(cfg_data),
+	.reconfig_to_pll(rcfg_to_pll),
+	.reconfig_from_pll(rcfg_from_pll)
 );
 
 assign SDRAM_CLK = clk_sdram_shifted;
@@ -193,7 +280,30 @@ always @(posedge clk_sys) ce_pix_cnt <= (ce_pix_cnt == 11) ? 4'd0 : ce_pix_cnt +
 // header. `reset` must NOT include ioctl_download, or the SDRAM download FSM
 // sits in idle for the entire transfer and nothing is ever written.
 wire reset      = RESET | status[0] | buttons[1] | ~pll_locked;
-wire core_reset = reset | ioctl_download;
+
+// HOLD THE CPU AND VIDEO IN RESET UNTIL THE ROM HAS BEEN LOADED ONCE.
+//
+// MiSTer configures the FPGA, and only asserts RESET when the .mra load
+// begins. In between, the core runs on whatever SDRAM holds -- the previous
+// load's image, partly decayed during reconfiguration -- and the probe
+// counted ~3,000 CPU fetches in that window. On real hardware the CPU did
+// not come back from that cleanly: an FC-tagged trace of the first accesses
+// AFTER the download showed it mid-flight at 0x360000, all supervisor-data
+// reads, never fetching an instruction and never reading address 0. Every
+// "corrupt ROM word" measured before this was that pre-download run reading
+// decayed memory, not the load.
+//
+// rom_loaded is sticky and has no reset of its own: it is set once the first
+// index-0 transfer has ended and stays set, so an OSD reset later still
+// resets the game normally. It is not cleared by a later download either --
+// at that point RESET and ioctl_download hold the core anyway.
+reg rom_loaded = 1'b0, dl_index0_seen = 1'b0;
+always @(posedge clk_sys) begin
+	if (ioctl_wr && ioctl_index == 16'd0) dl_index0_seen <= 1'b1;
+	if (dl_index0_seen && !ioctl_download) rom_loaded     <= 1'b1;
+end
+
+wire core_reset = reset | ioctl_download | ~rom_loaded;
 
 // MiSTer asserts RESET for the WHOLE ROM download, so the memory path gets the
 // reset with the download masked out of it. Passing plain `reset` here is what
@@ -202,7 +312,24 @@ wire core_reset = reset | ioctl_download;
 // SDRAM was never written, the CPU never ran, and the palette stayed zero.
 // The SDRAM chip's own init sequence is separate again -- it keys off PLL lock
 // alone and must not be pulsed by a core reset.
-wire sdram_reset = reset & ~ioctl_download;
+// POWER-ON ONLY, and this is a change from the download-masked
+// `reset & ~ioctl_download` the sibling core uses. That form still pulses
+// the memory path's reset at every ioctl_download edge while RESET is held --
+// including at the END of the ROM stream. The phy is reset by it; sdram.sv is
+// not. The phy's req TOGGLE goes to 0 while the controller's ack may be 1 and
+// a transaction may still be completing; the controller then does
+// `ack <= req` at completion, and if a new request has already toggled req
+// by then, that request is acknowledged WITHOUT being performed -- a write
+// silently dropped. Which write depends on the pre-download CPU traffic, so
+// the corruption differed from load to load (word 0 read 0x0040 on one load
+// and 0x0038 on the next). Psikyo streams its ROM by DDR3 DMA with no phy
+// traffic across those edges, so it never met this.
+//
+// Nothing in the memory path needs a runtime reset: the download FSM and
+// the arbiters return to idle on their own, and the bridge's cache is
+// invalidated per download through `inval`. The FPGA is reconfigured on
+// every .mra launch, which is the real power-on.
+wire sdram_reset = ~pll_locked;
 wire sdram_init  = ~pll_locked;
 
 ///////////////////////   BOARD SELECT   //////////////////////////
@@ -300,8 +427,10 @@ wire       core_hs, core_vs, core_hb, core_vb, core_ce;
 wire       dbg_frame_start, dbg_line_start, dbg_spr_ovr, dbg_cpu_req, dbg_gfx_req;
 wire [20:0] dbg_rom_addr;
 wire        dbg_rom_valid;
+wire        dbg_frozen;
 wire [15:0] dbg_rom_data;
-wire       dbg_dl_wr;
+wire        dbg_dl_wr;
+wire [24:0] dbg_dl_addr;
 
 fuuki_core u_core (
 	.clk(clk_sys), .ce_pix(ce_pix),
@@ -338,7 +467,13 @@ fuuki_core u_core (
 	.dbg_spr_ovr(dbg_spr_ovr), .dbg_cpu_req(dbg_cpu_req),
 	.dbg_gfx_req(dbg_gfx_req), .dbg_rom_addr(dbg_rom_addr),
 	.dbg_rom_valid(dbg_rom_valid), .dbg_rom_data(dbg_rom_data),
-	.dbg_dl_wr(dbg_dl_wr)
+	.dbg_dl_wr(dbg_dl_wr), .dbg_dl_addr(dbg_dl_addr),
+
+	.dbg_overlay(status[50]), .dbg_src(status[52:51]),
+	.dbg_window(status[56:53]), .dbg_ring(status[57]),
+	.dbg_rearm(status[58] ^ probe_src[6]), .dbg_page({probe_src[7], probe_src[4:3]}),
+	.dbg_trig(status[59]),
+	.dbg_frozen(dbg_frozen)
 );
 
 ///////////////////////   VIDEO   /////////////////////////////////
@@ -370,7 +505,7 @@ arcade_video #(.WIDTH(320), .DW(24), .GAMMA(1)) arcade_video
 
 	.fx(status[46:44]),
 	.forced_scandoubler(forced_scandoubler),
-	.gamma_bus(gamma_bus)
+	.gamma_bus(gamma_bus_video)
 );
 
 ///////////////////////   JTAG PROBE   ////////////////////////////
@@ -384,12 +519,34 @@ arcade_video #(.WIDTH(320), .DW(24), .GAMMA(1)) arcade_video
 // survives the reset a failed load causes; source bit 0 clears them.
 // scripts/read_issp.tcl decodes this layout and must be kept in step with it:
 // a silently shifted field reads as plausible nonsense, not as an error.
-wire [7:0] probe_src;
 wire       ctr_clear = probe_src[0];
 
-wire [15:0] c_frames, c_lines, c_ovr, c_cpu, c_gfx;
+wire [15:0] c_frames, c_ovr, c_cpu, c_gfx;
 debug_counter #(.W(16)) u_c_frames (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_frame_start), .count(c_frames));
-debug_counter #(.W(16)) u_c_lines  (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_line_start),  .count(c_lines));
+// core_reset RISING EDGES. A CPU that keeps re-reading its reset vector is
+// either taking exceptions or being reset; this tells the two apart. Counted
+// with no reset of its own, so the count survives the thing it counts.
+reg core_reset_d = 1'b1;
+always @(posedge clk_sys) core_reset_d <= core_reset;
+wire core_reset_rise = core_reset & ~core_reset_d;
+wire [15:0] c_rst;
+debug_counter #(.W(16)) u_c_rst    (.clk(clk_sys), .clear(ctr_clear), .ev(core_reset_rise),  .count(c_rst));
+
+// ioctl_download rising edges, ANY index -- MiSTer sending anything after the
+// ROM is a core_reset pulse, because core_reset ORs ioctl_download in.
+reg dl_d = 1'b0;
+always @(posedge clk_sys) dl_d <= ioctl_download;
+wire [5:0] c_dl_edges;
+debug_counter #(.W(6))  u_c_dledge (.clk(clk_sys), .clear(ctr_clear), .ev(ioctl_download & ~dl_d), .count(c_dl_edges));
+
+// PLL lost lock after having it. ~pll_locked is in `reset` AND drives the
+// SDRAM chip's init, so a flaky lock would reset the CPU and re-init memory.
+reg pll_seen_lock = 1'b0, pll_unlock = 1'b0;
+always @(posedge clk_sys) begin
+	if (pll_locked) pll_seen_lock <= 1'b1;
+	if (ctr_clear) pll_unlock <= 1'b0;
+	else if (pll_seen_lock && !pll_locked) pll_unlock <= 1'b1;
+end
 debug_counter #(.W(16)) u_c_ovr    (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_spr_ovr),     .count(c_ovr));
 debug_counter #(.W(16)) u_c_cpu    (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_cpu_req),     .count(c_cpu));
 debug_counter #(.W(16)) u_c_gfx    (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_gfx_req),     .count(c_gfx));
@@ -434,20 +591,32 @@ always @(posedge clk_sys) begin
 end
 wire dl_tick = dbg_dl_wr && (dl_pre == 8'd255);
 
+// HIGHEST download address written, in 512-byte units. The trace buffer can
+// freeze on a pause between .mra parts and look like the end of the transfer;
+// a high-water mark cannot. A complete gogomile load must reach 0x1180000,
+// i.e. 0x8C00 here.
+reg [15:0] max_dl_addr = 16'd0;
+always @(posedge clk_sys) begin
+	if (ctr_clear) max_dl_addr <= 16'd0;
+	else if (dbg_dl_wr && (dbg_dl_addr[24:9] > max_dl_addr))
+		max_dl_addr <= dbg_dl_addr[24:9];
+end
+
 issp_probe #(.INSTANCE_ID("F"), .PROBE_W(128), .SOURCE_W(8)) u_probe (
 	.clk(clk_sys),
 	.probe({
-		7'd0,                // 127..121
+		c_dl_edges,          // 127..122  ioctl_download rising edges, any index
+		pll_unlock,          // 121
 		c_dlwr,              // 120..105  download writes accepted
 		last_rom_addr,       // 104..84
-		board_fg3,           //  83
+		dbg_frozen,          //  83  ring mode: has the buffer stopped moving
 		pause_latched,       //  82
 		ioctl_download,      //  81
 		dl_seen,             //  80
 		last_rom_data,       //  79..64  what the CPU was actually fed
 		c_cpu,               //  63..48
-		c_ovr,               //  47..32
-		c_lines,             //  31..16
+		phase_pos,           //  47..32  SDRAM_CLK phase, signed steps from the build value
+		c_rst,               //  31..16  core_reset rising edges
 		c_frames             //  15..0
 	}),
 	.source(probe_src)

@@ -41,8 +41,8 @@ Nothing released yet — no `.rbf` has been built. See Status.
 ## Installation
 
 * Take the latest `*.rbf` from `releases/` and put it in `_Arcade/cores`
-* Take the `*.mra` files from `releases/` and put them in `_Arcade` (or a subdirectory starting
-  with an underscore), **keeping the `_alternatives/` folder alongside them**. Parent sets sit at
+* Take the `*.mra` files from `releases/` and put them in `_Arcade/_Fuuki`, **keeping the
+  `_alternatives/` folder alongside them**. Parent sets sit at
   the top level and clones live in `_alternatives/_<game>/`, per the
   [MRA documentation](https://mister-devel.github.io/MkDocs_MiSTer/developer/mra/), so the menu
   lists one entry per game rather than one per ROM revision

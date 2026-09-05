@@ -48,6 +48,9 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/pause_control.sv
 # acquisition is GUI-only in Quartus Prime Lite 17.0.
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/debug/debug_counter.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/debug/issp_probe.sv
+# Trace buffer read out through the video output: 256 events per screenshot,
+# which is the only wide channel available when a 128-bit probe is not enough.
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/debug/debug_tracer.sv
 
 # The core proper, then the framework glue.
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/fuuki_core.sv

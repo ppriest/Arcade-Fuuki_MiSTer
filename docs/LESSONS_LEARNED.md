@@ -715,6 +715,34 @@ hierarchical access to the core's own `MCycle`/`TState`, not by "the test passes
   sweep through ROM look exactly like a read path dropping its high address bits, destroying the
   distinction between "progressing" and "stuck". If address and data do not fit together, use two
   buffers strobed by the same event so entry N of each describes the same bus cycle.
+- **[Fuuki] The framework applies the user's gamma LUT to the core's RGB before screenshots;
+  force it off under a debug overlay.** Trace entries drawn as 24-bit pixels came back remapped:
+  `0x40 -> 0x38`, `0x20 -> 0x1A`, `0x02 -> 0x01`, `0xBF -> 0xBA`, `0xFF -> 0xFF` -- a monotonic
+  per-channel curve, lossy at the low end. That looked like SDRAM data-lane corruption (walking
+  ones "smeared"), a quarter-period `SDRAM_CLK` phase change did not alter it, and the JTAG-read
+  values matched the ROM throughout. The cause was `preset_default=Display Specific/Sony PVM` in
+  the device's `MiSTer.ini`, whose preset sets `gamma=Pure_Gamma/gamma_110.txt`; every captured
+  row equalled `gamma_110(expected)` exactly once that LUT was applied (240/240 rows, two
+  patterns). `Fuuki.sv` now clears `gamma_bus[19]` (gamma_en, `sys/gamma_corr.sv`) whenever the
+  overlay is on, leaving the user's display settings alone. Draw the value and its bitwise
+  inverse in alternating bands (`scripts/tracer_readout.py`): the pair must XOR to `0xFFFFFF`
+  whatever the memory holds, so any transform in the capture path is detected rather than read as
+  data.
+- **[Fuuki] A testbench that models the memory the core instantiates cannot see the core's
+  indexing.** `sim/maincpu_tb` passed 84/84 boot fetches and its interrupt case, with its own
+  `BRAM` macro standing in for work RAM. The core's work RAM indexed `workram_addr[16:1]` -- a
+  word address halved again -- so consecutive words shared an entry. Nothing in the boot read RAM
+  back until the first `rte`, which popped SR = 0 and PC = 0, and the hardware ran user-mode code
+  at address 0 into vector 4. Found by freezing the trace ring on the first vector-2..4 read and
+  reading the 255 ROM fetches before it (`scripts/boot_trace.py --trig`): the address sequence
+  alone -- `rte` at `0xBFA` followed by a user-mode fetch at `0x000000` -- named the stack. Where
+  a testbench substitutes its own model for a block, add a check that runs the real block, or
+  treat that block as unverified.
+- **[Fuuki] `write_source_data -value` takes a binary string; pass `-value_in_hex`.** The ISSP
+  Tcl wrote `-value 8`, printed "source set to 8", and the source read back `00`: a decimal string
+  is silently rejected. Every page select, phase step and walker re-arm issued that way had been a
+  no-op, while `clear` worked by accident ("1" and "0" are valid binary). Read the source back
+  after every write and print it.
 - **VGA-colour-override builds answer yes/no hardware questions without a logic analyzer.**
   Overriding `VGA_R/G/B` with a solid colour gated by an internal signal turns "is this condition
   true on real hardware" into one unambiguous screenshot -- used to confirm the video datapath works

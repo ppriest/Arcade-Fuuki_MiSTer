@@ -16,22 +16,33 @@
 # Edit this to match the probe bus the core currently exports.
 set fields {
     {frames          0   15 dec}
-    {lines           16  31 dec}
-    {sprite_overruns 32  47 dec}
+    {core_resets     16  31 dec}
+    {phase_pos       32  47 sdec}
     {cpu_reads       48  63 dec}
     {last_rom_data   64  79 hex}
     {download_seen   80  80 bit}
     {ioctl_download  81  81 bit}
     {pause_latched   82  82 bit}
-    {board_fg3       83  83 bit}
+    {ring_frozen     83  83 bit}
     {last_rom_addr   84 104 hex}
     {dl_writes_256   105 120 dec}
+    {pll_unlock      121 121 bit}
+    {ioctl_dl_edges  122 127 dec}
 }
 
 # dl_writes vs download_seen is the pair that matters: download_seen says ioctl
 # bytes REACHED the core, dl_writes says the arbiter ACCEPTED them into SDRAM.
 # The first bitstream had download_seen=yes and would have had dl_writes=0,
 # because the memory path was held in reset for the whole transfer.
+#
+# max_dl_addr512 is the HIGHEST download address written, in 512-byte units:
+# multiply by 0x200 for the byte address. Unlike the trace buffer it has no
+# idle timeout, so a pause mid-download cannot make it look like the end.
+# A complete gogomile load must reach 0x1180000 -> 0x8C00 here.
+#
+# ring_frozen was labelled board_fg3 after the probe layout changed and the
+# label did not. It decoded an FG-2 game as an FG-3 board -- exactly the
+# "silently shifted field reads as plausible nonsense" this file warns about.
 #
 # dl_writes_256 counts download writes in units of 256. A COMPLETE gogomile
 # load is 9,175,040 word writes = 35,840 here; anything much lower means the
@@ -59,6 +70,11 @@ proc bits_to_int {s lo hi} {
 }
 
 set do_clear [expr {[lsearch -exact $argv "clear"] >= 0}]
+# `set N`   : write source byte N (decimal) and leave it
+# `pulse N` : write N, then 0 -- for the edge-triggered controls
+set set_val -1; set pulse_val -1
+set i [lsearch -exact $argv "set"];   if {$i >= 0} { set set_val   [lindex $argv [expr {$i+1}]] }
+set i [lsearch -exact $argv "pulse"]; if {$i >= 0} { set pulse_val [lindex $argv [expr {$i+1}]] }
 
 set hw ""
 foreach h [get_hardware_names] { if {$hw eq ""} { set hw $h } }
@@ -103,18 +119,26 @@ foreach f $fields {
     lassign $f name lo hi fmt
     set v [bits_to_int $raw $lo $hi]
     switch $fmt {
+        sdec { if {$v >= 32768} { set v [expr {$v - 65536}] }; puts [format "  %-16s %d" $name $v] }
         hex  { puts [format "  %-16s 0x%08X" $name $v] }
         bit  { puts [format "  %-16s %s"     $name [expr {$v ? "yes" : "no"}]] }
         default { puts [format "  %-16s %d"  $name $v] }
     }
 }
 
+# write_source_data takes a BINARY STRING unless -value_in_hex is given; a
+# decimal "8" is silently rejected (the source read back 00 while the script
+# printed "source set to 8"). Every write goes through this, in hex.
+proc write_src {idx v} { write_source_data -instance_index $idx -value [format %X $v] -value_in_hex }
+if {$set_val >= 0}   { write_src $idx $set_val;   puts "source set to $set_val (reads back 0x[read_source_data -instance_index $idx -value_in_hex])" }
+if {$pulse_val >= 0} { write_src $idx $pulse_val; write_src $idx 0; puts "source pulsed $pulse_val" }
+
 if {$do_clear} {
     # Source bit 0 is the counter clear, by convention. Pulse it: the counters
     # are deliberately NOT reset by the core's own reset (see
     # rtl/debug/debug_counter.sv), so this is the only thing that zeroes them.
-    write_source_data -instance_index $idx -value 1
-    write_source_data -instance_index $idx -value 0
+    write_src $idx 1
+    write_src $idx 0
     puts "\ncounters cleared"
 }
 
