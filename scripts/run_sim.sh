@@ -41,7 +41,16 @@ echo "--- vlog: RTL + testbench ---"
 # accepts that; ModelSim rejects it (vlog-2730). The file must stay UNTOUCHED
 # -- "vendor components untouched" -- so it is left out of simulation rather
 # than patched. It is still in files.qip and still synthesized.
-RTL=$(find rtl -name '*.sv'         -not -path '*/synth_check/*'         -not -name 'screen_rotate_two.sv' | sort)
+# Two deliberate exclusions:
+#   screen_rotate_two.sv    vendored MiSTer-devel code that references signals
+#                           before declaring them. Quartus accepts it, ModelSim
+#                           does not (vlog-2730), and it must stay UNTOUCHED --
+#                           so it is left out of simulation rather than patched.
+#                           It is still in files.qip and still synthesized.
+#   *_upstream_reference.sv pristine upstream copies kept beside the vendored
+#                           modules purely so the local changes can be diffed.
+#                           They are not part of any design.
+RTL=$(find rtl -name '*.sv'         -not -path '*/synth_check/*'         -not -name 'screen_rotate_two.sv'         -not -name '*_upstream_reference.sv' | sort)
 # shellcheck disable=SC2086
 "$MS/vlog.exe" -quiet -sv -work work $RTL "sim/$TB"/*.sv
 

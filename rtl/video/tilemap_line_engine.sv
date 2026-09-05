@@ -107,6 +107,14 @@ module tilemap_line_engine (
 	logic [3:0]  first_skip;    // pixels to discard from the first tile
 	logic signed [9:0] tile_x;  // screen x of the current tile's pixel 0
 
+	// How much of the first tile column is off the left edge, as a plain
+	// 10-bit unsigned. Named wires rather than an inline cast because
+	// Quartus 17.0's parser cannot read `-10'(expr)`: it lexes `10'` as the
+	// start of a sized literal, hits `(` where a base letter should be, and
+	// reports a syntax error four tokens later. See S_SETUP below.
+	wire [9:0] first_off16 = {6'd0, c_scroll_x[3:0]};
+	wire [9:0] first_off8  = {7'd0, c_scroll_x[2:0]};
+
 	// ---- current tile ----
 	logic [15:0] tile_code;
 	logic [15:0] tile_attr;
@@ -239,14 +247,24 @@ module tilemap_line_engine (
 
 			S_SETUP: begin
 				// First tile column and how much of it is off the left edge.
+				//
+				// Originally `-10'(signed'(...))`. Quartus 17.0 rejects BOTH
+				// halves of that -- the signed'() cast outright, and then
+				// `-10'(...)` for the lexing reason noted at first_off16 --
+				// while ModelSim accepts both -- so this module passed its
+				// testbench and only failed when it first met a synthesizer.
+				//
+				// The rewrite is bit-identical: the operand is 0..15 (or
+				// 0..7) with a clear top bit, so unary minus on the 10-bit
+				// value gives the same two's complement either way.
 				if (c_tile16) begin
 					tile_col   <= c_scroll_x[9:4];
 					first_skip <= c_scroll_x[3:0];
-					tile_x     <= -10'(signed'({6'd0, c_scroll_x[3:0]}));
+					tile_x     <= -first_off16;
 				end else begin
 					tile_col   <= c_scroll_x[8:3];
 					first_skip <= {1'b0, c_scroll_x[2:0]};
-					tile_x     <= -10'(signed'({7'd0, c_scroll_x[2:0]}));
+					tile_x     <= -first_off8;
 				end
 				st <= S_CODE;
 			end

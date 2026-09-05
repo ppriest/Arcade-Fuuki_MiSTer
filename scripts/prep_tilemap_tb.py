@@ -35,12 +35,15 @@ GOGOMILE = {
     1: (0x800000, [(0x000000, "pair32", ["lh5370h7.rom15", "lh5370h8.rom11"]),
                    (0x400000, "pair32", ["lh5370h9.rom16", "lh5370ha.rom12"])]),
     2: (0x200000, [(0x000000, "swap16", ["lh5370hb.rom19"])]),
+    # Sprites, stored under key "s". 16x16x4 on both boards.
+    "s": (0x200000, [(0x000000, "swap16", ["lh537k2r.rom20"])]),
 }
 PBANCHO = {
     0: (0x200000, [(0x000000, "swap16", ["60.rom3"])]),
     1: (0x400000, [(0x000000, "pair32", ["59.rom15", "61.rom11"])]),
     # MAME loads 60.rom3 here too, commented "?maybe?" -- see ROADMAP open item.
     2: (0x200000, [(0x000000, "swap16", ["60.rom3"])]),
+    "s": (0x200000, [(0x000000, "swap16", ["58.rom20"])]),
 }
 SETS = {"gogomile": GOGOMILE, "pbancho": PBANCHO}
 
@@ -75,7 +78,7 @@ def build(zpath, size, groups):
 def main():
     cap = Path(sys.argv[1] if len(sys.argv) > 1 else "debug/gogomile-title")
     game = sys.argv[2] if len(sys.argv) > 2 else "gogomile"
-    out = Path("sim/tilemap_tb")
+    out = Path("sim/tilemap_tb")   # shared by the tilemap and sprite benches
     out.mkdir(parents=True, exist_ok=True)
 
     vregs = (cap / "fg2_vregs.bin").read_bytes()
@@ -97,7 +100,7 @@ def main():
     }
     l2_buffer = (w(15) >> 6) & 1
 
-    for f in ("vram", "palette"):
+    for f in ("vram", "palette", "spriteram", "priority"):
         (out / f"{f}.bin").write_bytes((cap / f"fg2_{f}.bin").read_bytes())
 
     spec = SETS[game]

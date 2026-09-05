@@ -1,0 +1,554 @@
+// The whole Fuuki core below the MiSTer framework glue: CPU, work/video RAM,
+// the three tilemap layers, the sprite path, the compositor and the SDRAM
+// backend. Fuuki.sv wires this to hps_io, the PLL and arcade_video and does
+// nothing else of substance.
+//
+// The split is deliberate. Everything here is testable in ModelSim against
+// MAME captures; everything in Fuuki.sv needs a DE10-nano to exercise. Keeping
+// framework glue out of this file is what lets sim/video_tb drive the same
+// modules the bitstream does.
+//
+// ---------------------------------------------------------------------------
+// TWO RESET DOMAINS, AND THIS IS NOT OPTIONAL.
+//
+//   `reset`      reset & ~ioctl_download. Feeds the SDRAM backend ONLY.
+//   `init`       ~pll_locked. The SDRAM chip's own power-up sequence.
+//   `core_reset` reset | ioctl_download. Feeds the CPU and the video pipeline.
+//
+// The MASK on the first one is the part that is easy to get wrong, and the
+// first Fuuki bitstream did get it wrong: `reset` was passed through with the
+// framework's RESET still in it.
+//
+// MiSTer holds core RESET asserted for the ENTIRE ROM download. Anything in
+// the memory path gated by a reset that includes the download is dead for the
+// whole transfer: Psikyo passed a composite reset into its SDRAM top, the
+// download FSM sat in idle while the HPS delivered every byte, not one write
+// reached the chip, and every later read returned power-up contents
+// (LESSONS_LEARNED, "Never hold the memory path in the core reset"). The
+// symptom was a black screen with nothing pointing at memory.
+// ---------------------------------------------------------------------------
+//
+// ONE .rbf SERVES BOTH BOARDS. `board_fg3` comes from the .mra mod byte and
+// picks the CPU mode, the tile depths, the colour shift and the sprite
+// buffering. It is a runtime input, never a parameter.
+
+module fuuki_core (
+	input  logic clk,          // 85.909091 MHz
+	input  logic ce_pix,       // clk/12 = 7.159091 MHz
+	// SDRAM path only, and it must be MASKED OFF during the download:
+	// pass `reset & ~ioctl_download`, never the framework's RESET. See
+	// fuuki_sdram_top.sv's port comment for what happens otherwise.
+	input  logic reset,
+	// SDRAM chip power-up init, separate from any core reset: `~pll_locked`.
+	input  logic init,
+	input  logic core_reset,   // reset | ioctl_download: CPU and video
+
+	// ---- board select, from the .mra mod byte ----
+	input  logic board_fg3,
+	input  logic sysport_alt,  // pbancho/asura SYSTEM layout (see Fuuki.sv)
+
+	// ---- SDRAM pins ----
+	output logic [12:0] SDRAM_A,
+	inout  wire  [15:0] SDRAM_DQ,
+	output logic        SDRAM_DQML,
+	output logic        SDRAM_DQMH,
+	output logic [1:0]  SDRAM_BA,
+	output logic        SDRAM_nCS,
+	output logic        SDRAM_nWE,
+	output logic        SDRAM_nRAS,
+	output logic        SDRAM_nCAS,
+	output logic        SDRAM_CKE,
+
+	// ---- HPS ROM download ----
+	input  logic        ioctl_download,
+	input  logic [15:0] ioctl_index,
+	input  logic        ioctl_wr,
+	input  logic [24:0] ioctl_addr,
+	input  logic [7:0]  ioctl_dout,
+	output logic        ioctl_wait,
+
+	// ---- inputs, already assembled into the driver's port words ----
+	input  logic [15:0] system_in,
+	input  logic [15:0] p1p2_in,
+	input  logic [15:0] dsw_in,
+	input  logic [15:0] dsw2_in,
+
+	input  logic        pause_cpu,
+
+	// ---- per-layer enables, for bisecting a rendering fault live ----
+	input  logic        en_l0, en_l1, en_l2, en_spr,
+
+	// ---- video out, 2 clocks behind hcnt (see the output stage) ----
+	output logic [7:0]  video_r,
+	output logic [7:0]  video_g,
+	output logic [7:0]  video_b,
+	output logic        video_hs,
+	output logic        video_vs,
+	output logic        video_hb,
+	output logic        video_vb,
+	output logic        video_ce,
+
+	// ---- for the JTAG probe ----
+	output logic        dbg_frame_start,
+	output logic        dbg_line_start,
+	output logic        dbg_spr_ovr,
+	output logic        dbg_cpu_req,
+	output logic        dbg_gfx_req,
+	output logic [20:0] dbg_rom_addr,
+	output logic        dbg_rom_valid,
+	output logic [15:0] dbg_rom_data,
+	output logic        dbg_dl_wr
+);
+
+	// =====================================================================
+	// Video timing
+	// =====================================================================
+	logic [8:0] hcnt, vcnt, vcnt_next, vcnt_next2;
+	logic       h_active, v_active, hblank, vblank, hsync, vsync;
+	logic       line_start, frame_start;
+	logic       irq1_trig, irq3_trig, irq5_trig;
+	logic [8:0] raster_line;
+
+	video_timing u_vt (
+		.clk(clk), .ce_pix(ce_pix), .reset(core_reset),
+		.raster_line(raster_line),
+		.hcnt(hcnt), .vcnt(vcnt), .vcnt_next(vcnt_next), .vcnt_next2(vcnt_next2),
+		.h_active(h_active), .v_active(v_active),
+		.hblank(hblank), .vblank(vblank), .hsync(hsync), .vsync(vsync),
+		.line_start(line_start), .frame_start(frame_start),
+		.irq1_trig(irq1_trig), .irq3_trig(irq3_trig), .irq5_trig(irq5_trig)
+	);
+
+	assign dbg_frame_start = frame_start;
+	assign dbg_line_start  = line_start;
+
+	// =====================================================================
+	// Main CPU
+	// =====================================================================
+	logic         rom_req, rom_valid;
+	logic [20:0]  rom_addr;
+	logic [15:0]  rom_data;
+
+	logic [16:0]  workram_addr;
+	logic         workram_wel, workram_weh;
+	logic [15:0]  workram_wdata, workram_rdata;
+
+	logic [13:0]  vram_addr;
+	logic         vram_wel, vram_weh;
+	logic [15:0]  vram_wdata, vram_rdata;
+
+	logic [11:0]  spriteram_addr;
+	logic         spriteram_wel, spriteram_weh;
+	logic [15:0]  spriteram_wdata, spriteram_rdata;
+
+	logic [12:0]  palette_addr;
+	logic         palette_wel, palette_weh;
+	logic [15:0]  palette_wdata, palette_rdata;
+
+	logic [4:0]   vregs_addr;
+	logic [1:0]   vregs_sel;
+	logic         vregs_wel, vregs_weh;
+	logic [15:0]  vregs_wdata, vregs_rdata;
+
+	logic [3:0]   sharedram_addr;
+	logic         sharedram_we;
+	logic [7:0]   sharedram_wdata, sharedram_rdata;
+
+	logic [7:0]   latch_data;
+	logic         latch_write;
+	logic [31:0]  tilebank;
+
+	maincpu u_cpu (
+		.clk(clk), .reset(core_reset),
+		.board_fg3(board_fg3),
+		.rom_req(rom_req), .rom_addr(rom_addr),
+		.rom_valid(rom_valid), .rom_data(rom_data),
+		.workram_addr(workram_addr),
+		.workram_wel(workram_wel), .workram_weh(workram_weh),
+		.workram_wdata(workram_wdata), .workram_rdata(workram_rdata),
+		.vram_addr(vram_addr),
+		.vram_wel(vram_wel), .vram_weh(vram_weh),
+		.vram_wdata(vram_wdata), .vram_rdata(vram_rdata),
+		.spriteram_addr(spriteram_addr),
+		.spriteram_wel(spriteram_wel), .spriteram_weh(spriteram_weh),
+		.spriteram_wdata(spriteram_wdata), .spriteram_rdata(spriteram_rdata),
+		.palette_addr(palette_addr),
+		.palette_wel(palette_wel), .palette_weh(palette_weh),
+		.palette_wdata(palette_wdata), .palette_rdata(palette_rdata),
+		.vregs_addr(vregs_addr), .vregs_sel(vregs_sel),
+		.vregs_wel(vregs_wel), .vregs_weh(vregs_weh),
+		.vregs_wdata(vregs_wdata), .vregs_rdata(vregs_rdata),
+		.sharedram_addr(sharedram_addr), .sharedram_we(sharedram_we),
+		.sharedram_wdata(sharedram_wdata), .sharedram_rdata(sharedram_rdata),
+		.system_in(system_in), .p1p2_in(p1p2_in),
+		.dsw_in(dsw_in), .dsw2_in(dsw2_in),
+		.latch_data(latch_data), .latch_write(latch_write),
+		.tilebank(tilebank),
+		.irq1_trig(irq1_trig), .irq3_trig(irq3_trig), .irq5_trig(irq5_trig),
+		.pause(pause_cpu)
+	);
+
+	assign dbg_cpu_req   = rom_req;
+	assign dbg_rom_addr  = rom_addr;
+	assign dbg_rom_valid = rom_valid;
+	assign dbg_rom_data  = rom_data;
+
+	// No sound hardware yet, so the FG-2 latch and the FG-3 shared RAM go
+	// nowhere. Reading back zero is what a silent board looks like; the Z80
+	// side is Phase 3.
+	assign sharedram_rdata = 8'h00;
+
+	// =====================================================================
+	// Work RAM -- 64K x 16, one array serves both boards
+	// =====================================================================
+	logic [15:0] workram [0:65535];
+	always_ff @(posedge clk) begin
+		if (workram_wel) workram[workram_addr[16:1]][7:0]  <= workram_wdata[7:0];
+		if (workram_weh) workram[workram_addr[16:1]][15:8] <= workram_wdata[15:8];
+		workram_rdata <= workram[workram_addr[16:1]];
+	end
+
+	// =====================================================================
+	// Tilemap VRAM -- 16K x 16, FOUR readers
+	//
+	// The CPU and the three layer engines all read this, and every engine
+	// needs its own registered single-cycle read (that is the contract in
+	// tilemap_line_engine.sv). Rather than arbitrate -- which would break
+	// that contract and stall the engines against each other -- the array is
+	// MIRRORED: every write goes to all four copies, and each reader owns
+	// one. Quartus infers four simple dual-port M10K blocks.
+	//
+	// The cost is 1 Mbit of the device's 5.5. It could be cut to a quarter,
+	// because engine 0 only ever reads bank 0, engine 1 bank 1 and engine 2
+	// banks 2/3 -- but that means slicing the address per copy, and a first
+	// bitstream is the wrong place to trade a correctness risk for BRAM
+	// there is no shortage of.
+	// =====================================================================
+	logic [13:0] tm_vaddr [0:2];
+	logic [15:0] tm_vdata [0:2];
+
+	logic [15:0] vram_cpu [0:16383];
+	logic [15:0] vram_l0  [0:16383];
+	logic [15:0] vram_l1  [0:16383];
+	logic [15:0] vram_l2  [0:16383];
+
+	always_ff @(posedge clk) begin
+		if (vram_wel) begin
+			vram_cpu[vram_addr][7:0] <= vram_wdata[7:0];
+			vram_l0 [vram_addr][7:0] <= vram_wdata[7:0];
+			vram_l1 [vram_addr][7:0] <= vram_wdata[7:0];
+			vram_l2 [vram_addr][7:0] <= vram_wdata[7:0];
+		end
+		if (vram_weh) begin
+			vram_cpu[vram_addr][15:8] <= vram_wdata[15:8];
+			vram_l0 [vram_addr][15:8] <= vram_wdata[15:8];
+			vram_l1 [vram_addr][15:8] <= vram_wdata[15:8];
+			vram_l2 [vram_addr][15:8] <= vram_wdata[15:8];
+		end
+		vram_rdata  <= vram_cpu[vram_addr];
+		tm_vdata[0] <= vram_l0[tm_vaddr[0]];
+		tm_vdata[1] <= vram_l1[tm_vaddr[1]];
+		tm_vdata[2] <= vram_l2[tm_vaddr[2]];
+	end
+
+	// =====================================================================
+	// Palette -- 8192 x xRGB-555, CPU read/write plus the compositor's read
+	// =====================================================================
+	logic [12:0] pal_rd_addr;
+	logic [15:0] pal_rd_data;
+
+	logic [15:0] pal_cpu [0:8191];
+	logic [15:0] pal_vid [0:8191];
+
+	always_ff @(posedge clk) begin
+		if (palette_wel) begin
+			pal_cpu[palette_addr][7:0] <= palette_wdata[7:0];
+			pal_vid[palette_addr][7:0] <= palette_wdata[7:0];
+		end
+		if (palette_weh) begin
+			pal_cpu[palette_addr][15:8] <= palette_wdata[15:8];
+			pal_vid[palette_addr][15:8] <= palette_wdata[15:8];
+		end
+		palette_rdata <= pal_cpu[palette_addr];
+		pal_rd_data   <= pal_vid[pal_rd_addr];
+	end
+
+	// =====================================================================
+	// Video registers
+	// =====================================================================
+	logic [15:0] layer_scrollx [0:2];
+	logic [15:0] layer_scrolly [0:2];
+	logic        flip, layer2_buffer;
+	logic [1:0]  tmap_front, tmap_middle, tmap_back;
+
+	vregs u_vregs (
+		.clk(clk), .reset(core_reset),
+		.board_fg3(board_fg3),
+		.cpu_addr(vregs_addr), .cpu_sel(vregs_sel),
+		.cpu_wel(vregs_wel), .cpu_weh(vregs_weh),
+		.cpu_wdata(vregs_wdata), .cpu_rdata(vregs_rdata),
+		.layer0_scrollx(layer_scrollx[0]), .layer0_scrolly(layer_scrolly[0]),
+		.layer1_scrollx(layer_scrollx[1]), .layer1_scrolly(layer_scrolly[1]),
+		.layer2_scrollx(layer_scrollx[2]), .layer2_scrolly(layer_scrolly[2]),
+		.flip(flip), .layer2_buffer(layer2_buffer), .raster_line(raster_line),
+		.tmap_front(tmap_front), .tmap_middle(tmap_middle), .tmap_back(tmap_back)
+	);
+
+	// =====================================================================
+	// Per-layer configuration.
+	//
+	// Straight from each driver's GFXDECODE and video_start(), and the same
+	// table scripts/prep_tilemap_tb.py writes for the testbench -- the two
+	// must agree or the bitstream renders differently from the thing that
+	// was diffed against MAME's screenshot.
+	//
+	//             layer 0        layer 1        layer 2
+	//   FG-2      16x16x4        16x16x8        8x8x4
+	//             gran 16        gran 16 (*)    gran 16
+	//             trans 0x0f     trans 0xff     trans 0x0f
+	//
+	//   FG-3      16x16x8        16x16x8        8x8x4
+	//             gran 256       gran 256       gran 16
+	//             colour >>= 4   colour >>= 4   colour as-is
+	//             trans 0xff     trans 0xff     trans 0x0f
+	//
+	// (*) FG-2's layer 1 is 8bpp with granularity SIXTEEN, set explicitly by
+	//     gfx(1)->set_granularity(16). The pen legitimately exceeds the
+	//     granularity and must never be masked.
+	// =====================================================================
+	wire [2:0] cfg_tile16 = 3'b011;                       // layers 0,1 are 16x16
+	wire [2:0] cfg_bpp8   = board_fg3 ? 3'b011 : 3'b010;  // FG-2: layer 1 only
+	wire [2:0] cfg_gran256= board_fg3 ? 3'b011 : 3'b000;
+	wire [2:0] cfg_shift4 = board_fg3 ? 3'b011 : 3'b000;
+
+	// gfx_base is 0 for every layer: fuuki_sdram_top adds BASE_TILES_Lx on
+	// its own side, so an offset here would be applied twice.
+	localparam logic [12:0] PAL_BASE [0:2] = '{13'h0000, 13'h0400, 13'h0C00};
+
+	// =====================================================================
+	// Three tilemap layers
+	// =====================================================================
+	logic        tm_req   [0:2];
+	logic [24:0] tm_addr  [0:2];
+	logic        tm_valid [0:2];
+	logic [63:0] tm_data  [0:2];
+	logic        tm_we    [0:2];
+	logic [8:0]  tm_wx    [0:2];
+	logic [13:0] tm_wd    [0:2];
+	logic        tm_busy  [0:2], tm_done [0:2];
+	logic [13:0] tm_rd    [0:2];
+	logic        tm_ready [0:2];
+	logic        tm_ready_d [0:2], tm_ready_rise [0:2];
+
+	always_ff @(posedge clk) begin
+		for (int i = 0; i < 3; i++) begin
+			tm_ready_d[i]    <= tm_ready[i];
+			tm_ready_rise[i] <= tm_ready[i] && !tm_ready_d[i];
+		end
+	end
+
+	assign dbg_gfx_req = tm_req[0];
+
+	genvar g;
+	generate
+		for (g = 0; g < 3; g++) begin : layer
+			// Start on the line buffer's READY edge, not on line_start, and
+			// render vcnt_next2 -- exactly as sim/video_tb wires it, because
+			// that is the configuration whose composed frame was diffed
+			// against MAME's screenshot. Starting at line_start puts the
+			// engine's first ~320 writes inside the buffer's clear pass,
+			// where the clear owns the write port and they vanish.
+			//
+			// NOTE video_timing.sv's header prescribes vcnt_next for tilemaps
+			// and vcnt_next2 only for sprites. The ready-edge start costs the
+			// extra line, which is why both use vcnt_next2 here. If the rows
+			// land one scanline off on hardware, that is the knob -- and it
+			// is visible as tilemaps and sprites moving TOGETHER, not apart.
+			tilemap_line_engine u_tm (
+				.clk(clk), .reset(core_reset),
+				.line_start(tm_ready_rise[g]), .render_line(vcnt_next2),
+				.busy(tm_busy[g]), .done(tm_done[g]),
+				.vram_bank(g[1:0] == 2'd2 ? {1'b1, layer2_buffer} : g[1:0]),
+				.tile16(cfg_tile16[g]), .bpp8(cfg_bpp8[g]),
+				.colour_shift4(cfg_shift4[g]), .gran256(cfg_gran256[g]),
+				.pal_base(PAL_BASE[g]),
+				.trans_pen(cfg_bpp8[g] ? 8'hFF : 8'h0F),
+				.gfx_base(25'd0),
+				.scroll_x(layer_scrollx[g]), .scroll_y(layer_scrolly[g]),
+				.flip(flip),
+				.vram_addr(tm_vaddr[g]), .vram_data(tm_vdata[g]),
+				.gfx_req(tm_req[g]), .gfx_addr(tm_addr[g]),
+				.gfx_valid(tm_valid[g]), .gfx_data(tm_data[g]),
+				.lb_we(tm_we[g]), .lb_x(tm_wx[g]), .lb_data(tm_wd[g])
+			);
+
+			line_buffer #(.WIDTH(14)) u_lb (
+				.clk(clk), .reset(core_reset),
+				.line_start(line_start), .ready(tm_ready[g]),
+				.we(tm_we[g]), .wx(tm_wx[g]), .wdata(tm_wd[g]),
+				.rx(hcnt), .rdata(tm_rd[g])
+			);
+		end
+	endgenerate
+
+	// =====================================================================
+	// Sprite path: buffered RAM -> once-per-frame candidate list -> per-line
+	// engine -> double-buffered line buffer.
+	// =====================================================================
+	logic        copy_busy, copy_busy_d;
+	logic [11:0] sr_addr;
+	logic [15:0] sr_data;
+	logic [31:0] tilebank_render;
+
+	spriteram_dbuf u_sdbuf (
+		.clk(clk), .reset(core_reset),
+		.board_fg3(board_fg3),
+		.cpu_addr(spriteram_addr),
+		.cpu_wel(spriteram_wel), .cpu_weh(spriteram_weh),
+		.cpu_wdata(spriteram_wdata), .cpu_rdata(spriteram_rdata),
+		.tilebank_live(tilebank), .tilebank_render(tilebank_render),
+		.copy_start(frame_start), .copy_busy(copy_busy),
+		.rd_addr(sr_addr), .rd_data(sr_data)
+	);
+
+	// FG-2 draws from live sprite RAM, so spriteram_dbuf never asserts
+	// copy_busy and the list can build straight off frame_start. FG-3 takes a
+	// real snapshot first, and the list must not read across it.
+	always_ff @(posedge clk) copy_busy_d <= copy_busy;
+	wire copy_done  = copy_busy_d && !copy_busy;
+	wire build_start = board_fg3 ? copy_done : frame_start;
+
+	logic        build_busy;
+	logic [10:0] n_entries;
+	logic [9:0]  yt_addr, rec_addr;
+	logic [18:0] yt_data;
+	logic [63:0] rec_data;
+
+	sprite_line_list u_list (
+		.clk(clk), .reset(core_reset),
+		.build_start(build_start), .build_busy(build_busy), .n_entries(n_entries),
+		.sr_addr(sr_addr), .sr_data(sr_data),
+		.yt_addr(yt_addr), .yt_data(yt_data),
+		.rec_addr(rec_addr), .rec_data(rec_data)
+	);
+
+	logic        spr_busy, spr_ovr;
+	logic        spr_req, spr_valid;
+	logic [24:0] spr_addr;
+	logic [63:0] spr_gdata;
+	logic        spr_we;
+	logic [8:0]  spr_wx;
+	logic [15:0] spr_wd, spr_rd;
+	logic        spr_ready, spr_ready_d, spr_ready_rise;
+
+	always_ff @(posedge clk) begin
+		spr_ready_d    <= spr_ready;
+		spr_ready_rise <= spr_ready && !spr_ready_d;
+	end
+
+	assign dbg_spr_ovr = spr_ovr;
+
+	sprite_line_engine u_spr (
+		.clk(clk), .reset(core_reset),
+		.line_tick(line_start),
+		.line_start(spr_ready_rise && !build_busy),
+		.render_line(vcnt_next2),
+		.busy(spr_busy), .ovr_ev(spr_ovr),
+		.board_fg3(board_fg3), .tilebank(tilebank_render), .gfx_base(25'd0),
+		.n_entries(n_entries),
+		.yt_addr(yt_addr), .yt_data(yt_data),
+		.rec_addr(rec_addr), .rec_data(rec_data),
+		.gfx_req(spr_req), .gfx_addr(spr_addr),
+		.gfx_valid(spr_valid), .gfx_data(spr_gdata),
+		.lb_we(spr_we), .lb_x(spr_wx), .lb_data(spr_wd)
+	);
+
+	line_buffer #(.WIDTH(16)) u_spr_lb (
+		.clk(clk), .reset(core_reset),
+		.line_start(line_start), .ready(spr_ready),
+		.we(spr_we), .wx(spr_wx), .wdata(spr_wd),
+		.rx(hcnt), .rdata(spr_rd)
+	);
+
+	// =====================================================================
+	// Compositor and palette lookup
+	// =====================================================================
+	logic [2:0] dbg_pri;
+
+	compositor u_comp (
+		.l0(tm_rd[0]), .l1(tm_rd[1]), .l2(tm_rd[2]),
+		.spr(spr_rd),
+		.tmap_front(tmap_front), .tmap_middle(tmap_middle), .tmap_back(tmap_back),
+		.en_l0(en_l0), .en_l1(en_l1), .en_l2(en_l2), .en_spr(en_spr),
+		.pal_addr(pal_rd_addr), .dbg_pri(dbg_pri)
+	);
+
+	// =====================================================================
+	// Output stage.
+	//
+	// The pixel path is TWO registered reads deep -- the line buffers, then
+	// the palette -- so the colour for hcnt appears two clocks later. The
+	// blanking, sync and pixel enable are delayed by the same two clocks so
+	// the scaler sees them paired. Getting this wrong shifts the picture by
+	// two clk_sys (a sixth of a pixel) and, worse, samples the wrong side of
+	// a blanking edge.
+	//
+	// xRGB-555 as MAME decodes it: palette_device::xRGB_555 is
+	// standard_rgb_decoder<5,5,5, 10,5,0>, so bits 14:10 are RED, 9:5 green,
+	// 4:0 blue. pal5bit() replicates the top 3 bits into the low byte, which
+	// is what makes white actually reach 0xFF.
+	// =====================================================================
+	function automatic [7:0] pal5bit(input [4:0] v);
+		pal5bit = {v, v[4:2]};
+	endfunction
+
+	logic [1:0] q_hs, q_vs, q_hb, q_vb, q_ce;
+	always_ff @(posedge clk) begin
+		q_hs <= {q_hs[0], hsync};
+		q_vs <= {q_vs[0], vsync};
+		q_hb <= {q_hb[0], hblank};
+		q_vb <= {q_vb[0], vblank};
+		q_ce <= {q_ce[0], ce_pix};
+	end
+
+	assign video_r  = pal5bit(pal_rd_data[14:10]);
+	assign video_g  = pal5bit(pal_rd_data[9:5]);
+	assign video_b  = pal5bit(pal_rd_data[4:0]);
+	assign video_hs = q_hs[1];
+	assign video_vs = q_vs[1];
+	assign video_hb = q_hb[1];
+	assign video_vb = q_vb[1];
+	assign video_ce = q_ce[1];
+
+	// =====================================================================
+	// SDRAM backend
+	//
+	// `reset` here is the DOWNLOAD-MASKED reset, not `core_reset` and not the
+	// framework's RESET -- see this file's header and the port comment in
+	// fuuki_sdram_top.sv.
+	// =====================================================================
+	fuuki_sdram_top u_sdram (
+		.clk(clk), .reset(reset), .init(init),
+		.SDRAM_A(SDRAM_A), .SDRAM_DQ(SDRAM_DQ),
+		.SDRAM_DQML(SDRAM_DQML), .SDRAM_DQMH(SDRAM_DQMH),
+		.SDRAM_BA(SDRAM_BA), .SDRAM_nCS(SDRAM_nCS), .SDRAM_nWE(SDRAM_nWE),
+		.SDRAM_nRAS(SDRAM_nRAS), .SDRAM_nCAS(SDRAM_nCAS), .SDRAM_CKE(SDRAM_CKE),
+		.ioctl_download(ioctl_download), .ioctl_index(ioctl_index),
+		.ioctl_wr(ioctl_wr), .ioctl_addr(ioctl_addr), .ioctl_dout(ioctl_dout),
+		.ioctl_wait(ioctl_wait),
+		.tm0_req(tm_req[0]), .tm0_addr(tm_addr[0]),
+		.tm0_valid(tm_valid[0]), .tm0_data(tm_data[0]),
+		.tm1_req(tm_req[1]), .tm1_addr(tm_addr[1]),
+		.tm1_valid(tm_valid[1]), .tm1_data(tm_data[1]),
+		.tm2_req(tm_req[2]), .tm2_addr(tm_addr[2]),
+		.tm2_valid(tm_valid[2]), .tm2_data(tm_data[2]),
+		.spr_req(spr_req), .spr_addr(spr_addr),
+		.spr_valid(spr_valid), .spr_data(spr_gdata),
+		// rom_addr is a WORD address; the backend takes an even BYTE address
+		// and adds BASE_MAINCPU itself.
+		.cpu_req(rom_req), .cpu_addr(25'({rom_addr, 1'b0})),
+		.cpu_valid(rom_valid), .cpu_data(rom_data),
+		.dbg_dl_wr(dbg_dl_wr)
+	);
+
+endmodule

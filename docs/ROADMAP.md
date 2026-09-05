@@ -145,8 +145,119 @@ Two things this test caught that nothing else would have:
 - The whole 8bpp path -- the four-groups-of-four-bytes layout, granularity 16 with pens that
   legitimately exceed it -- is confirmed by the logo rendering with correct gradients.
 
-Still to build: the sprite path, the compositor, the SDRAM backend, sound, `.mra` files, and a
-whole-core bitstream. Flip screen is not yet honoured by the engine (the port exists).
+**The whole video pipeline now runs end to end and is measured against MAME.** `sim/video_tb/`
+wires three `tilemap_line_engine` + `line_buffer` pairs, the full sprite path
+(`spriteram_dbuf` -> `sprite_line_list` -> `sprite_line_engine` -> `line_buffer`) and the
+`compositor` against a captured frame, and diffs the composed output against the screenshot MAME
+rendered from that same state:
+
+**86.4% of pixels match exactly.** Broken down by which layer is visible at each pixel:
+
+| Visible source | Pixels | Mismatched |
+|---|---|---|
+| front (layer 1, the logo) | 35,029 | 300 (**0.9%**) |
+| back (layer 0, sky and ground) | 34,391 | 3,027 (8.8%) |
+| middle (layer 2, clouds) | 7,380 | 5,708 (**77.3%**) |
+
+The sprite path is separately confirmed exact: it renders the fairy and "CREDIT 0" at the
+positions an independent Python decode of the captured spriteram predicts, with zero line
+overruns at a real 456 x 262 cadence.
+
+Two bugs this test found that nothing cheaper would have:
+
+- **Tilemap layers needed `vcnt+2`, not `vcnt+1`.** Psikyo's rule was tilemaps +1, sprites +2,
+  because there its tilemaps fed the compositor directly. Here they have line buffers too, so they
+  need the same two lines of lead. The symptom was a one-line vertical offset that showed up as
+  horizontal stripes in the diff, and fixing it took the match from 56.0% to 89.0%.
+- **A function called from a continuous assignment does not re-evaluate when the signals it reads
+  change** -- only when its arguments do. The compositor's layer-role selector was written that
+  way and produced X for an entire frame, latched from before the line buffers were first
+  written. Now explicit `always_comb`. It is also implementation-dependent, so it could equally
+  have "worked" in simulation and failed in synthesis.
+
+### Resolved: layer 2's "wrong" scroll was the testbench, not the RTL (2026-09-05)
+
+Layer 2 was the one part that did not match, and the cause turned out to be the most important
+confirmation in the project so far: **gogomile raster-scrolls layer 2 into five horizontal parallax
+bands, rewriting its scroll register mid-frame from the level-5 interrupt.** The RTL is correct;
+the testbench was feeding one static scroll for the whole frame, which no single value can satisfy.
+
+`scripts/mame_capture.py --vreglog` shows the shape directly. One frame:
+
+| written | while raster reg was | applies to rows |
+|---|---|---|
+| `0x0290` (previous frame, vblank ISR, raster chain disabled) | `FFFE` | 0-28 |
+| `0x0148` | `0x1D` = 29 | 29-62 |
+| `0x00A4` | `0x3F` = 63 | 63-87 |
+| `0x0052` | `0x58` = 88 | 88-117 |
+| `0x0029` | `0x76` = 118 | 118-end |
+
+Each ISR sets the next band's scroll and arms the following raster line, finishing with `0xFFFE`
+to disable the chain until the next vblank.
+
+**The proof is that each row band's empirically best scroll equals a written value exactly**, with
+`layer2_xoffs` (`+0x10`) applied and wrapped on the 512-pixel map:
+
+| rows | best scroll found | written value |
+|---|---|---|
+| 0-28 | 160 | `(0x290 + 0x10) mod 512` |
+| 29-62 | 344 | `0x148 + 0x10` |
+| 63-87 | 180 | `0x00A4 + 0x10` |
+| 88-117 | 98 | `0x0052 + 0x10` |
+| 118+ | 57 | `0x0029 + 0x10` |
+
+Four separate values, four exact hits, plus the top band matching the *previous* frame's vblank
+write. That is not a coincidence, and it also confirms `layer2_xoffs` and the 512-pixel wrap.
+
+What this settles, beyond the bug:
+
+- **Per-scanline rendering with live register sampling is mandatory, not stylistic.** This roadmap
+  said so from the driver's to-do list; here is a game doing it on a title screen, on a layer, four
+  times a frame. A renderer that samples scroll once per frame cannot draw this screen at all.
+- **The earlier 86.4% figure understates the pipeline.** It was measured with static per-frame
+  configuration, which is wrong for any raster-scrolled layer by construction.
+
+Remaining work is a TESTBENCH feature, not an RTL fix: `sim/video_tb/` needs to replay the captured
+vreg write log at the scanline each write actually occurred on, instead of latching one value per
+frame. Feeding the five bands by hand takes layer 2 from 0.0% on the top band to 58% overall, with
+the residual being band-boundary placement -- the exact line at which each write takes effect,
+which only a real replay can get right.
+
+**The SDRAM backend is built and verified.** `rtl/memory/fuuki_sdram_top.sv` puts every runtime
+ROM on the one physical chip, and `sim/sdram_tb/` proves a real HPS download and read back through
+every client port against a command-decoding chip model -- 16 raw granules and 64 CPU words
+byte-exact, all four graphics ports concurrent without deadlock, and the CPU still correct under
+graphics contention.
+
+Port assignment, which is the only bandwidth knob available (the three "ports" are logical, time
+multiplexed onto one chip, with FIXED priority 0 > 1 > 2):
+
+| Port | Clients | Why |
+|---|---|---|
+| 0 | three tilemap graphics streams | hardest deadline -- a late granule corrupts the scanline being built |
+| 1 | sprite graphics | per-scanline, but a line of slack from rendering into a buffer |
+| 2 | main CPU + HPS download | starving it slows the game, which degrades gracefully |
+
+Two real bugs, both of the silent kind:
+
+- **Mismatched request contracts.** The tilemap and sprite engines emit a one-cycle PULSE (what
+  `sdram_narrow_bridge` wants); a round-robin scan wants a LEVEL held until acknowledged. Each
+  shape fails silently in the other's arbiter -- a pulse is never seen, a level is re-issued and
+  its duplicate's reply is delivered as the answer to the NEXT request. The arbiter now captures
+  the RISING EDGE, which serves both: a pulse presents one edge and so does a held level.
+- **68k byte order at the transport seam.** The download packs byte pairs as `{odd, even}`, so
+  SDRAM holds little-endian words, which is right for genuinely little-endian regions and wrong
+  for a 68k program image. A swap adapter sits at the CPU port only, rather than changing the
+  bridge's convention for its other callers.
+
+Worth recording how the first one presented, because it wasted three speculative fixes: a
+one-transaction read lag is **invisible wherever consecutive granules hold the same bytes**. It hid
+in 62 of 64 words of a vector table full of `0xFFFF` and surfaced only on the two words where the
+content changed. Reading each granule twice and using the second answer is what separated "the
+chip holds the wrong data" from "the handoff is stale" in one step -- worth reaching for early.
+
+Still to build: sound, `.mra` files, and a whole-core bitstream. Flip screen is
+not yet honoured by the tilemap or sprite engines (the ports exist).
 
 Hardware facts below are read directly from the MAME drivers, not recalled.
 
@@ -512,7 +623,8 @@ commit, licence and any integration notes. That is Psikyo's convention, and the 
 | YM2203 (FG-2) | **jt03** (`jt12` repo, GPL-3.0) — `cen`, `irq_n`, separate and combined PSG+FM outputs | github.com/jotego/jt12 |
 | YM3812 / OPL2 (FG-2) | **jtopl2** (`jtopl` repo, GPL-3.0) — `jtopl #(.OPL_TYPE(2))`, has `cen` and `irq_n`, which FG-2 needs for the Z80 INT line | github.com/jotego/jtopl |
 | OKI M6295 (FG-2) | **jt6295** (GPL-3.0) — 18-bit `rom_addr` = 256 KB, matching gogomile's 4 x `0x40000` banking exactly | github.com/jotego/jt6295 |
-| YMF278B / OPL4 (FG-3) | **No third-party core exists.** Psikyo has a from-scratch one: full bus protocol, timers/IRQ, and the 24-channel PCM wavetable engine working on hardware; **FM synthesis was milestone 2 and is not built**. Whether FG-3 needs the FM half must be measured, not assumed — Psikyo added `dbg_fm_keyon` instrumentation for exactly that question. | `Arcade-Psikyo_MiSTer/rtl/sound/opl4/` |
+| YMF278B / OPL4 — PCM half (FG-3) | Psikyo's from-scratch core: full bus protocol, timers/IRQ and the 24-channel PCM wavetable engine, working on hardware. The **timers are load-bearing on their own** — both games hammer FM register `0x04` ~35,000 times per 5 minutes as the sound driver's sequencer heartbeat, whether or not they use FM voices. | `Arcade-Psikyo_MiSTer/rtl/sound/opl4/` |
+| YMF278B / OPL4 — FM half (FG-3) | **DECIDED: vendor `gtaylormb/opl3_fpga`** — a reverse-engineered SystemVerilog YMF262 (OPL3), LGPL-3.0. Required because Asura Blade drives three 4-operator voices (measured, open item 4), and 4-op is an OPL3 feature that jtopl2/OPL2 cannot provide. See "OPL4: an OPL3 core under Psikyo's PCM engine". | github.com/gtaylormb/opl3_fpga |
 | SDRAM controller | **Psikyo's `psikyo_sdram_top.sv` stack** — burst-4 `sdram.sv` (Sorgelig, extended), multi-port arbiters, `sdram_download.sv` HPS wrapper, granule cache. Needs address widening for FG-3. | `Arcade-Psikyo_MiSTer/rtl/memory/` |
 | **Video mixer / scaling** | **`sys/arcade_video.v`** — the MiSTer-devel standard (`video_mixer` + `video_freak`), already present in the template's `sys/`. | Template_MiSTer `sys/` |
 | **Screen rotation** | **`screen_rotate_two.sv`** (Sorgelig) -- vendored. A TAP on the video output, not a filter: analog keeps the native raster while a rotated copy goes to DDR3 for the HDMI framebuffer. Fuuki is ROT0, so this serves rotated displays rather than correcting orientation. See "Output chain". | vendored to `rtl/video/` |
@@ -575,6 +687,47 @@ Sound is the OPL4 core from Psikyo — with the open question of whether FM synt
 **Phase 5 -- output chain, hiscores and polish.** See the two sections below; then remaining
 clone sets and region variants, and savestates (Psikyo's `docs/savestates.md` is the feasibility
 study; the same TG68K/RAM/audio arguments apply).
+
+## OPL4: an OPL3 core under Psikyo's PCM engine
+
+**Decided.** The YMF278B is assembled from two independently sourced halves rather than written
+from scratch:
+
+| Half | Source | State |
+|---|---|---|
+| **FM (OPL3 / YMF262)** | vendor **`gtaylormb/opl3_fpga`**, LGPL-3.0, SystemVerilog | to do |
+| **PCM (24-channel wavetable), bus protocol, timers, status/ID** | Psikyo's `rtl/sound/opl4/`, working on hardware | port |
+
+Why this split rather than finishing Psikyo's core: its FM half was "milestone 2" and was never
+started, and writing an OPL3 is a serious piece of work — 18 channels, 4-operator mode, eight
+waveforms, stereo. `opl3_fpga` is a mature reverse-engineered implementation under a licence in
+the same family as the already-vendored TG68K.C. Vendoring it is cheaper by a wide margin than
+building the same thing twice.
+
+`antxiko/mangOPL4` is a whole OPL4 and would be the obvious candidate, but carries **no licence at
+all** and therefore cannot be used.
+
+### What the seam between the halves has to get right
+
+This is an integration job, and the integration is where the risk sits, not in either half:
+
+- **The register split is fixed by the chip, not by us.** `ymfm::ymf278b::write()` routes I/O
+  offsets 0/1 to FM bank 0, 2/3 to FM bank 1 (address `| 0x100`), and 4/5 to PCM. The vendored
+  OPL3 takes the FM ports; Psikyo's core keeps PCM. Nothing needs inventing.
+- **The timers stay with the OPL4 side, and they are load-bearing on their own.** Both FG-3 games
+  write FM register `0x04` roughly 35,000 times per five minutes — that is the sound driver's
+  sequencer heartbeat, and its IRQ is how music is paced whether or not FM voices are used. Psikyo
+  already implements both timers and the IRQ. Do **not** let the vendored OPL3's own timer logic
+  become a second, competing source of that interrupt.
+- **Status and ID reads must stay coherent** across the two halves: the Z80 polls busy/status, and
+  a read served by the wrong half will hang the driver.
+- **Output mixing.** MAME routes six outputs (FM L/R, PCM L/R, and a further pair) at differing
+  gains; the mix has to reproduce that balance rather than simply summing.
+- **The FM half must be gated by the same clock-enable discipline as everything else**, and its
+  wave-ROM/PCM client keeps its existing SDRAM port. Only one half reads sample ROM.
+
+**Asura Buster does not need the FM half at all** (zero key-ons measured), so it is a working
+target before the OPL3 integration is finished — worth knowing for sequencing the work.
 
 ## Output chain: scaler, rotation, flip
 
@@ -725,12 +878,38 @@ and Quartus must never be launched wrapped in `nohup ... &`.
 
 ## Open items / decisions
 
-1. **FG-3 memory: which SDRAM module?** asurabus needs 56.5 MB against a 32 MB stock module.
-   Options: (a) require the 64 MB module for FG-3 — fits with about 7 MB spare, no headroom;
-   (b) require the 128 MB module — comfortable, and the module most owners of large cores already
-   have; (c) FG-2 only on stock hardware. Either (a) or (b) needs the controller's address path,
-   row/bank/column split and arbiter widened. **This blocks Phase 4 and nothing earlier**, so it
-   needs a decision before FG-3 work starts, not before Phase 2.
+1. ~~**FG-3 memory: which SDRAM module?**~~ **DECIDED 2026-09-05: target the 128 MB module.**
+
+   FG-3 does not fit the 32 MB stock module — asurabus needs 56.5 MB. It *does* fit 64 MB, and
+   naturally, with no packing tricks. **The map is now fixed** in `rtl/memory/fuuki_sdram_top.sv`
+   as `FG3_BASE_*`, and `scripts/build_mra.py` generates every FG-3 `.mra` from it, so these
+   offsets are load-bearing rather than provisional:
+
+   | offset | size | region |
+   |---|---|---|
+   | `0x0000000` | 2 MB | 68020 program |
+   | `0x0200000` | 0.5 MB | Z80 program |
+   | `0x0280000` | 8 MB | `tiles_l0` |
+   | `0x0A80000` | 8 MB | `tiles_l1` |
+   | `0x1280000` | 2 MB | `tiles_bg` (our `tiles_l2`) |
+   | `0x1480000` | 32 MB | sprites |
+   | `0x3480000` | 4 MB | OPL4 PCM |
+
+   56.5 MB used, ending at `0x3880000`. Region order matches FG-2's so one `REGION_ORDER` and one
+   region-select mux serve both boards; sizes are the `ROM_REGION` declarations, **not** the sum of
+   ROMs loaded, because asurabld leaves the first 4 MB of its sprite region empty and the tile bank
+   can still address it.
+
+   **128 MB is the target module anyway**, because it is the module people actually have — the
+   common upgrade boards are 32 MB and 128 MB, and requiring an unusual size to save 8 MB of
+   headroom trades a real availability problem for an imaginary capacity one. The map above fits
+   either board, so that choice is about the hardware requirement, not the layout.
+
+   Still to do: widen the controller's address path and its row/bank/column split beyond the
+   inherited `[24:1]` (exactly 32 MB) to `[25:1]`, and widen the arbiter, phy, narrow bridge and
+   every engine's `gfx_addr` with it. **This blocks FG-3 and nothing earlier** — FG-2's largest set
+   is 16.1 MB and runs on a stock module. The `.mra` files exist and are proven, so the offsets are
+   settled and the widening is mechanical.
 2. ~~**Screen timing**~~ **DECIDED 2026-09-04: both boards use FG-2's 28.640 MHz video crystal —
    7.16 MHz pixel clock, 456 x 262, 59.92 Hz, identical to Psikyo.** One timing module, one PLL, no
    per-board switch. FG-3's parts list transcribes 28.432 MHz; that figure is deliberately not used
@@ -740,8 +919,36 @@ and Quartus must never be launched wrapped in `nohup ... &`.
    FG-3 needs a **two-generation** snapshot to match its 2-frame hardware buffering while FG-2
    needs one, and it is unconfirmed whether any game drives per-scanline sprite effects that MAME
    cannot currently show.
-4. **OPL4 FM synthesis** — unbuilt in the inherited core. Measure whether Asura Blade/Buster key on
-   any FM channel before deciding to build milestone 2.
+4. ~~**OPL4 FM synthesis**~~ **MEASURED 2026-09-05: Asura Blade USES it, Asura Buster does not.**
+   Measured rather than assumed, with `scripts/mame/fm_probe.lua` -- a write tap on the Z80's OPL4
+   I/O ports that decodes the register protocol and counts key-ons. Five emulated minutes of
+   attract per game:
+
+   | | FM key-ons | PCM writes | FM registers touched |
+   |---|---|---|---|
+   | **asurabld** | **299** on channels 0, 1, 2 | 48,991 | 89 -- a full voice setup |
+   | **asurabus** | **0** | 24,420 | 23 -- init and silencing only |
+
+   Asura Blade's is real music, not a boot artifact: key-ons recur in a periodic burst of ~57 every
+   50-60 seconds as the attract loop repeats, and the voices are fully configured and audible --
+   `0x104 = 0x3F` puts **all six channel pairs into 4-OPERATOR mode**, feedback is 7 on the primary
+   channels, all four output enables are set, and Total Levels sit at 20-22 (of 63) while the cue
+   plays. Asura Buster only ever writes `0x3F` (max attenuation) to a few carrier TLs and keys
+   nothing on.
+
+   **Consequence: FM synthesis has to be built, and OPL2 will not do.** 4-operator mode is an OPL3
+   feature, so `jotego/jtopl`'s `jtopl2` (YM3812/OPL2) cannot play Asura Blade's music. The
+   realistic option is **`gtaylormb/opl3_fpga`** -- a reverse-engineered SystemVerilog YMF262,
+   LGPL-3.0 (the same licence class as the vendored TG68K.C), actively maintained. Vendoring that
+   beside Psikyo's PCM engine is far cheaper than writing OPL3 from scratch, which is what
+   "milestone 2" would otherwise mean. `antxiko/mangOPL4` is a whole OPL4 and looks relevant, but
+   carries **no licence at all** and cannot be used.
+
+   Two caveats on the measurement, stated because they bound it: attract mode is not all of
+   gameplay, so Asura Buster could in principle key on FM somewhere never reached here; and only
+   the US `asurabus` set was tested, not the Japanese ones. Neither changes the build decision,
+   which Asura Blade forces on its own.
+
 5. ~~**Raster interrupt comparator width**~~ **SETTLED 2026-09-04 from captured
    traces: 9 bits.** The register at `0x1c` is 16 bits but only some of them can reach a 0..261
    line counter, and MAME cannot answer how many. Real vreg write traces of both games driving

@@ -73,7 +73,11 @@ roms/
 # decoded probe captures, ad-hoc analysis output. Regenerable, and only
 # meaningful alongside the temporary debug build that produced them.
 # ---------------------------------------------------------------------------
-debug/
+# Root-only: this is the MAME capture directory. Anchored with a leading
+# slash because a bare `debug/` matches ANY directory of that name at any
+# depth, which silently swallowed rtl/debug/ -- the core's own instrumentation
+# source.
+/debug/
 /*.png
 /*.txt
 scratch_*.png

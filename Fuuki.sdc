@@ -66,10 +66,16 @@ set_multicycle_path -hold  -from $kernel -to $kernel 3
 # extAddr_Mode, MUL/DIV width, BitField -- all "switchable with CPU") shows up
 # as combinational depth that nothing can close.
 # ---------------------------------------------------------------------------
-# In the core, name the actual register that holds the mod-byte board select:
-#   set_false_path -from [get_registers {*board_fg3*}]
-# Left commented until that register exists and can be named exactly; a
-# false path aimed at nothing silently constrains nothing.
+# The register now exists: Fuuki.sv's `mod_board`, latched from ioctl index 1
+# and never cleared. board_fg3 and sysport_alt are bits of it, so constraining
+# the register covers both.
+#
+# A false path aimed at nothing silently constrains nothing, so this is worth
+# checking rather than assuming: after a build, confirm the collection was
+# non-empty in output_files/Fuuki.sta.rpt (an empty get_registers produces a
+# warning, not an error, and the design then fails timing for a reason the
+# report attributes elsewhere).
+set_false_path -from [get_registers {*mod_board*}]
 
 # ---------------------------------------------------------------------------
 # Kernel outputs into maincpu's access state machine: 2 cycles, by design.
@@ -98,7 +104,24 @@ set_multicycle_path -hold  -from $kernel -to $kernel 3
 # the kernel back to 2 would undo the constraint that matters most).
 # remove_from_collection on both ends is the discipline LESSONS_LEARNED asks
 # for when scoping any multicycle.
+# SCOPE WIDENED FROM *maincpu* TO *fuuki_core*, and the reason is the same trap
+# this file already warns about one constraint up: get_registers does not match
+# RAM ports. Restricting the DESTINATION to *maincpu* missed every RAM the CPU
+# writes -- the palette, sprite RAM, work RAM, VRAM -- because those arrays live
+# in fuuki_core, not in maincpu. The first integrated build failed on exactly
+# those endpoints (kernel regfile -> pal_vid porta_we_reg, -0.187 ns).
+#
+# This is a widening of an already-audited constraint, not a new relaxation.
+# The SOURCE is still only the kernel, and the physical argument is unchanged
+# and applies to every destination fed from it: the kernel advances ONLY on
+# cpu_ce, consecutive ticks are >= 4 clocks apart, and maincpu.sv's phase
+# counter spends acc_ph == 0 letting the address settle and acts at
+# acc_ph == 1 -- so a write enable is asserted two clocks after the address
+# that selects it. A multicycle of 2 states what the RTL already does.
+#
+# If maincpu.sv's phase counter is ever changed to act at phase 0, this
+# constraint becomes a lie and must go with it.
 set kernel_k [get_keepers {*TG68KdotC_Kernel*}]
-set maincpu_k [remove_from_collection [get_keepers {*maincpu*}] $kernel_k]
-set_multicycle_path -setup -from $kernel_k -to $maincpu_k 2
-set_multicycle_path -hold  -from $kernel_k -to $maincpu_k 1
+set core_k [remove_from_collection [get_keepers {*fuuki_core*}] $kernel_k]
+set_multicycle_path -setup -from $kernel_k -to $core_k 2
+set_multicycle_path -hold  -from $kernel_k -to $core_k 1
