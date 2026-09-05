@@ -1,19 +1,17 @@
 <misterromdescription>
-	<about author="Paul Priest" webpage="" source="MAME fuukifg2.cpp"/>
+	<about author="Paul Priest" webpage="https://github.com/ppriest/Arcade-Fuuki_MiSTer" source="MAME fuukifg2.cpp"/>
 	<name>Gyakuten!! Puzzle Bancho (Japan, set 1)</name>
 	<setname>pbancho</setname>
 	<rbf>Arcade-Fuuki</rbf>
 	<year>1996</year>
 	<manufacturer>Fuuki</manufacturer>
+	<category>Puzzle</category>
 	<rotation>horizontal</rotation>
 	<region>Japan</region>
 	<players>2</players>
 	<joystick>8-way</joystick>
 
-	<!-- Board select. MUST come before <rom index="0">: the mod byte is sent in
-	     file order and any download-time logic gated by it would otherwise see
-	     0 for the whole transfer.
-	     bit 0 = FG-3, bit 1 = pbancho/asura SYSTEM layout. -->
+	<!-- Board select: bit 0 = FG-2 / FG-3, bit 1 = SYSTEM port wiring (gogomile / pbancho+asura). -->
 	<rom index="1"><part>02</part></rom>
 
 	<rom index="0" zip="pbancho.zip" md5="none">
@@ -55,7 +53,7 @@
 		<dip name="Difficulty" bits="2,3,4" ids="Normal (dup),Hardest,Easiest,Normal (dup),Easy,Normal (dup),Hard,Normal"/>
 		<dip name="Lives (Vs Mode)" bits="5,6" ids="1,2 (dup),3,2"/>
 		<dip name="? Senin Mode ?" bits="7" ids="On,Off"/>
-		<dip name="Flip Screen" bits="8" ids="On,Off"/>
+		<!-- <dip name="Flip Screen" bits="8" ids="On,Off"/> -->
 		<dip name="Allow Versus Mode" bits="9" ids="No,Yes"/>
 		<dip name="Coin A" bits="10,11,12" ids="Free Play,2C 1C,1C 3C,4C 1C,1C 2C,3C 1C,1C 4C,1C 1C"/>
 		<dip name="Coin B" bits="13,14,15" ids="Free Play,2C 1C,1C 3C,4C 1C,1C 2C,3C 1C,1C 4C,1C 1C"/>

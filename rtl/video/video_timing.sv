@@ -158,14 +158,11 @@ module video_timing (
 	assign irq1_trig = ce_pix && (hcnt == 9'd0) && (vcnt == 9'(IRQ1_LINE));
 	assign irq3_trig = ce_pix && (hcnt == 9'd0) && (vcnt == 9'(V_ACTIVE));
 
-	// The game may point the raster line anywhere, including at a line that
-	// does not exist. gogomile parks it at 0xfffe when it wants no raster
-	// interrupt at all; the low 9 bits of that are 0x1fe = 510, unreachable
-	// for a 0..261 counter, so nothing fires -- which is plainly the intent.
-	// Do not clamp it into range: that would invent an interrupt the hardware
-	// does not produce. (MAME does effectively clamp, by taking vpos modulo
-	// the screen height in time_until_pos(), and fires one. See
-	// docs/ROADMAP.md open item 5.)
+	// raster_line arrives from vregs.sv already reduced modulo V_TOTAL, as
+	// MAME's time_until_pos() does, so every register value fires exactly
+	// once per frame. The first version let out-of-range values (gogomile's
+	// parked 0xFFFE) fire nothing, and the game hung waiting for the IRQ5
+	// that MAME still delivers -- see the note in vregs.sv.
 	assign irq5_trig = ce_pix && (hcnt == 9'(H_ACTIVE)) &&
 	                   (vcnt[RASTER_CMP_BITS-1:0] == raster_line[RASTER_CMP_BITS-1:0]);
 

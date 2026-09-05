@@ -269,7 +269,7 @@ testbench models the RAM itself. It was found with the on-screen trace ring froz
 exception-vector read (`scripts/boot_trace.py --trig`). On the way, the SDRAM path was proved
 exact on hardware with known patterns (`scripts/sdram_pattern_test.py`, 256/256 for walking ones
 and the real vector page), and what had looked like SDRAM corruption turned out to be the
-framework's gamma LUT on the readout pixels, now forced off under the overlay. Sound, hiscore,
+framework's gamma LUT on the readout pixels, now forced off under the overlay. Two more fixes followed from the attract hangs: the raster register is reduced modulo 262 as MAME does, and interrupt acknowledges clear the level the kernel drives on A3..A1 rather than the highest pending one. gogomile runs its attract without hanging; pbancho still stops drawing on its wave screen. Sound, hiscore,
 rotation and FG-3 (SDRAM widening) remain.
 
 ## Hardware reality (from the drivers, not assumption)
@@ -982,6 +982,14 @@ and Quartus must never be launched wrapped in `nohup ... &`.
    first five scanlines, starts at line 6, and takes five spurious interrupts every frame. 9 bits
    reproduces the game's intent exactly. `RASTER_CMP_BITS` in `video_timing.sv` makes this a
    one-line change, and `tb_video_timing` has a case that fails at 8.
+
+   **Out-of-range values (settled on hardware):** gogomile parks the register at `0xFFFE` between
+   raster chains, and the first build let that fire nothing. The game then hung in its attract:
+   its main loop spins on `btst #1,$403446`, a bit only the level-5 handler sets, so it needs one
+   IRQ5 per frame even when parked. MAME delivers it because `vregs_w` passes the value to
+   `screen::time_until_pos()`, which does `vpos %= height` -- `0xFFFE` fires at line 34. `vregs.sv`
+   now reduces the register modulo 262; values below 262 are unaffected, so the 9-bit finding
+   stands.
 
    **The divergence from MAME stands, and is unrelated to width.** gogomile parks the register at
    `0xfffe` when it wants no raster interrupt; the low 9 bits are `0x1fe` = 510, unreachable, so

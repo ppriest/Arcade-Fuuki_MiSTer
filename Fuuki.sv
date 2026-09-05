@@ -415,7 +415,10 @@ wire pause_cpu, pause_latched;
 pause_control u_pause (
 	.clk(clk_sys), .reset(core_reset),
 	.joystick_0(joystick_0), .joystick_1(joystick_1),
-	.ext_pause(1'b0),
+	// JTAG pause (source bit 5): stops ROM reads so the trace ring, in ring
+	// mode, freezes on the last 256 accesses before the pause -- the loop a
+	// hung CPU is spinning in (scripts/boot_trace.py --hang).
+	.ext_pause(probe_src[5]),
 	.pause_cpu(pause_cpu), .pause_latched(pause_latched)
 );
 
@@ -473,6 +476,8 @@ fuuki_core u_core (
 	.dbg_window(status[56:53]), .dbg_ring(status[57]),
 	.dbg_rearm(status[58] ^ probe_src[6]), .dbg_page({probe_src[7], probe_src[4:3]}),
 	.dbg_trig(status[59]),
+	.dbg_irq_pending(dbg_irq_pending), .dbg_iack(dbg_iack), .dbg_iack_level(dbg_iack_level),
+	.dbg_irq1_trig(dbg_irq1_trig),
 	.dbg_frozen(dbg_frozen)
 );
 
@@ -520,6 +525,26 @@ arcade_video #(.WIDTH(320), .DW(24), .GAMMA(1)) arcade_video
 // scripts/read_issp.tcl decodes this layout and must be kept in step with it:
 // a silently shifted field reads as plausible nonsense, not as an error.
 wire       ctr_clear = probe_src[0];
+
+// INTERRUPT STATE, replacing the SDRAM_CLK phase position (that experiment
+// changed nothing and is over). Answers, on a hung game: is the interrupt it
+// waits for still being generated (irq1 edges advance), is it stuck pending
+// (never taken: a mask or kernel problem), or is it taken (level-1
+// acknowledges advance) and the handler simply never sets the flag.
+wire [2:0] dbg_irq_pending, dbg_iack_level;
+wire       dbg_iack, dbg_irq1_trig;
+reg  [7:0] c_irq1  = 8'd0;   // irq1_trig pulses (one per frame when healthy)
+reg  [4:0] c_iack1 = 5'd0;   // level-1 acknowledge cycles
+reg        iack_d  = 1'b0;
+always @(posedge clk_sys) begin
+	iack_d <= dbg_iack;
+	if (ctr_clear) begin
+		c_irq1 <= 8'd0; c_iack1 <= 5'd0;
+	end else begin
+		if (dbg_irq1_trig) c_irq1 <= c_irq1 + 8'd1;
+		if (dbg_iack && !iack_d && dbg_iack_level == 3'd1) c_iack1 <= c_iack1 + 5'd1;
+	end
+end
 
 wire [15:0] c_frames, c_ovr, c_cpu, c_gfx;
 debug_counter #(.W(16)) u_c_frames (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_frame_start), .count(c_frames));
@@ -615,7 +640,9 @@ issp_probe #(.INSTANCE_ID("F"), .PROBE_W(128), .SOURCE_W(8)) u_probe (
 		dl_seen,             //  80
 		last_rom_data,       //  79..64  what the CPU was actually fed
 		c_cpu,               //  63..48
-		phase_pos,           //  47..32  SDRAM_CLK phase, signed steps from the build value
+		dbg_irq_pending,     //  47..45  {irq5, irq3, irq1} pending
+		c_iack1,             //  44..40  level-1 acknowledges (wraps)
+		c_irq1,              //  39..32  irq1 (line 248) pulses (wraps)
 		c_rst,               //  31..16  core_reset rising edges
 		c_frames             //  15..0
 	}),

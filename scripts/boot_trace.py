@@ -202,11 +202,49 @@ def compare(game, suffix="", tail=0):
         print(f"  hardware's first program fetches: {' '.join(seen)}")
 
 
+def hang(game, wait, fc_only=False):
+    """Catch a hung CPU: run the game for `wait` seconds, PAUSE the CPU over
+    JTAG (probe source bit 5 -> pause_control.ext_pause), and let the trace
+    ring freeze on the last 256 ROM reads before the pause -- the loop the
+    CPU is spinning in. The ring is not rotated (there is no trigger entry to
+    rotate on); a loop reads the same either way."""
+    OUT.mkdir(parents=True, exist_ok=True)
+    result = {}
+    srcs = ((1, "fc_addr"),) if fc_only else ((1, "fc_addr"), (2, "data_addr"))
+    for src, tag in srcs:
+        subprocess.run([sys.executable, str(CFG), game, "--set", "overlay=1", "ring=1",
+                        "trig=0", f"src={src}", "window=0"], capture_output=True, cwd=str(REPO))
+        r = subprocess.run([sys.executable, str(HW), "launch", MRA[game]],
+                           capture_output=True, text=True, cwd=str(REPO))
+        if "launching" not in r.stdout:
+            sys.exit(f"launch failed: {r.stdout[-200:]}")
+        if not wait_download_done():
+            sys.exit("download never finished")
+        print(f"  running {wait}s before the pause")
+        time.sleep(wait)
+        issp("set", 0x20)                      # pause, and hold it
+        if not wait_frozen():
+            sys.exit("ring never froze after the pause: the CPU is still fetching ROM")
+        ents, probs = read_buffer(tag=f"{game}_{tag}_hang")   # ends with set 0 = unpause
+        print(f"  {tag}: {sum(e is not None for e in ents)}/256 entries, {len(probs)} readout problems")
+        result[tag] = ents
+    (OUT / f"{game}_boot_hang.json").write_text(json.dumps(result))
+    print(f"saved {OUT / f'{game}_boot_hang.json'}")
+    from collections import Counter
+    A = result["fc_addr"]
+    fcs = Counter(FC.get(a >> 21, str(a >> 21)) for a in A if a is not None)
+    addrs = Counter(2 * (a & 0x1FFFFF) for a in A if a is not None and (a >> 21) in (2, 6))
+    print(f"  FC: {dict(fcs)}")
+    print("  program addresses in the last 256 reads (addr: count):")
+    for ad, n in sorted(addrs.items()):
+        print(f"    {ad:06X}: {n}")
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=("capture", "compare"))
+    ap.add_argument("cmd", choices=("capture", "compare", "hang"))
     ap.add_argument("game", choices=list(MRA))
     ap.add_argument("--window", type=int, nargs="*", default=[0],
                     help="capture: tracer window(s) to record (skip n*8191 ROM reads)")
@@ -215,9 +253,13 @@ def main():
     ap.add_argument("--trig", action="store_true",
                     help="capture/compare: ring frozen by the first vector 2..4 read")
     ap.add_argument("--tail", type=int, default=0, help="compare: also print the last N entries")
+    ap.add_argument("--hang", action="store_true", help="compare: use the --hang capture")
+    ap.add_argument("--wait", type=float, default=20, help="hang: seconds to run before pausing")
     a = ap.parse_args()
-    if a.cmd == "compare":
-        compare(a.game, suffix="_trig" if a.trig else "", tail=a.tail)
+    if a.cmd == "hang":
+        hang(a.game, a.wait, fc_only=a.fc_only)
+    elif a.cmd == "compare":
+        compare(a.game, suffix="_trig" if a.trig else ("_hang" if a.hang else ""), tail=a.tail)
     else:
         for w in a.window:
             capture(a.game, window=w, fc_only=a.fc_only, trig=a.trig)

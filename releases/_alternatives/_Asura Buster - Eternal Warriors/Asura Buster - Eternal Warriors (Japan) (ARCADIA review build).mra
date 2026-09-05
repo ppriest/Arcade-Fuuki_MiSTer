@@ -1,19 +1,17 @@
 <misterromdescription>
-	<about author="Paul Priest" webpage="" source="MAME fuukifg3.cpp"/>
+	<about author="Paul Priest" webpage="https://github.com/ppriest/Arcade-Fuuki_MiSTer" source="MAME fuukifg3.cpp"/>
 	<name>Asura Buster - Eternal Warriors (Japan) (ARCADIA review build)</name>
 	<setname>asurabusjr</setname>
 	<rbf>Arcade-Fuuki</rbf>
 	<year>2000</year>
 	<manufacturer>Fuuki</manufacturer>
+	<category>Fight</category>
 	<rotation>horizontal</rotation>
 	<region>Japan</region>
 	<players>2</players>
 	<joystick>8-way</joystick>
 
-	<!-- Board select. MUST come before <rom index="0">: the mod byte is sent in
-	     file order and any download-time logic gated by it would otherwise see
-	     0 for the whole transfer.
-	     bit 0 = FG-3, bit 1 = pbancho/asura SYSTEM layout. -->
+	<!-- Board select: bit 0 = FG-2 / FG-3, bit 1 = SYSTEM port wiring (gogomile / pbancho+asura). -->
 	<rom index="1"><part>03</part></rom>
 
 	<rom index="0" zip="asurabusjr.zip|asurabus.zip" md5="none">
@@ -76,7 +74,7 @@
 		<dip name="Demo Sounds &amp; Music" bits="2,3" ids="Both Off,Music Off,Sounds Off,Both On"/>
 		<dip name="Timer" bits="4,5" ids="Slow,Fast,Very Fast,Medium"/>
 		<dip name="Coinage Mode" bits="6,7" ids="Joint,-,-,Split"/>
-		<dip name="Flip Screen" bits="16" ids="On,Off"/>
+		<!-- <dip name="Flip Screen" bits="16" ids="On,Off"/> -->
 		<dip name="Difficulty" bits="17,18,19" ids="Easiest,Hard,Easier,Hardest,Very Easy,Very Hard,Easy,Normal"/>
 		<dip name="Damage" bits="20,21" ids="150%,125%,75%,100%"/>
 		<dip name="Max Rounds" bits="22,23" ids="1,Error!!,5,3"/>

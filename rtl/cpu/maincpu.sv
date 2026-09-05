@@ -121,7 +121,10 @@ module maincpu (
 
 	// Debug: the kernel's function code, so a trace can tell a program
 	// fetch (6) from a vector/data read (5) from an interrupt acknowledge (7).
-	output logic [2:0]   dbg_fc
+	output logic [2:0]   dbg_fc,
+	output logic [2:0]   dbg_irq_pending, // {irq5, irq3, irq1} pending
+	output logic         dbg_iack,        // interrupt-acknowledge access in progress
+	output logic [2:0]   dbg_iack_level   // level on A3..A1 during that access
 );
 
 	// =====================================================================
@@ -405,6 +408,9 @@ module maincpu (
 
 	assign cpu_din = acc_data;
 	assign dbg_fc  = fc;
+	assign dbg_irq_pending = {irq5_pending, irq3_pending, irq1_pending};
+	assign dbg_iack        = iack;
+	assign dbg_iack_level  = addr24[3:1];
 
 	// =====================================================================
 	// Interrupts
@@ -421,8 +427,15 @@ module maincpu (
 	// every time (LESSONS_LEARNED, "Ask of every stimulus whether it is the
 	// shape the real system produces").
 	//
-	// A 68000 presents the HIGHEST pending level on IPL, so the level being
-	// acknowledged is the highest pending one -- that is the flag to clear.
+	// The level being acknowledged is the one the kernel LATCHED when it
+	// took the interrupt (rIPL_nr), and it drives that level onto A3..A1
+	// during the acknowledge cycle (TG68KdotC_Kernel.vhd, "memaddr_a(4
+	// downto 0) <= '1' & rIPL_nr & '0'"), exactly as a 68000 does. That is
+	// the flag to clear. The first version cleared the HIGHEST level pending
+	// at the acknowledge instead; a higher interrupt arriving between the
+	// kernel's decision and its acknowledge cycle was then cleared without
+	// ever being taken, and the lower one it displaced was left pending and
+	// taken twice.
 	//
 	// Why set-wins-on-the-same-cycle is correct HERE, where it was fatal in
 	// Psikyo: Psikyo set from the LEVEL (`if (vblank) set; else if (iack)
@@ -457,7 +470,7 @@ module maincpu (
 
 			// Acknowledge, then set: a coincident edge must survive (above).
 			if (iack) begin
-				case (irq_level)
+				case (addr24[3:1])
 					3'd5: irq5_pending <= 1'b0;
 					3'd3: irq3_pending <= 1'b0;
 					3'd1: irq1_pending <= 1'b0;

@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Sweep the SDRAM_CLK phase at runtime and measure the DQ eye with a pattern.
 
+NOT CURRENTLY RUNNABLE: the probe bits 47..32 that reported `phase_pos` now
+carry the interrupt state (Fuuki.sv). The stepping controls (source bits 1
+and 2) still exist; restore the field to the probe before using this.
+
     python scripts/phase_sweep.py --pattern ones --span 44 --step 4
 
 Loads one known-pattern .mra ONCE (see scripts/sdram_pattern_test.py), then

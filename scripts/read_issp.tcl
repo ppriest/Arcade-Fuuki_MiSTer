@@ -17,7 +17,11 @@
 set fields {
     {frames          0   15 dec}
     {core_resets     16  31 dec}
-    {phase_pos       32  47 sdec}
+    {irq1_pulses     32  39 dec}
+    {iack_level1     40  44 dec}
+    {irq1_pending    45  45 bit}
+    {irq3_pending    46  46 bit}
+    {irq5_pending    47  47 bit}
     {cpu_reads       48  63 dec}
     {last_rom_data   64  79 hex}
     {download_seen   80  80 bit}

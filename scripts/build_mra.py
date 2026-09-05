@@ -266,6 +266,9 @@ ASURABUS_DIPS = [
 MOD_FG3    = 0x01
 MOD_SYSALT = 0x02
 
+# <category> for the MiSTer menu, per family; clones inherit their parent's.
+CATEGORY = {"gogomile": "Maze", "pbancho": "Puzzle", "asurabld": "Fight", "asurabus": "Fight"}
+
 # One slot count for every game, so Start / Coin / Pause always land on the
 # same joystick bits (8, 9, 10) whatever the game's button count. Unused slots
 # are named "-", which is the convention the Psikyo `.mra` files use and the
@@ -665,26 +668,27 @@ def emit(setname, game, bases, zip_dir, out_dir, check_only):
         if game["parent"]:
             zipattr += "|" + game["parent"] + ".zip"
 
+        # Flip Screen is left in the file but commented out: the core does not
+        # implement flipping yet, so offering the switch would only mislead.
         sw = "\n".join(
-            f'\t\t<dip name="{n}" bits="{b}" ids="{i}"/>' for n, b, i in dips)
+            (f'\t\t<!-- <dip name="{n}" bits="{b}" ids="{i}"/> -->' if n == "Flip Screen"
+             else f'\t\t<dip name="{n}" bits="{b}" ids="{i}"/>') for n, b, i in dips)
         dflt = ",".join(f"{b:02X}" for b in default_bytes)
 
         xml = f"""<misterromdescription>
-\t<about author="Paul Priest" webpage="" source="{SOURCE_FILE[board]}"/>
+\t<about author="Paul Priest" webpage="https://github.com/ppriest/Arcade-Fuuki_MiSTer" source="{SOURCE_FILE[board]}"/>
 \t<name>{game['title']}</name>
 \t<setname>{setname}</setname>
 \t<rbf>Arcade-Fuuki</rbf>
 \t<year>{game['year']}</year>
 \t<manufacturer>Fuuki</manufacturer>
+\t<category>{CATEGORY[game['parent'] or game['zipname']]}</category>
 \t<rotation>horizontal</rotation>
 \t<region>{game['region']}</region>
 \t<players>2</players>
 \t<joystick>8-way</joystick>
 
-\t<!-- Board select. MUST come before <rom index="0">: the mod byte is sent in
-\t     file order and any download-time logic gated by it would otherwise see
-\t     0 for the whole transfer.
-\t     bit 0 = FG-3, bit 1 = pbancho/asura SYSTEM layout. -->
+\t<!-- Board select: bit 0 = FG-2 / FG-3, bit 1 = SYSTEM port wiring (gogomile / pbancho+asura). -->
 \t<rom index="1"><part>{game['mod']:02X}</part></rom>
 
 \t<rom index="0" zip="{zipattr}" md5="none">

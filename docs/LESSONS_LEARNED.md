@@ -738,6 +738,14 @@ hierarchical access to the core's own `MCycle`/`TState`, not by "the test passes
   alone -- `rte` at `0xBFA` followed by a user-mode fetch at `0x000000` -- named the stack. Where
   a testbench substitutes its own model for a block, add a check that runs the real block, or
   treat that block as unverified.
+- **[Fuuki] "The game plainly means no interrupt" is a guess; what MAME actually does is the
+  spec.** The raster register parked at `0xFFFE` was read as "disable", and the RTL fired
+  nothing. The game hung on hardware: its main loop waits on a flag only the level-5 handler
+  sets, so it needs one IRQ5 per frame however the register is parked. MAME's `time_until_pos()`
+  wraps the line modulo the screen height and fires at line 34, and the game is known to work
+  there. Found in one JTAG probe read: `last_rom_addr` alternating over a 4-word loop, decoded
+  from the ROM as `btst #1,$403446.l / beq`. Where a driver hands a register to a MAME
+  framework call, follow the framework's arithmetic too, not just the driver's.
 - **[Fuuki] `write_source_data -value` takes a binary string; pass `-value_in_hex`.** The ISSP
   Tcl wrote `-value 8`, printed "source set to 8", and the source read back `00`: a decimal string
   is silently rejected. Every page select, phase step and walker re-arm issued that way had been a

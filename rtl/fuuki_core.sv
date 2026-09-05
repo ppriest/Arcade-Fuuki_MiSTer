@@ -99,6 +99,10 @@ module fuuki_core (
 	output logic [15:0] dbg_rom_data,
 	output logic        dbg_dl_wr,
 	output logic [24:0] dbg_dl_addr,
+	output logic [2:0]  dbg_irq_pending, // {irq5, irq3, irq1} pending in maincpu
+	output logic        dbg_iack,        // interrupt-acknowledge access in progress
+	output logic [2:0]  dbg_iack_level,  // level on A3..A1 during it
+	output logic        dbg_irq1_trig,   // the line-248 interrupt source, one clk per frame
 
 	// ---- trace-to-screen controls (see the debug_tracer instance) ----
 	input  logic        dbg_overlay,
@@ -203,9 +207,11 @@ module fuuki_core (
 		.latch_data(latch_data), .latch_write(latch_write),
 		.tilebank(tilebank),
 		.irq1_trig(irq1_trig), .irq3_trig(irq3_trig), .irq5_trig(irq5_trig),
+		.dbg_irq_pending(dbg_irq_pending), .dbg_iack(dbg_iack), .dbg_iack_level(dbg_iack_level),
 		.pause(pause_cpu | walk_active),   // the walker owns the ROM port
 		.dbg_fc(cpu_fc)
 	);
+	assign dbg_irq1_trig = irq1_trig;
 
 	assign dbg_cpu_req   = rom_req;
 	assign dbg_rom_addr  = rom_addr;

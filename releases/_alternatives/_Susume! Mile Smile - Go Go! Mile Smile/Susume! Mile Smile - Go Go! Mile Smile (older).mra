@@ -1,19 +1,17 @@
 <misterromdescription>
-	<about author="Paul Priest" webpage="" source="MAME fuukifg2.cpp"/>
+	<about author="Paul Priest" webpage="https://github.com/ppriest/Arcade-Fuuki_MiSTer" source="MAME fuukifg2.cpp"/>
 	<name>Susume! Mile Smile / Go Go! Mile Smile (older)</name>
 	<setname>gogomileo</setname>
 	<rbf>Arcade-Fuuki</rbf>
 	<year>1995</year>
 	<manufacturer>Fuuki</manufacturer>
+	<category>Maze</category>
 	<rotation>horizontal</rotation>
 	<region>Japan</region>
 	<players>2</players>
 	<joystick>8-way</joystick>
 
-	<!-- Board select. MUST come before <rom index="0">: the mod byte is sent in
-	     file order and any download-time logic gated by it would otherwise see
-	     0 for the whole transfer.
-	     bit 0 = FG-3, bit 1 = pbancho/asura SYSTEM layout. -->
+	<!-- Board select: bit 0 = FG-2 / FG-3, bit 1 = SYSTEM port wiring (gogomile / pbancho+asura). -->
 	<rom index="1"><part>00</part></rom>
 
 	<rom index="0" zip="gogomileo.zip|gogomile.zip" md5="none">
@@ -58,7 +56,7 @@
 		<dip name="Difficulty" bits="2,3" ids="Easy,Very Hard,Hard,Normal"/>
 		<dip name="Language" bits="4,5" ids="Korean,Chinese,English,Japanese"/>
 		<dip name="Lives" bits="6,7" ids="2,5,4,3"/>
-		<dip name="Flip Screen" bits="8" ids="On,Off"/>
+		<!-- <dip name="Flip Screen" bits="8" ids="On,Off"/> -->
 		<dip name="Coinage" bits="10,11,12" ids="Free Play,4C 1C,1C 3C,2C 1C,1C 4C,3C 1C,1C 2C,1C 1C"/>
 	</switches>
 </misterromdescription>
