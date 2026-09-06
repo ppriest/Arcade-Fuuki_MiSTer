@@ -39,7 +39,7 @@ stub".
 
 ## The 32 MB ceiling, and FG-3
 
-`addr0`/`addr1`/`addr2` are `[24:1]` — 24 bits of **word** address, i.e. exactly 32 MB. That is
+`addr0`/`addr1`/`addr2` were `[24:1]` upstream — 24 bits of **word** address, i.e. exactly 32 MB; this copy widens them to `[25:1]` and drives bit 25 onto A9 at column time, the 64 MB layout of the 128 MB module's first chip (FG-3 needs 56.5 MB). That was
 enough for either FG-2 game and **not** enough for either FG-3 game:
 
 | Game | Footprint |

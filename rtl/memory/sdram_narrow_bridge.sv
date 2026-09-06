@@ -53,13 +53,13 @@ module sdram_narrow_bridge #(
 
 	// narrow client side
 	input  logic                     req,
-	input  logic [24:0]              addr,    // byte address of the desired unit
+	input  logic [25:0]              addr,    // byte address of the desired unit
 	output logic                     valid,
 	output logic [8*WORD_BYTES-1:0] data,
 
 	// wide granule side (one sdram_arbiter5 consumer port)
 	output logic         g_req,
-	output logic [24:0] g_addr,
+	output logic [25:0] g_addr,
 	input  logic         g_valid,
 	input  logic [63:0] g_data
 );
@@ -72,14 +72,20 @@ module sdram_narrow_bridge #(
 
 	// ---- granule cache ----
 	logic [63:0] cache_data;
-	logic [21:0] cache_tag;      // granule address, addr[24:3]
+	logic [22:0] cache_tag;      // granule address, addr[25:3]
 	logic         cache_valid;
-	logic [21:0] tag_inflight;   // granule being fetched (latched at accept --
-								  // addr is only guaranteed stable until valid)
+	logic [22:0] tag_inflight;   // granule being fetched (latched at accept --
+								  // addr is only guaranteed stable until valid).
+								  // MUST match cache_tag's width: left at 22
+								  // bits by the 26-bit widening, it dropped
+								  // addr[25], so a granule fetched above 32 MB
+								  // was cached under the tag of its low-half
+								  // twin -- a false hit waiting for any client
+								  // that reads both halves.
 
-	wire hit = cache_valid && (addr[24:3] == cache_tag);
+	wire hit = cache_valid && (addr[25:3] == cache_tag);
 
-	assign g_addr = {addr[24:3], 3'b000};   // 8-byte-align down to the granule base
+	assign g_addr = {addr[25:3], 3'b000};   // 8-byte-align down to the granule base
 	assign g_req  = (bstate == B_WAIT);
 
 	// B_HIT serves from the cache; B_WAIT serves from the live granule the
@@ -113,7 +119,7 @@ module sdram_narrow_bridge #(
 						if (hit && !inval) begin
 							bstate <= B_HIT;
 						end else begin
-							tag_inflight <= addr[24:3];
+							tag_inflight <= addr[25:3];
 							bstate        <= B_WAIT;
 						end
 					end

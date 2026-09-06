@@ -272,6 +272,29 @@ and the real vector page), and what had looked like SDRAM corruption turned out 
 framework's gamma LUT on the readout pixels, now forced off under the overlay. Two more fixes followed from the attract hangs: the raster register is reduced modulo 262 as MAME does, and interrupt acknowledges clear the level the kernel drives on A3..A1 rather than the highest pending one. gogomile runs its attract without hanging; pbancho still stops drawing on its wave screen. Sound, hiscore,
 rotation and FG-3 (SDRAM widening) remain.
 
+**FG-3 boots on hardware.** With the SDRAM path at 26 bits and a fake Z80 handshake in shared RAM
+(`rtl/fuuki_core.sv`: byte 0 powers up as `0xCD`, `0xAE` clears it, `0xAx` commands in the even
+slots are cleared -- the protocol read out of `srom.u7`), asurabld runs its attract: interrupts
+are acknowledged and the stage backgrounds draw. The "garbage layer" seen first -- on pbancho as
+well once FG-2 was re-run -- was the 26-bit widening leaving `sdram_arbiter` packing client
+addresses at 25 bits: layers 1 and 2 read from bit-shifted addresses (`sim/sdram_tb` now reads
+every client at a non-zero offset). Remaining on FG-3: sprite faults (tile bank, 2-bit bank
+lookup), to be read back with `scripts/memdump.py`. asurabus spends its first seconds in a
+`0x21 x 0x10000` delay loop before touching video.
+The handshake stub must go when the real Z80 lands.
+
+**Known FG-2 issues, parked to start FG-3** (all seen on the DE10-nano with
+`releases/Arcade-Fuuki_20260905.rbf`):
+
+- pbancho stops drawing on the wave screen of its attract (black box where the text/portrait
+  should be) and the CPU sits in `btst #5,$400010 / beq`, the flag only the level-1 handler
+  sets. Unknown whether it is a lost interrupt or a priority/visibility fault; a VRAM/sprite-RAM
+  readout through the trace ring (paged over JTAG, CPU paused) is the instrument to build.
+- gogomile: clouds flicker on the title screen.
+- pbancho: the CREDIT counter sits one pixel too low -- a candidate for a row-timing offset in
+  whichever layer draws it.
+- pbancho: a raster/IRQ effect at the bottom of one attract screen is wrong.
+
 ## Hardware reality (from the drivers, not assumption)
 
 Two boards, one video architecture:
@@ -916,11 +939,12 @@ and Quartus must never be launched wrapped in `nohup ... &`.
    headroom trades a real availability problem for an imaginary capacity one. The map above fits
    either board, so that choice is about the hardware requirement, not the layout.
 
-   Still to do: widen the controller's address path and its row/bank/column split beyond the
-   inherited `[24:1]` (exactly 32 MB) to `[25:1]`, and widen the arbiter, phy, narrow bridge and
-   every engine's `gfx_addr` with it. **This blocks FG-3 and nothing earlier** — FG-2's largest set
-   is 16.1 MB and runs on a stock module. The `.mra` files exist and are proven, so the offsets are
-   settled and the widening is mechanical.
+   Done: the address path is `[25:1]` end to end (controller, arbiter, phy, narrow bridge, engines,
+   download), and the controller drives byte-address bit 25 onto A9 at column time -- the 64 MB
+   layout of the 128 MB module's first chip, taken from N64_MiSTer's controller (bank `[24:23]`,
+   row `[22:10]`, column `{[25], [9:1]}`, chip = bit 26, unused here). A 32 MB chip ignores A9, so
+   FG-2 maps identically on either module. `fuuki_sdram_top` selects `FG2_BASE_*` / `FG3_BASE_*`
+   by `board`. `sim/sdram_tb` passes.
 2. ~~**Screen timing**~~ **DECIDED 2026-09-04: both boards use FG-2's 28.640 MHz video crystal —
    7.16 MHz pixel clock, 456 x 262, 59.92 Hz, identical to Psikyo.** One timing module, one PLL, no
    per-board switch. FG-3's parts list transcribes 28.432 MHz; that figure is deliberately not used

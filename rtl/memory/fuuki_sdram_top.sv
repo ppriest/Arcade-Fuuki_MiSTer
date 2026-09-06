@@ -82,25 +82,37 @@ module fuuki_sdram_top (
 	input  logic        ioctl_download,
 	input  logic [15:0] ioctl_index,
 	input  logic        ioctl_wr,
-	input  logic [24:0] ioctl_addr,
+	input  logic        board,         // BOARD_FG2 / BOARD_FG3: selects the region table
+	input  logic [26:0] ioctl_addr,
+
+	// FAST ROM LOADING. rom_loader drives these instead of the byte-wise
+	// ioctl path while ldr_active is high. Both cannot run at once: the
+	// loader only starts once the HPS has finished the (write-less)
+	// download. See Fuuki.sv, "FAST ROM LOADING".
+	input  logic        ldr_active,
+	input  logic        ldr_req,
+	input  logic [25:0] ldr_addr,
+	input  logic [15:0] ldr_data,
+	input  logic        ldr_we16,
+	output logic        ldr_busy,
 	input  logic [7:0]  ioctl_dout,
 	output logic        ioctl_wait,
 
 	// ---- tilemap graphics, 64-bit granules, 8-byte aligned ----
-	input  logic        tm0_req,  input logic [24:0] tm0_addr,
+	input  logic        tm0_req,  input logic [25:0] tm0_addr,
 	output logic        tm0_valid, output logic [63:0] tm0_data,
-	input  logic        tm1_req,  input logic [24:0] tm1_addr,
+	input  logic        tm1_req,  input logic [25:0] tm1_addr,
 	output logic        tm1_valid, output logic [63:0] tm1_data,
-	input  logic        tm2_req,  input logic [24:0] tm2_addr,
+	input  logic        tm2_req,  input logic [25:0] tm2_addr,
 	output logic        tm2_valid, output logic [63:0] tm2_data,
 
 	// ---- sprite graphics ----
-	input  logic        spr_req,  input logic [24:0] spr_addr,
+	input  logic        spr_req,  input logic [25:0] spr_addr,
 	output logic        spr_valid, output logic [63:0] spr_data,
 
 	// ---- main CPU program fetch, 16-bit words ----
 	input  logic        cpu_req,
-	input  logic [24:0] cpu_addr,      // byte address, even
+	input  logic [25:0] cpu_addr,      // byte address, even
 	output logic        cpu_valid,
 	output logic [15:0] cpu_data,
 
@@ -112,19 +124,19 @@ module fuuki_sdram_top (
 	output logic        dbg_dl_wr,
 	// The address that write went to, so a trace of the download stream shows
 	// WHERE it stopped, not merely that it did.
-	output logic [24:0] dbg_dl_addr
+	output logic [25:0] dbg_dl_addr
 );
 
 	// ---- address map, FG-2 ----
 	// Sized for the largest FG-2 set: ends at 0x118_0000, 17.5 MB, so both
 	// FG-2 games fit the 32 MB chip this controller currently addresses.
-	localparam logic [24:0] BASE_MAINCPU = 25'h000_0000;   // 2 MB reserved
-	localparam logic [24:0] BASE_AUDIOCPU= 25'h020_0000;   // 512 KB
-	localparam logic [24:0] BASE_TILES_L0= 25'h028_0000;   // 2 MB
-	localparam logic [24:0] BASE_TILES_L1= 25'h048_0000;   // 8 MB
-	localparam logic [24:0] BASE_TILES_L2= 25'h0C8_0000;   // 2 MB
-	localparam logic [24:0] BASE_SPRITES = 25'h0E8_0000;   // 2 MB
-	localparam logic [24:0] BASE_OKI     = 25'h108_0000;   // 1 MB
+	localparam logic [25:0] FG2_BASE_MAINCPU = 26'h000_0000;   // 2 MB reserved
+	localparam logic [25:0] FG2_BASE_AUDIOCPU= 26'h020_0000;   // 512 KB
+	localparam logic [25:0] FG2_BASE_TILES_L0= 26'h028_0000;   // 2 MB
+	localparam logic [25:0] FG2_BASE_TILES_L1= 26'h048_0000;   // 8 MB
+	localparam logic [25:0] FG2_BASE_TILES_L2= 26'h0C8_0000;   // 2 MB
+	localparam logic [25:0] FG2_BASE_SPRITES = 26'h0E8_0000;   // 2 MB
+	localparam logic [25:0] FG2_BASE_OKI     = 26'h108_0000;   // 1 MB
 
 	// =====================================================================
 	// ---- address map, FG-3 ----
@@ -142,11 +154,8 @@ module fuuki_sdram_top (
 	// sprite region empty ("spXX.uYY -- XX is the bank number"), and the
 	// sprite tile bank can address it, so the hole is part of the map.
 	//
-	// NOT YET WIRED. Every address port through this module, its arbiters,
-	// phy and bridge is [24:0] / [24:1] -- 32 MB -- and FG-3 needs [25:0].
-	// The `.mra` files are generated against this table (scripts/build_mra.py
-	// parses it), so the offsets are fixed and the widening is mechanical,
-	// but until it lands FG-3 cannot run. See docs/ROADMAP.md.
+	// Every address port through this module, its arbiters, phy and bridge
+	// is [25:0] / [25:1]; the controller drives bit 25 onto A9 (sdram.sv).
 	// =====================================================================
 	localparam logic [25:0] FG3_BASE_MAINCPU  = 26'h000_0000;   // 2 MB
 	localparam logic [25:0] FG3_BASE_AUDIOCPU = 26'h020_0000;   // 512 KB
@@ -157,8 +166,16 @@ module fuuki_sdram_top (
 	localparam logic [25:0] FG3_BASE_OKI      = 26'h348_0000;   // 4 MB  (MAME "ymf", OPL4 samples)
 	// end 0x388_0000 = 56.5 MB
 
+	// The region bases the engines and CPU see, by board.
+	localparam logic BOARD_FG2 = 1'b0, BOARD_FG3 = 1'b1;   // .mra mod byte bit 0
+	wire [25:0] base_maincpu  = (board == BOARD_FG3) ? FG3_BASE_MAINCPU  : FG2_BASE_MAINCPU;
+	wire [25:0] base_tiles_l0 = (board == BOARD_FG3) ? FG3_BASE_TILES_L0 : FG2_BASE_TILES_L0;
+	wire [25:0] base_tiles_l1 = (board == BOARD_FG3) ? FG3_BASE_TILES_L1 : FG2_BASE_TILES_L1;
+	wire [25:0] base_tiles_l2 = (board == BOARD_FG3) ? FG3_BASE_TILES_L2 : FG2_BASE_TILES_L2;
+	wire [25:0] base_sprites  = (board == BOARD_FG3) ? FG3_BASE_SPRITES  : FG2_BASE_SPRITES;
+
 	// ---- physical controller ----
-	logic [24:1] p_addr [0:2];
+	logic [25:1] p_addr [0:2];
 	logic        p_wrl  [0:2];
 	logic        p_wrh  [0:2];
 	logic [15:0] p_din  [0:2];
@@ -182,7 +199,7 @@ module fuuki_sdram_top (
 
 	// ---- one phy per physical port ----
 	logic        phy_req [0:2], phy_we [0:2], phy_we16 [0:2];
-	logic [24:0] phy_addr [0:2];
+	logic [25:0] phy_addr [0:2];
 	logic [15:0] phy_wdata [0:2];
 	logic        phy_busy [0:2], phy_valid [0:2];
 	logic [63:0] phy_rdata [0:2];
@@ -212,14 +229,19 @@ module fuuki_sdram_top (
 	// here, the answer is an N-entry ring per client, not a bigger arbiter.
 	// =====================================================================
 	logic [2:0]     tm_req_v;
-	logic [74:0]    tm_addr_v;     // 3 x 25
+	// 3 x 26. This MUST match sdram_arbiter's per-client width: when the
+	// address path went to 26 bits this stayed 3 x 25 while the sums became
+	// 26 bits each, so layer 1 read from {tm1[23:0], tm0[25]} and layer 2
+	// from {tm2[22:0], tm1[25:24]} -- garbage tilemaps on both boards while
+	// sprites (a single-client arbiter) stayed right.
+	logic [77:0]    tm_addr_v;
 	logic [2:0]     tm_valid_v;
 	logic [63:0]    tm_rdata;
 
 	assign tm_req_v  = {tm2_req, tm1_req, tm0_req};
-	assign tm_addr_v = {tm2_addr + BASE_TILES_L2,
-	                    tm1_addr + BASE_TILES_L1,
-	                    tm0_addr + BASE_TILES_L0};
+	assign tm_addr_v = {tm2_addr + base_tiles_l2,
+	                    tm1_addr + base_tiles_l1,
+	                    tm0_addr + base_tiles_l0};
 
 	assign tm0_valid = tm_valid_v[0];
 	assign tm1_valid = tm_valid_v[1];
@@ -237,7 +259,7 @@ module fuuki_sdram_top (
 		.phy_addr(phy_addr[0]), .phy_wdata(phy_wdata[0]),
 		.phy_busy(phy_busy[0]), .phy_valid(phy_valid[0]), .phy_rdata(phy_rdata[0]),
 		.c_req(tm_req_v), .c_addr(tm_addr_v), .c_valid(tm_valid_v), .c_rdata(tm_rdata),
-		.dl_req(1'b0), .dl_addr(25'd0), .dl_data(16'd0), .dl_we16(1'b0), .dl_busy()
+		.dl_req(1'b0), .dl_addr(26'd0), .dl_data(16'd0), .dl_we16(1'b0), .dl_busy()
 	);
 
 	// =====================================================================
@@ -262,16 +284,17 @@ module fuuki_sdram_top (
 		.phy_req(phy_req[1]), .phy_we(phy_we[1]), .phy_we16(phy_we16[1]),
 		.phy_addr(phy_addr[1]), .phy_wdata(phy_wdata[1]),
 		.phy_busy(phy_busy[1]), .phy_valid(phy_valid[1]), .phy_rdata(phy_rdata[1]),
-		.c_req(spr_req_v), .c_addr(spr_addr + BASE_SPRITES),
+		.c_req(spr_req_v), .c_addr(spr_addr + base_sprites),
 		.c_valid(spr_valid_v), .c_rdata(spr_data),
-		.dl_req(1'b0), .dl_addr(25'd0), .dl_data(16'd0), .dl_we16(1'b0), .dl_busy()
+		.dl_req(1'b0), .dl_addr(26'd0), .dl_data(16'd0), .dl_we16(1'b0), .dl_busy()
 	);
 
 	// =====================================================================
 	// Port 2 -- main CPU program fetch, and the ROM download.
 	// =====================================================================
-	logic        dl_req, dl_we16, dl_busy;
-	logic [24:0] dl_addr;
+	logic        dl_req, dl_we16;
+	logic        dl_busy;
+	logic [25:0] dl_addr;
 	logic [15:0] dl_data;
 	logic        dl_busy_d;
 	// The arbiter latches a download request by raising dl_busy, so its rising
@@ -296,7 +319,7 @@ module fuuki_sdram_top (
 	// without touching the chip at all -- which is most of why the CPU's
 	// bandwidth share stays modest.
 	logic        cpu_g_req, cpu_g_valid;
-	logic [24:0] cpu_g_addr;
+	logic [25:0] cpu_g_addr;
 	logic [63:0] cpu_g_data;
 
 	logic [15:0] cpu_word_le;
@@ -309,7 +332,7 @@ module fuuki_sdram_top (
 	// -- after the new ROM had been written underneath it.
 	sdram_narrow_bridge #(.WORD_BYTES(2)) u_cpu_bridge (
 		.clk(clk), .reset(reset), .inval(ioctl_download),
-		.req(cpu_req), .addr(cpu_addr + BASE_MAINCPU),
+		.req(cpu_req), .addr(cpu_addr + base_maincpu),
 		.valid(cpu_valid), .data(cpu_word_le),
 		.g_req(cpu_g_req), .g_addr(cpu_g_addr),
 		.g_valid(cpu_g_valid), .g_data(cpu_g_data)
@@ -334,6 +357,19 @@ module fuuki_sdram_top (
 	assign cpu_req_v   = cpu_g_req;
 	assign cpu_g_valid = cpu_valid_v[0];
 
+	// One download port on the arbiter, driven by whichever loader is live.
+	// dbg_dl_wr counts the arbiter's accepted writes either way, so the probe
+	// reports the fast copy's progress as it did the byte path's.
+	logic        arb_dl_req, arb_dl_we16, arb_dl_busy;
+	logic [25:0] arb_dl_addr;
+	logic [15:0] arb_dl_data;
+	assign arb_dl_req  = ldr_active ? ldr_req  : dl_req;
+	assign arb_dl_addr = ldr_active ? ldr_addr : dl_addr;
+	assign arb_dl_data = ldr_active ? ldr_data : dl_data;
+	assign arb_dl_we16 = ldr_active ? ldr_we16 : dl_we16;
+	assign dl_busy     = ldr_active ? 1'b0        : arb_dl_busy;
+	assign ldr_busy    = ldr_active ? arb_dl_busy : 1'b0;
+
 	sdram_arbiter #(.N(1)) u_arb_cpu (
 		.clk(clk), .reset(reset),
 		.phy_req(phy_req[2]), .phy_we(phy_we[2]), .phy_we16(phy_we16[2]),
@@ -341,8 +377,8 @@ module fuuki_sdram_top (
 		.phy_busy(phy_busy[2]), .phy_valid(phy_valid[2]), .phy_rdata(phy_rdata[2]),
 		.c_req(cpu_req_v), .c_addr(cpu_g_addr),
 		.c_valid(cpu_valid_v), .c_rdata(cpu_g_data),
-		.dl_req(dl_req), .dl_addr(dl_addr), .dl_data(dl_data),
-		.dl_we16(dl_we16), .dl_busy(dl_busy)
+		.dl_req(arb_dl_req), .dl_addr(arb_dl_addr), .dl_data(arb_dl_data),
+		.dl_we16(arb_dl_we16), .dl_busy(arb_dl_busy)
 	);
 
 endmodule

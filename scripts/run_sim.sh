@@ -10,7 +10,10 @@
 # grep the log for `readmem` first (LESSONS_LEARNED, "Testbench discipline").
 set -euo pipefail
 
-TB="${1:?usage: scripts/run_sim.sh <testbench-dir-name>}"
+TB="${1:?usage: scripts/run_sim.sh <testbench-dir-name> [vsim args...]}"
+# Anything after the bench name goes to vsim, so a plusarg can select a
+# variant of the same bench:  scripts/run_sim.sh video_tb +FG3=1
+shift
 MS="${MODELSIM_BIN:-/c/intelFPGA_lite/17.0/modelsim_ase/win32aloem}"
 
 [ -d sys ] || { echo "run me from the repository root"; exit 1; }
@@ -55,5 +58,5 @@ RTL=$(find rtl -name '*.sv'         -not -path '*/synth_check/*'         -not -n
 "$MS/vlog.exe" -quiet -sv -work work $RTL "sim/$TB"/*.sv
 
 echo "--- vsim: tb_${TB%_tb} ---"
-"$MS/vsim.exe" -c -do "run -all; quit -f" "work.tb_${TB%_tb}" 2>&1 \
+"$MS/vsim.exe" -c -do "run -all; quit -f" "work.tb_${TB%_tb}" "$@" 2>&1 \
   | grep -v "arithmetic operand\|Instance: /tb_.*/dut/u_cpu\|^# Loading"

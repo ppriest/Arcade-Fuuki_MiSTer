@@ -14,7 +14,7 @@
 	<!-- Board select: bit 0 = FG-2 / FG-3, bit 1 = SYSTEM port wiring (gogomile / pbancho+asura). -->
 	<rom index="1"><part>03</part></rom>
 
-	<rom index="0" zip="asurabusjr.zip|asurabus.zip" md5="none">
+	<rom index="0" zip="asurabusjr.zip|asurabus.zip" md5="none" address="0x30000000">
 		<interleave output="32">
 			<part name="24-31.pgm3" map="0001"/>
 			<part name="16-23.pgm2" map="0010"/>

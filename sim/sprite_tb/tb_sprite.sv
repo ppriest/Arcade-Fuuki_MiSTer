@@ -18,6 +18,7 @@
 
 module tb_sprite;
 
+	localparam logic BOARD_FG2 = 1'b0, BOARD_FG3 = 1'b1;   // .mra mod byte bit 0
 	localparam real HALF = 5.8207;
 	localparam int  H_TOTAL = 456, V_TOTAL = 262, H_ACTIVE = 320, V_ACTIVE = 240;
 	localparam int  W = 320, H = 240;
@@ -95,7 +96,7 @@ module tb_sprite;
 		.clk(clk), .reset(reset),
 		.line_tick(line_tick), .line_start(eng_start), .render_line(vcnt_next2),
 		.busy(eng_busy), .ovr_ev(ovr_ev),
-		.board_fg3(1'b0), .tilebank(32'd0), .gfx_base(25'd0),
+		.board(BOARD_FG2), .tilebank(32'd0), .gfx_base(26'd0), .spr_reverse(1'b0),
 		.n_entries(n_entries),
 		.yt_addr(yt_addr), .yt_data(yt_data),
 		.rec_addr(rec_addr), .rec_data(rec_data),

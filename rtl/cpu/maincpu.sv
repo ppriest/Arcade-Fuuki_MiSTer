@@ -38,7 +38,7 @@ module maincpu (
 	input  logic reset,
 
 	// Board select: 0 = FG-2 (68000), 1 = FG-3 (68EC020)
-	input  logic board_fg3,
+	input  logic board,   // BOARD_FG2 / BOARD_FG3
 
 	// Program ROM, via a req/valid transport (SDRAM).
 	//
@@ -127,6 +127,8 @@ module maincpu (
 	output logic [2:0]   dbg_iack_level   // level on A3..A1 during that access
 );
 
+
+	localparam logic BOARD_FG2 = 1'b0, BOARD_FG3 = 1'b1;   // .mra mod byte bit 0
 	// =====================================================================
 	// CPU clock enable
 	//
@@ -148,7 +150,7 @@ module maincpu (
 	localparam int CE_NUM_FG2 = 176;   // 16 MHz
 	localparam int CE_NUM_FG3 = 220;   // 20 MHz
 
-	wire [10:0] ce_num = board_fg3 ? 11'(CE_NUM_FG3) : 11'(CE_NUM_FG2);
+	wire [10:0] ce_num = (board == BOARD_FG3) ? 11'(CE_NUM_FG3) : 11'(CE_NUM_FG2);
 
 	logic [10:0] ce_acc;
 	logic        cpu_ce;
@@ -196,7 +198,7 @@ module maincpu (
 		.IPL(ipl),
 		.IPL_autovector(1'b1),   // all three Fuuki IRQs are autovectored
 		.berr(1'b0),             // active HIGH in the kernel; no bus errors here
-		.CPU(board_fg3 ? 2'b11 : 2'b00),
+		.CPU((board == BOARD_FG3) ? 2'b11 : 2'b00),
 		.addr_out(a32),
 		.data_write(cpu_dout),
 		.nWr(nWr), .nUDS(nUDS), .nLDS(nLDS),
@@ -222,7 +224,7 @@ module maincpu (
 	wire [23:0] addr24 = a32[23:0];
 
 	// ROM is 1 MB on FG-2, 2 MB on FG-3.
-	wire is_rom = board_fg3 ? (addr24 <= 24'h1FFFFF)
+	wire is_rom = (board == BOARD_FG3) ? (addr24 <= 24'h1FFFFF)
 	                        : (addr24 <= 24'h0FFFFF);
 
 	wire is_workram   = (addr24 >= 24'h400000) && (addr24 <= 24'h41FFFF);
@@ -230,29 +232,29 @@ module maincpu (
 
 	// FG-2 mirrors sprite RAM at +0x8000 (MAME: .mirror(0x008000)).
 	wire is_spriteram = ((addr24 >= 24'h600000) && (addr24 <= 24'h601FFF)) ||
-	                    (!board_fg3 && (addr24 >= 24'h608000) && (addr24 <= 24'h609FFF));
+	                    ((board == BOARD_FG2) && (addr24 >= 24'h608000) && (addr24 <= 24'h609FFF));
 
 	wire is_palette   = (addr24 >= 24'h700000) && (addr24 <= 24'h703FFF);
 
 	wire is_system    = (addr24 >= 24'h800000) && (addr24 <= 24'h800003);
 	wire is_p1p2      = (addr24 >= 24'h810000) && (addr24 <= 24'h810003);
 	wire is_dsw       = (addr24 >= 24'h880000) && (addr24 <= 24'h880003);
-	wire is_dsw2      =  board_fg3 && (addr24 >= 24'h890000) && (addr24 <= 24'h890003);
+	wire is_dsw2      =  (board == BOARD_FG3) && (addr24 >= 24'h890000) && (addr24 <= 24'h890003);
 
 	// FG-2 sound latch. MAME maps it at 0x8a0001 as a byte, reached by byte,
 	// word and long writes alike; decode the enclosing word.
-	wire is_latch     = !board_fg3 && (addr24 >= 24'h8A0000) && (addr24 <= 24'h8A0003);
+	wire is_latch     = (board == BOARD_FG2) && (addr24 >= 24'h8A0000) && (addr24 <= 24'h8A0003);
 
 	wire is_vregs     = (addr24 >= 24'h8C0000) && (addr24 <= 24'h8EFFFF);
-	wire is_sharedram =  board_fg3 && (addr24 >= 24'h903FE0) && (addr24 <= 24'h903FFF);
-	wire is_tilebank  =  board_fg3 && (addr24 >= 24'hA00000) && (addr24 <= 24'hA00003);
+	wire is_sharedram =  (board == BOARD_FG3) && (addr24 >= 24'h903FE0) && (addr24 <= 24'h903FFF);
+	wire is_tilebank  =  (board == BOARD_FG3) && (addr24 >= 24'hA00000) && (addr24 <= 24'hA00003);
 
 	// FG-3's 0x508000-0x517FFF: MAME calls it "more tilemap, or linescroll?
 	// Seems to be empty all of the time". Decoded so accesses terminate
 	// rather than hanging the bus, but NOT backed by 64 KB of block RAM
 	// until something proves it is needed -- see docs/ROADMAP.md open item 7.
 	// Reads return zero.
-	wire is_unused_ram = board_fg3 && (addr24 >= 24'h508000) && (addr24 <= 24'h517FFF);
+	wire is_unused_ram = (board == BOARD_FG3) && (addr24 >= 24'h508000) && (addr24 <= 24'h517FFF);
 
 	// Video-register sub-block, from the two address bits that separate them.
 	assign vregs_sel  = addr24[17:16];   // 0 = regs, 1 = unknown, 2 = priority
@@ -350,8 +352,17 @@ module maincpu (
 	always_ff @(posedge clk or posedge reset) begin
 		if (reset) tilebank <= 32'd0;
 		else if (wr_now && is_tilebank) begin
-			if (wr_h) tilebank[31:16] <= cpu_dout;
-			if (wr_l) tilebank[15:0]  <= cpu_dout;
+			// A 32-bit register on a 16-bit bus: the 68020's move.l arrives
+			// as two word cycles, A00000 then A00002, selected by A1. The
+			// first version picked the half by byte lane instead, so a long
+			// write left {low, low}.
+			if (!addr24[1]) begin
+				if (wr_h) tilebank[31:24] <= cpu_dout[15:8];
+				if (wr_l) tilebank[23:16] <= cpu_dout[7:0];
+			end else begin
+				if (wr_h) tilebank[15:8]  <= cpu_dout[15:8];
+				if (wr_l) tilebank[7:0]   <= cpu_dout[7:0];
+			end
 		end
 	end
 
@@ -408,9 +419,6 @@ module maincpu (
 
 	assign cpu_din = acc_data;
 	assign dbg_fc  = fc;
-	assign dbg_irq_pending = {irq5_pending, irq3_pending, irq1_pending};
-	assign dbg_iack        = iack;
-	assign dbg_iack_level  = addr24[3:1];
 
 	// =====================================================================
 	// Interrupts
@@ -483,5 +491,11 @@ module maincpu (
 			if (irq5_trig && !irq5_d) irq5_pending <= 1'b1;
 		end
 	end
+
+	// Debug taps, after the declarations they read: ModelSim rejects a use
+	// before the declaration where Quartus tolerates it (LESSONS_LEARNED).
+	assign dbg_irq_pending = {irq5_pending, irq3_pending, irq1_pending};
+	assign dbg_iack        = iack;
+	assign dbg_iack_level  = addr24[3:1];
 
 endmodule

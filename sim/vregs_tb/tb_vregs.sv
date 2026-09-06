@@ -10,13 +10,14 @@
 
 module tb_vregs;
 
+	localparam logic BOARD_FG2 = 1'b0, BOARD_FG3 = 1'b1;   // .mra mod byte bit 0
 	localparam real HALF = 5.8207;
 
 	logic clk = 0;
 	logic reset = 1;
 	always #(HALF) clk = ~clk;
 
-	logic        board_fg3 = 0;
+	logic board = BOARD_FG2;
 	logic [4:0]  cpu_addr = 0;
 	logic [1:0]  cpu_sel = 0;
 	logic        cpu_wel = 0, cpu_weh = 0;
@@ -29,7 +30,7 @@ module tb_vregs;
 	logic [1:0]  tf, tm, tb;
 
 	vregs dut (
-		.clk(clk), .reset(reset), .board_fg3(board_fg3),
+		.clk(clk), .reset(reset), .board(board),
 		.cpu_addr(cpu_addr), .cpu_sel(cpu_sel),
 		.cpu_wel(cpu_wel), .cpu_weh(cpu_weh),
 		.cpu_wdata(cpu_wdata), .cpu_rdata(cpu_rdata),
@@ -137,10 +138,10 @@ module tb_vregs;
 
 		// FG-3 drops layer 2's x offset; everything else is unchanged.
 		$display("\n--- same registers, FG-3 ---");
-		board_fg3 = 1; #1;
+		board = BOARD_FG3; #1;
 		check16(l2x, 16'h0060, "layer2 scrollX has no +0x10 on FG-3");
 		check16(l0y, 16'h001D, "layer0 scrollY unchanged between boards");
-		board_fg3 = 0; #1;
+		board = BOARD_FG2; #1;
 
 		// -------------------------------------------------------------
 		// Underflow must WRAP, as u16 does in MAME. All-zero registers give
@@ -230,14 +231,14 @@ module tb_vregs;
 		check(tf == 2'd1 && tm == 2'd2 && tb == 2'd0,
 		      "capture: priority 3 -> front 1, middle 2, back 0");
 
-		// The game parks the raster line at 0xfffe when it wants NO raster
-		// interrupt. Only the low 9 bits can reach a 0..261 line counter and
-		// 0x1fe = 510 is unreachable, so video_timing never fires it -- which
-		// is plainly the intent. Recorded because MAME does NOT behave this
-		// way: screen_device::time_until_pos() takes vpos modulo the screen
-		// height, so 0xfffe wraps onto a real line and fires a raster IRQ the
-		// hardware almost certainly does not. See docs/ROADMAP.md.
-		check(raster_line == 9'h1fe, "capture: raster line 0xfffe -> 0x1fe, unreachable");
+		// The game parks the raster line at 0xfffe between raster chains.
+		// MAME hands the register to screen_device::time_until_pos(), which
+		// takes vpos modulo the screen height, so 0xfffe fires at line 34 --
+		// and gogomile depends on that IRQ5 every frame (it hung on hardware
+		// when the RTL let the value fire nothing; see vregs.sv). vregs.sv
+		// reduces by repeated subtraction, up to 250 clocks after the write.
+		repeat (300) @(posedge clk);
+		check(raster_line == 9'd34, "capture: raster line 0xfffe -> 34 (0xfffe mod 262), as MAME");
 
 		$display("\n=== %0d error(s) ===", errors);
 		if (errors == 0) $display("ALL CHECKS PASSED");

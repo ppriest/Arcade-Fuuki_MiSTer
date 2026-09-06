@@ -78,7 +78,7 @@ module tb_tilemap;
 	// FSM is between states and hides exactly the protocol bugs this is meant
 	// to catch (LESSONS_LEARNED).
 	localparam int GFX_LAT = 12;
-	localparam int GFX_BYTES = 8*1024*1024;
+	localparam int GFX_BYTES = 34*1024*1024;   // FG-3 sprite region is 32 MB
 
 	byte unsigned gfx [0:GFX_BYTES-1];
 	int  gfx_len = 0;
@@ -208,7 +208,14 @@ module tb_tilemap;
 				for (int x = 0; x < W; x++)
 					if (frame[y][x][13]) opaque_px++;
 			$display("  opaque pixels: %0d of %0d", opaque_px, W*H);
-			check(opaque_px > 0, "layer produced opaque pixels");
+			// NOT an assertion that the layer drew something. A layer whose
+			// VRAM bank is all zeroes is legitimately blank -- asurabld's title
+			// screen leaves banks 0, 2 and 3 entirely zero and draws everything
+			// on layer 1. Asserting "something was drawn" turns correct
+			// behaviour into a failure and hides the real question, which is
+			// whether what IS drawn matches.
+			if (opaque_px == 0)
+				$display("  (layer is blank on this frame -- check its VRAM bank)");
 		end
 
 		// Write the frame out for scripts/tilemap_png.py.

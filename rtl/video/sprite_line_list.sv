@@ -15,22 +15,25 @@
 // 1024 records x ~4 cycles = 4K cycles against vblank's 120,384 -- 3%.
 //
 // ---------------------------------------------------------------------------
-// DEPTH ORDER, AND WHY THE SCAN RUNS BACKWARDS.
+// DEPTH ORDER: THE HIGHEST-NUMBERED RECORD IS DRAWN ON TOP.
 //
-// MAME installs a colpri callback for both boards, so fuukispr.cpp walks the
-// list from the LAST record to the first (`start = size-4; inc = -4`) "for
-// pdrawgfx". Record 0 is therefore drawn LAST and wins among equal priorities.
+// The scan runs from record 0 upwards and appends, so record 1023 lands last
+// in the list; the per-line engine renders the list in order with later writes
+// overwriting earlier ones, so the last one stored wins.
 //
-// The per-line engine renders list entries in order and later writes overwrite
-// earlier ones, so the entry that wins is the LAST one in the list. To make
-// record 0 win, record 0 must be stored last -- hence the scan runs from 1023
-// down to 0 and appends.
+// THIS IS THE ORDER MEASURED ON HARDWARE, and it is the opposite of what
+// reading fuukispr.cpp suggests. That file walks the list from the last record
+// to the first when a colpri callback is installed ("Draw them backwards, for
+// pdrawgfx"), which both Fuuki drivers do -- so record 0 is drawn last there
+// and should be on top. Built that way, asurabld drew its high-score table,
+// its in-game sprites and its character-name flashes wrongly, and flipping the
+// order fixed all three (Fuuki.sv's "Sprite order" switch was added to make
+// that an A/B on one frozen frame rather than a rebuild). The discrepancy with
+// the driver is NOT explained; do not "correct" this back to match a reading
+// of fuukispr.cpp without re-running that comparison on hardware.
 //
-// Do not "simplify" this to a forward scan. Psikyo inverted its sprite depth
-// on exactly this kind of reasoning, shipped it, and reverted it: reading half
-// a mechanism is enough to build a confident wrong change (LESSONS_LEARNED,
-// "Read both halves of a mechanism before changing it").
-// ---------------------------------------------------------------------------
+// Fuuki.sv's OSD bit 60 (and JTAG source bit 2) still switches the two, so the
+// question can be re-opened in seconds on any build.
 //
 // Record format (docs/ROADMAP.md, "Sprites"):
 //   word0  15-12 xnum-1   11 flipX  10 DISABLE   9-0 X (signed)
@@ -142,7 +145,7 @@ module sprite_line_list (
 			case (st)
 			S_IDLE: begin
 				if (build_start) begin
-					idx        <= 10'd1023;    // scan backwards -- see header
+					idx        <= 10'd0;       // scan forwards -- see header
 					wr_idx     <= 10'd0;
 					n_entries  <= 11'd0;
 					build_busy <= 1'b1;
@@ -177,9 +180,9 @@ module sprite_line_list (
 					wr_idx      <= wr_idx + 10'd1;
 					n_entries   <= n_entries + 11'd1;
 				end
-				if (idx == 10'd0) st <= S_DONE;
+				if (idx == 10'd1023) st <= S_DONE;
 				else begin
-					idx <= idx - 10'd1;
+					idx <= idx + 10'd1;
 					st  <= S_A0;
 				end
 			end

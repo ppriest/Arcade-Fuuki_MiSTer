@@ -52,19 +52,23 @@ module tb_sdram;
 	logic        ioctl_download = 0;
 	logic [15:0] ioctl_index = 0;
 	logic        ioctl_wr = 0;
-	logic [24:0] ioctl_addr = 0;
+	logic [26:0] ioctl_addr = 0;
 	logic [7:0]  ioctl_dout = 0;
 	logic        ioctl_wait;
 
 	// ---- clients ----
 	logic        tm0_req=0, tm1_req=0, tm2_req=0, spr_req=0, cpu_req=0;
-	logic [24:0] tm0_addr=0, tm1_addr=0, tm2_addr=0, spr_addr=0, cpu_addr=0;
+	logic [25:0] tm0_addr=0, tm1_addr=0, tm2_addr=0, spr_addr=0, cpu_addr=0;
 	logic        tm0_valid, tm1_valid, tm2_valid, spr_valid, cpu_valid;
 	logic [63:0] tm0_data, tm1_data, tm2_data, spr_data;
 	logic [15:0] cpu_data;
 
+	localparam logic BOARD_FG2 = 1'b0, BOARD_FG3 = 1'b1;   // .mra mod byte bit 0
 	fuuki_sdram_top dut (
-		.clk(clk), .reset(reset), .init(init),
+		.clk(clk), .reset(reset), .init(init), .board(BOARD_FG2),
+		// fast ROM loader idle: this bench exercises the ioctl byte path
+		.ldr_active(1'b0), .ldr_req(1'b0), .ldr_addr(26'd0),
+		.ldr_data(16'd0), .ldr_we16(1'b0), .ldr_busy(),
 		.SDRAM_A(SDRAM_A), .SDRAM_DQ(SDRAM_DQ),
 		.SDRAM_DQML(SDRAM_DQML), .SDRAM_DQMH(SDRAM_DQMH),
 		.SDRAM_BA(SDRAM_BA), .SDRAM_nCS(SDRAM_nCS), .SDRAM_nWE(SDRAM_nWE),
@@ -97,12 +101,12 @@ module tb_sdram;
 	byte unsigned src [0:NBYTES-1];
 
 	// ---- HPS download, byte at a time with backpressure ----
-	task automatic download(input logic [24:0] base, input int n);
+	task automatic download(input logic [25:0] base, input int n);
 		ioctl_index    <= 16'd0;
 		ioctl_download <= 1'b1;
 		@(posedge clk);
 		for (int i = 0; i < n; i++) begin
-			ioctl_addr <= base + 25'(i);
+			ioctl_addr <= 27'(base + 26'(i));
 			ioctl_dout <= src[i];
 			ioctl_wr   <= 1'b1;
 			@(posedge clk);
@@ -128,7 +132,7 @@ module tb_sdram;
 		@(posedge clk);
 	endtask
 
-	task automatic read_granule(input int which, input logic [24:0] a,
+	task automatic read_granule(input int which, input logic [25:0] a,
 	                            output logic [63:0] d);
 		@(posedge clk);
 		case (which)
@@ -203,7 +207,7 @@ module tb_sdram;
 
 		// =============================================================
 		$display("\n--- download ---");
-		download(25'h000_0000, NBYTES);           // BASE_MAINCPU
+		download(26'h000_0000, NBYTES);           // BASE_MAINCPU
 		$display("  %0d bytes delivered", NBYTES);
 
 		// RAW GRANULES FIRST. This separates "the transport wrote or read the
@@ -212,7 +216,7 @@ module tb_sdram;
 		// completely different fixes.
 		$display("
 --- raw granules through a graphics port ---");
-		download(25'h028_0000, 128);              // BASE_TILES_L0, tm0 offset 0
+		download(26'h028_0000, 128);              // BASE_TILES_L0, tm0 offset 0
 		begin
 			int bad;
 			logic [63:0] d;
@@ -221,7 +225,7 @@ module tb_sdram;
 				// Read ONCE. The double-read diagnostic that found the phy's
 				// stale handoff is deliberately gone: leaving it in would mask
 				// exactly the bug it was written to find.
-				read_granule(0, 25'(8*i), d);
+				read_granule(0, 26'(8*i), d);
 				if (d !== src_granule(8*i)) begin
 					if (bad < 4)
 						$display("    granule %0d: got %016x expected %016x", i, d, src_granule(8*i));
@@ -229,6 +233,38 @@ module tb_sdram;
 				end
 			end
 			check(bad == 0, "16 raw granules survive the download/read round trip");
+		end
+
+		// Every graphics client at a NON-ZERO offset inside its own region.
+		// The arbiter packs its clients' addresses into one bus; when the
+		// address path went to 26 bits the top kept packing 3 x 25 while the
+		// sums were 26 bits each, so layers 1 and 2 read from bit-shifted
+		// addresses. Offset-0 reads cannot see that (shifted zeros are zeros);
+		// these can.
+		$display("
+--- layers 1, 2 and sprites at non-zero offsets ---");
+		download(26'h048_0000 + 26'h1000, 128);   // FG2_BASE_TILES_L1 + 0x1000
+		download(26'h0C8_0000 + 26'h2000, 128);   // FG2_BASE_TILES_L2 + 0x2000
+		download(26'h0E8_0000 + 26'h3000, 128);   // FG2_BASE_SPRITES  + 0x3000
+		begin
+			int bad;
+			logic [63:0] d;
+			bad = 0;
+			// diagnostic: the same bytes through tm0 (base 0x280000), i.e. does
+			// the download land where it should, independent of tm1's path?
+			read_granule(0, 26'h201000, d);
+			$display("    tm0 at abs 0x481000: got %016x expected %016x", d, src_granule(0));
+			read_granule(0, 26'h000000, d);
+			$display("    tm0 at abs 0x280000: got %016x expected %016x", d, src_granule(0));
+			for (int i = 0; i < 16; i++) begin
+				read_granule(1, 26'h1000 + 26'(8*i), d);
+				if (d !== src_granule(8*i)) begin if (bad < 3) $display("    tm1 granule %0d: got %016x expected %016x", i, d, src_granule(8*i)); bad++; end
+				read_granule(2, 26'h2000 + 26'(8*i), d);
+				if (d !== src_granule(8*i)) begin if (bad < 3) $display("    tm2 granule %0d: got %016x expected %016x", i, d, src_granule(8*i)); bad++; end
+				read_granule(3, 26'h3000 + 26'(8*i), d);
+				if (d !== src_granule(8*i)) begin if (bad < 3) $display("    spr granule %0d: got %016x expected %016x", i, d, src_granule(8*i)); bad++; end
+			end
+			check(bad == 0, "layers 1, 2 and sprites read their own regions at non-zero offsets");
 		end
 
 		// =============================================================
@@ -239,7 +275,7 @@ module tb_sdram;
 			for (int i = 0; i < 64; i++) begin
 				logic [15:0] exp;
 				@(posedge clk);
-				cpu_addr <= 25'(2*i);
+				cpu_addr <= 26'(2*i);
 				cpu_req  <= 1'b1;
 				// A PULSE, not a held level. sdram_narrow_bridge latches
 				// its request in the idle state and returns there on
@@ -272,10 +308,10 @@ module tb_sdram;
 			// physical address -- read the CPU region through the raw offsets
 			// each port maps to by subtracting its base is not possible from
 			// outside, so instead check self-consistency and cross-talk.
-			read_granule(0, 25'd0, d0);
-			read_granule(1, 25'd0, d1);
-			read_granule(2, 25'd0, d2);
-			read_granule(3, 25'd0, ds);
+			read_granule(0, 26'd0, d0);
+			read_granule(1, 26'd0, d1);
+			read_granule(2, 26'd0, d2);
+			read_granule(3, 26'd0, ds);
 			$display("    tm0=%016x", d0);
 			$display("    tm1=%016x", d1);
 			$display("    tm2=%016x", d2);
@@ -297,10 +333,10 @@ module tb_sdram;
 			int bad;
 			bad = 0;
 			fork
-				begin logic [63:0] d; for (int i=0;i<16;i++) read_granule(0, 25'(8*i), d); end
-				begin logic [63:0] d; for (int i=0;i<16;i++) read_granule(1, 25'(8*i), d); end
-				begin logic [63:0] d; for (int i=0;i<16;i++) read_granule(2, 25'(8*i), d); end
-				begin logic [63:0] d; for (int i=0;i<16;i++) read_granule(3, 25'(8*i), d); end
+				begin logic [63:0] d; for (int i=0;i<16;i++) read_granule(0, 26'(8*i), d); end
+				begin logic [63:0] d; for (int i=0;i<16;i++) read_granule(1, 26'(8*i), d); end
+				begin logic [63:0] d; for (int i=0;i<16;i++) read_granule(2, 26'(8*i), d); end
+				begin logic [63:0] d; for (int i=0;i<16;i++) read_granule(3, 26'(8*i), d); end
 			join
 			check(1'b1, "four concurrent streams completed without deadlock");
 		end
@@ -316,13 +352,13 @@ module tb_sdram;
 			fork
 				begin
 					logic [63:0] d;
-					for (int i = 0; i < 40; i++) read_granule(0, 25'(8*i), d);
+					for (int i = 0; i < 40; i++) read_granule(0, 26'(8*i), d);
 				end
 				begin
 					for (int i = 0; i < 16; i++) begin
 						logic [15:0] exp;
 						@(posedge clk);
-						cpu_addr <= 25'(2*i);
+						cpu_addr <= 26'(2*i);
 						cpu_req  <= 1'b1;
 						// A PULSE, not a held level. sdram_narrow_bridge latches
 						// its request in the idle state and returns there on

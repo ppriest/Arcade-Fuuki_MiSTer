@@ -17,6 +17,7 @@
 
 module tb_spritebuf;
 
+	localparam logic BOARD_FG2 = 1'b0, BOARD_FG3 = 1'b1;   // .mra mod byte bit 0
 	localparam real HALF = 5.8207;
 
 	logic clk = 0;
@@ -24,7 +25,8 @@ module tb_spritebuf;
 	always #(HALF) clk = ~clk;
 
 	// ---- spriteram_dbuf ----
-	logic        board_fg3 = 1;
+	logic board = BOARD_FG3;
+	logic boards [2] = '{BOARD_FG2, BOARD_FG3};
 	logic [11:0] cpu_addr = 0;
 	logic        cpu_wel = 0, cpu_weh = 0;
 	logic [15:0] cpu_wdata = 0;
@@ -35,7 +37,7 @@ module tb_spritebuf;
 	logic [15:0] rd_data;
 
 	spriteram_dbuf u_dbuf (
-		.clk(clk), .reset(reset), .board_fg3(board_fg3),
+		.clk(clk), .reset(reset), .board(board),
 		.cpu_addr(cpu_addr), .cpu_wel(cpu_wel), .cpu_weh(cpu_weh),
 		.cpu_wdata(cpu_wdata), .cpu_rdata(cpu_rdata),
 		.tilebank_live(tilebank_live), .tilebank_render(tilebank_render),
@@ -96,11 +98,9 @@ module tb_spritebuf;
 		@(posedge clk);
 		copy_start <= 1'b0;
 		@(posedge clk);
-		if (board_fg3) begin
-			// do/while, never while/do -- the latter races the always_ff
-			// updating copy_busy on the same edge.
-			do @(posedge clk); while (copy_busy);
-		end
+		// do/while, never while/do -- the latter races the always_ff
+		// updating copy_busy on the same edge.
+		do @(posedge clk); while (copy_busy);
 	endtask
 
 	logic [15:0] v;
@@ -112,32 +112,28 @@ module tb_spritebuf;
 		repeat (5) @(posedge clk);
 
 		// =============================================================
-		$display("\n--- FG-3: two generations of delay ---");
-		board_fg3 = 1;
-
-		cpu_write(12'h010, 16'hAAAA);
-		frame;                                    // buf0 = AAAA
-		render_read(12'h010, v);
-		check(v !== 16'hAAAA, "after 1 frame the render side does NOT yet see it");
-
-		frame;                                    // buf1 = AAAA
-		render_read(12'h010, v);
-		check(v === 16'hAAAA, "after 2 frames the render side sees it");
-
-		// Order check: a value written and then immediately superseded must
-		// still appear on the render side two frames later, in sequence. If
-		// the passes ran in the wrong order, BBBB would overtake AAAA.
-		cpu_write(12'h010, 16'hBBBB);
-		frame;
-		render_read(12'h010, v);
-		check(v === 16'hAAAA, "generations advance in order (AAAA still showing)");
-		frame;
-		render_read(12'h010, v);
-		check(v === 16'hBBBB, "the newer value arrives exactly one frame later");
+		$display("
+--- one snapshot per frame, both boards ---");
+		foreach (boards[b]) begin
+			board = boards[b];
+			cpu_write(12'h010, 16'hAAAA);
+			render_read(12'h010, v);
+			check(v !== 16'hAAAA, "a write is NOT visible to the renderer mid-frame");
+			frame;
+			render_read(12'h010, v);
+			check(v === 16'hAAAA, "it is visible after the next frame boundary");
+			cpu_write(12'h010, 16'hBBBB);
+			render_read(12'h010, v);
+			check(v === 16'hAAAA, "the renderer keeps the snapshot until the next boundary");
+			frame;
+			render_read(12'h010, v);
+			check(v === 16'hBBBB, "the newer value arrives at the next boundary");
+		end
 
 		// =============================================================
 		// A swap would pass everything above. This is what separates them.
-		$display("\n--- copy, not swap: a stale record survives many frames ---");
+		$display("
+--- copy, not swap: a stale record survives many frames ---");
 		cpu_write(12'h100, 16'h1234);
 		for (int i = 0; i < 6; i++) frame;        // never rewritten
 		cpu_read(12'h100, v);
@@ -146,21 +142,12 @@ module tb_spritebuf;
 		check(v === 16'h1234, "render side sees the same record, not a stale bank");
 
 		// =============================================================
-		$display("\n--- tile bank is delayed in lockstep with the data ---");
+		$display("
+--- tile bank travels with the snapshot ---");
 		tilebank_live = 32'hDEADBEEF;
+		check(tilebank_render !== 32'hDEADBEEF, "tile bank not visible mid-frame");
 		frame;
-		check(tilebank_render !== 32'hDEADBEEF, "tile bank not yet visible after 1 frame");
-		frame;
-		check(tilebank_render === 32'hDEADBEEF, "tile bank visible after 2 frames");
-
-		// =============================================================
-		$display("\n--- FG-2: no buffering, render sees live immediately ---");
-		board_fg3 = 0;
-		cpu_write(12'h020, 16'hC0DE);
-		render_read(12'h020, v);
-		check(v === 16'hC0DE, "FG-2 render port reads the live RAM with no delay");
-		frame;
-		check(copy_busy === 1'b0, "FG-2 runs no copy at all");
+		check(tilebank_render === 32'hDEADBEEF, "tile bank visible after the boundary");
 
 		// =============================================================
 		$display("\n--- line buffer: swap, clear, ready ---");

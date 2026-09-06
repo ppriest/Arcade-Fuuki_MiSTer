@@ -28,7 +28,7 @@
 // symptom was a black screen with nothing pointing at memory.
 // ---------------------------------------------------------------------------
 //
-// ONE .rbf SERVES BOTH BOARDS. `board_fg3` comes from the .mra mod byte and
+// ONE .rbf SERVES BOTH BOARDS. `board` comes from the .mra mod byte and
 // picks the CPU mode, the tile depths, the colour shift and the sprite
 // buffering. It is a runtime input, never a parameter.
 
@@ -44,7 +44,7 @@ module fuuki_core (
 	input  logic core_reset,   // reset | ioctl_download: CPU and video
 
 	// ---- board select, from the .mra mod byte ----
-	input  logic board_fg3,
+	input  logic board,   // BOARD_FG2 / BOARD_FG3
 	input  logic sysport_alt,  // pbancho/asura SYSTEM layout (see Fuuki.sv)
 
 	// ---- SDRAM pins ----
@@ -63,7 +63,15 @@ module fuuki_core (
 	input  logic        ioctl_download,
 	input  logic [15:0] ioctl_index,
 	input  logic        ioctl_wr,
-	input  logic [24:0] ioctl_addr,
+	input  logic [26:0] ioctl_addr,
+
+	// Fast ROM load (Fuuki.sv drives these; see rtl/memory/rom_loader.sv)
+	input  logic        ldr_active,
+	input  logic        ldr_req,
+	input  logic [25:0] ldr_addr,
+	input  logic [15:0] ldr_data,
+	input  logic        ldr_we16,
+	output logic        ldr_busy,
 	input  logic [7:0]  ioctl_dout,
 	output logic        ioctl_wait,
 
@@ -98,7 +106,7 @@ module fuuki_core (
 	output logic        dbg_rom_valid,
 	output logic [15:0] dbg_rom_data,
 	output logic        dbg_dl_wr,
-	output logic [24:0] dbg_dl_addr,
+	output logic [25:0] dbg_dl_addr,
 	output logic [2:0]  dbg_irq_pending, // {irq5, irq3, irq1} pending in maincpu
 	output logic        dbg_iack,        // interrupt-acknowledge access in progress
 	output logic [2:0]  dbg_iack_level,  // level on A3..A1 during it
@@ -111,10 +119,14 @@ module fuuki_core (
 	input  logic        dbg_ring,
 	input  logic        dbg_rearm,
 	input  logic [2:0]  dbg_page,     // which 40-entry page of the buffer to show
+	input  logic [23:0] dbg_dump,     // memory dump: {region[3:0], page[19:0]} (JTAG source [31:8])
 	input  logic        dbg_trig,     // ring mode: freeze on the first exception-vector read
+	input  logic        dbg_spr_rev,  // render the sprite candidate list back to front
 	output logic        dbg_frozen
 );
 
+
+	localparam logic BOARD_FG2 = 1'b0, BOARD_FG3 = 1'b1;   // .mra mod byte bit 0
 	// =====================================================================
 	// Video timing
 	// =====================================================================
@@ -162,12 +174,18 @@ module fuuki_core (
 
 	logic [4:0]   vregs_addr;
 	logic [1:0]   vregs_sel;
-	logic [24:0]  dl_addr_dbg;
+	logic [25:0]  dl_addr_dbg;
 	logic [2:0]   cpu_fc;
 	// Declared here, ABOVE the maincpu instance that pauses on it, not at the
 	// walker where it is defined: vlog rejects use-before-declare (vlog-2388)
 	// and Quartus silently resolves it, which is how it reached hardware.
 	wire          walk_active = (dbg_src == 2'd3);
+	// Memory-dump decode, declared here because the memories below index by it.
+	wire [3:0]    dump_region = dbg_dump[23:20];
+	wire [19:0]   dump_page   = dbg_dump[19:0];
+	wire          walk_sdram  = (dump_region == 4'd0);
+	wire          walk_mem    = walk_active && !walk_sdram;
+	logic [7:0]   walk_idx = 8'd0;
 	assign dbg_dl_addr = dl_addr_dbg;
 	logic         vregs_wel, vregs_weh;
 	logic [15:0]  vregs_wdata, vregs_rdata;
@@ -182,7 +200,7 @@ module fuuki_core (
 
 	maincpu u_cpu (
 		.clk(clk), .reset(core_reset),
-		.board_fg3(board_fg3),
+		.board(board),
 		.rom_req(rom_req), .rom_addr(rom_addr),
 		.rom_valid(rom_valid), .rom_data(rom_data),
 		.workram_addr(workram_addr),
@@ -218,10 +236,37 @@ module fuuki_core (
 	assign dbg_rom_valid = rom_valid;
 	assign dbg_rom_data  = rom_data;
 
-	// No sound hardware yet, so the FG-2 latch and the FG-3 shared RAM go
-	// nowhere. Reading back zero is what a silent board looks like; the Z80
-	// side is Phase 3.
-	assign sharedram_rdata = 8'h00;
+	// No sound hardware yet, so the FG-2 latch goes nowhere.
+	//
+	// FG-3 SHARED RAM, WITH A FAKE Z80 HANDSHAKE FOR BRING-UP. The 16 bytes
+	// at 0x903FE0 (odd bytes; MAME numbers the umask32 0x00ff00ff lanes
+	// consecutively) are the Z80's 0x7FF0-0x7FFF. srom.u7's protocol, read
+	// from the firmware: at boot the Z80 writes 0xCD to byte 0 and spins
+	// until the 68020 replaces it with 0xAE, then clears it; its main loop
+	// then watches bytes 0,2,4,6,8,A for a command whose high nibble is 0xA
+	// (the odd byte after it is the parameter) and clears the byte when the
+	// command is taken. asurabld's boot spins at 0x200F6 until byte 0 reads
+	// 0xCD, so with no Z80 the 68020 never leaves reset code.
+	//
+	// Until the sound CPU exists this block plays that role: byte 0 powers
+	// up as 0xCD, an 0xAE written there is cleared, and an 0xAx command in
+	// an even slot is cleared a few hundred clocks later. REMOVE when the Z80
+	// is wired; it must do all of this itself.
+	logic [7:0] sharedram [0:15] = '{8'hCD, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00,
+	                                 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00};
+	logic [7:0] sharedram_q;
+	logic [11:0] fake_z80_tick = '0;                 // one slot visited per 256 clocks
+	wire  [3:0]  fake_slot = {fake_z80_tick[10:8], 1'b0};   // 0,2,4,...,E
+	wire  [7:0]  fake_val  = sharedram[fake_slot];
+	wire         fake_clear = (fake_z80_tick[7:0] == 8'hFF) &&
+	                          ((fake_slot == 4'd0 && fake_val == 8'hAE) || (fake_val[7:4] == 4'hA));
+	always_ff @(posedge clk) begin
+		fake_z80_tick <= fake_z80_tick + 12'd1;
+		if (sharedram_we)      sharedram[sharedram_addr] <= sharedram_wdata;   // CPU wins
+		else if (fake_clear)   sharedram[fake_slot]      <= 8'h00;
+		sharedram_q <= sharedram[sharedram_addr];
+	end
+	assign sharedram_rdata = sharedram_q;
 
 	// =====================================================================
 	// Work RAM -- 64K x 16, one array serves both boards
@@ -240,7 +285,7 @@ module fuuki_core (
 	always_ff @(posedge clk) begin
 		if (workram_wel) workram[workram_addr[15:0]][7:0]  <= workram_wdata[7:0];
 		if (workram_weh) workram[workram_addr[15:0]][15:8] <= workram_wdata[15:8];
-		workram_rdata <= workram[workram_addr[15:0]];
+		workram_rdata <= workram[walk_mem ? {dump_page[7:0], walk_idx} : workram_addr[15:0]];
 	end
 
 	// =====================================================================
@@ -280,7 +325,7 @@ module fuuki_core (
 			vram_l1 [vram_addr][15:8] <= vram_wdata[15:8];
 			vram_l2 [vram_addr][15:8] <= vram_wdata[15:8];
 		end
-		vram_rdata  <= vram_cpu[vram_addr];
+		vram_rdata  <= vram_cpu[walk_mem ? {dump_page[5:0], walk_idx} : vram_addr];
 		tm_vdata[0] <= vram_l0[tm_vaddr[0]];
 		tm_vdata[1] <= vram_l1[tm_vaddr[1]];
 		tm_vdata[2] <= vram_l2[tm_vaddr[2]];
@@ -304,7 +349,7 @@ module fuuki_core (
 			pal_cpu[palette_addr][15:8] <= palette_wdata[15:8];
 			pal_vid[palette_addr][15:8] <= palette_wdata[15:8];
 		end
-		palette_rdata <= pal_cpu[palette_addr];
+		palette_rdata <= pal_cpu[walk_mem ? {dump_page[4:0], walk_idx} : palette_addr];
 		pal_rd_data   <= pal_vid[pal_rd_addr];
 	end
 
@@ -318,8 +363,9 @@ module fuuki_core (
 
 	vregs u_vregs (
 		.clk(clk), .reset(core_reset),
-		.board_fg3(board_fg3),
-		.cpu_addr(vregs_addr), .cpu_sel(vregs_sel),
+		.board(board),
+		.cpu_addr(walk_mem ? walk_idx[4:0] : vregs_addr),
+		.cpu_sel(walk_mem ? (walk_idx < 8'd16 ? 2'd0 : walk_idx < 8'd18 ? 2'd1 : 2'd2) : vregs_sel),
 		.cpu_wel(vregs_wel), .cpu_weh(vregs_weh),
 		.cpu_wdata(vregs_wdata), .cpu_rdata(vregs_rdata),
 		.layer0_scrollx(layer_scrollx[0]), .layer0_scrolly(layer_scrolly[0]),
@@ -352,9 +398,9 @@ module fuuki_core (
 	//     granularity and must never be masked.
 	// =====================================================================
 	wire [2:0] cfg_tile16 = 3'b011;                       // layers 0,1 are 16x16
-	wire [2:0] cfg_bpp8   = board_fg3 ? 3'b011 : 3'b010;  // FG-2: layer 1 only
-	wire [2:0] cfg_gran256= board_fg3 ? 3'b011 : 3'b000;
-	wire [2:0] cfg_shift4 = board_fg3 ? 3'b011 : 3'b000;
+	wire [2:0] cfg_bpp8   = (board == BOARD_FG3) ? 3'b011 : 3'b010;  // FG-2: layer 1 only
+	wire [2:0] cfg_gran256= (board == BOARD_FG3) ? 3'b011 : 3'b000;
+	wire [2:0] cfg_shift4 = (board == BOARD_FG3) ? 3'b011 : 3'b000;
 
 	// gfx_base is 0 for every layer: fuuki_sdram_top adds BASE_TILES_Lx on
 	// its own side, so an offset here would be applied twice.
@@ -364,7 +410,7 @@ module fuuki_core (
 	// Three tilemap layers
 	// =====================================================================
 	logic        tm_req   [0:2];
-	logic [24:0] tm_addr  [0:2];
+	logic [25:0] tm_addr  [0:2];
 	logic        tm_valid [0:2];
 	logic [63:0] tm_data  [0:2];
 	logic        tm_we    [0:2];
@@ -408,7 +454,7 @@ module fuuki_core (
 				.colour_shift4(cfg_shift4[g]), .gran256(cfg_gran256[g]),
 				.pal_base(PAL_BASE[g]),
 				.trans_pen(cfg_bpp8[g] ? 8'hFF : 8'h0F),
-				.gfx_base(25'd0),
+				.gfx_base(26'd0),
 				.scroll_x(layer_scrollx[g]), .scroll_y(layer_scrolly[g]),
 				.flip(flip),
 				.vram_addr(tm_vaddr[g]), .vram_data(tm_vdata[g]),
@@ -437,8 +483,8 @@ module fuuki_core (
 
 	spriteram_dbuf u_sdbuf (
 		.clk(clk), .reset(core_reset),
-		.board_fg3(board_fg3),
-		.cpu_addr(spriteram_addr),
+		.board(board),
+		.cpu_addr(walk_mem ? {dump_page[3:0], walk_idx} : spriteram_addr),
 		.cpu_wel(spriteram_wel), .cpu_weh(spriteram_weh),
 		.cpu_wdata(spriteram_wdata), .cpu_rdata(spriteram_rdata),
 		.tilebank_live(tilebank), .tilebank_render(tilebank_render),
@@ -446,12 +492,11 @@ module fuuki_core (
 		.rd_addr(sr_addr), .rd_data(sr_data)
 	);
 
-	// FG-2 draws from live sprite RAM, so spriteram_dbuf never asserts
-	// copy_busy and the list can build straight off frame_start. FG-3 takes a
-	// real snapshot first, and the list must not read across it.
+	// Both boards snapshot sprite RAM at frame_start (spriteram_dbuf), and
+	// the list must not read across the copy: it builds when the copy ends.
 	always_ff @(posedge clk) copy_busy_d <= copy_busy;
 	wire copy_done  = copy_busy_d && !copy_busy;
-	wire build_start = board_fg3 ? copy_done : frame_start;
+	wire build_start = copy_done;
 
 	logic        build_busy;
 	logic [10:0] n_entries;
@@ -469,7 +514,7 @@ module fuuki_core (
 
 	logic        spr_busy, spr_ovr;
 	logic        spr_req, spr_valid;
-	logic [24:0] spr_addr;
+	logic [25:0] spr_addr;
 	logic [63:0] spr_gdata;
 	logic        spr_we;
 	logic [8:0]  spr_wx;
@@ -489,7 +534,7 @@ module fuuki_core (
 		.line_start(spr_ready_rise && !build_busy),
 		.render_line(vcnt_next2),
 		.busy(spr_busy), .ovr_ev(spr_ovr),
-		.board_fg3(board_fg3), .tilebank(tilebank_render), .gfx_base(25'd0),
+		.board(board), .tilebank(tilebank_render), .gfx_base(26'd0), .spr_reverse(dbg_spr_rev),
 		.n_entries(n_entries),
 		.yt_addr(yt_addr), .yt_data(yt_data),
 		.rec_addr(rec_addr), .rec_data(rec_data),
@@ -544,9 +589,16 @@ module fuuki_core (
 	// dl_done has no reset, on purpose (see debug_tracer.sv's header).
 	logic        dl_seen0 = 1'b0, dl_done = 1'b0;
 	logic [20:0] pend_addr;
+	//
+	// ldr_active counts as "the ROM arrived" too: on the fast DDR path the HPS
+	// DMAs the image straight into DDR3 and NO ioctl_wr ever reaches the core,
+	// so gating on writes alone left dl_done clear forever -- which silently
+	// disabled trace sources 1 and 2 and the SDRAM/memory walker, whose dumps
+	// then came back as 256 zeros.
 	always_ff @(posedge clk) begin
 		if (ioctl_wr && ioctl_index == 16'd0) dl_seen0 <= 1'b1;
-		if (dl_seen0 && !ioctl_download)      dl_done  <= 1'b1;
+		if (ldr_active)                       dl_seen0 <= 1'b1;
+		if (dl_seen0 && !ioctl_download && !ldr_active) dl_done <= 1'b1;
 		if (rom_req)                          pend_addr <= rom_addr;
 	end
 
@@ -565,10 +617,41 @@ module fuuki_core (
 	// drain, so its valid is not mistaken for the walker's first.
 	// =====================================================================
 	// walk_active is declared with the other core-level signals near the top.
+	//
+	// MEMORY DUMP. dbg_dump = {region, page} from the JTAG source [31:8]:
+	//   region 0  SDRAM, page = 512-byte page of the 64 MB (page 0 falls back
+	//             to dbg_window, which is how the pattern test addresses it)
+	//   region 1  tilemap VRAM      (64 pages)     region 4  video registers
+	//   region 2  palette           (32 pages)               (0-15 regs, 16-17 unknown,
+	//   region 3  sprite RAM (live) (16 pages)               18 priority, 19-20 tile bank)
+	//   region 5  work RAM          (256 pages)
+	// Non-SDRAM regions read the CPU-side port of each memory, which is why
+	// the CPU is paused while the walker runs. Each entry is {index, word}.
 	logic        walk_active_d = 1'b0, walk_rearm_d = 1'b0, dl_done_d = 1'b0;
 	logic        walking = 1'b0, walk_wait = 1'b0, walk_req = 1'b0, walk_stb = 1'b0;
-	logic [7:0]  walk_idx = 8'd0, walk_settle = 8'd0;
+	logic [7:0]  walk_settle = 8'd0;
 	logic [23:0] walk_data = 24'd0;
+	logic        mem_v1 = 1'b0, mem_v2 = 1'b0;      // registered-RAM read latency
+	always_ff @(posedge clk) begin
+		mem_v1 <= walk_req && !walk_sdram;
+		mem_v2 <= mem_v1;
+	end
+	logic [15:0] mem_word;
+	always_comb begin
+		case (dump_region)
+			4'd1:    mem_word = vram_rdata;
+			4'd2:    mem_word = palette_rdata;
+			4'd3:    mem_word = spriteram_rdata;
+			// region 4: words 0-18 through the vregs port (regs, unknown,
+			// priority); 19-20 the sprite tile bank as the renderer sees it.
+			4'd4:    mem_word = (walk_idx == 8'd19) ? tilebank_render[31:16] :
+			                    (walk_idx == 8'd20) ? tilebank_render[15:0]  : vregs_rdata;
+			4'd5:    mem_word = workram_rdata;
+			default: mem_word = 16'hDEAD;
+		endcase
+	end
+	wire        walk_valid = walk_sdram ? rom_valid : mem_v2;
+	wire [15:0] walk_word  = walk_sdram ? rom_data  : mem_word;
 
 	// Kick on ANY of: the download finishing while the source is already
 	// selected, the source being selected after the download, or a re-arm.
@@ -598,17 +681,18 @@ module fuuki_core (
 		end else if (!walk_wait) begin
 			walk_req  <= 1'b1;
 			walk_wait <= 1'b1;
-		end else if (rom_valid) begin
+		end else if (walk_valid) begin
 			walk_stb  <= 1'b1;
-			walk_data <= {walk_idx, rom_data};
+			walk_data <= {walk_idx, walk_word};
 			walk_wait <= 1'b0;
 			if (walk_idx == 8'd255) walking <= 1'b0;
 			else                    walk_idx <= walk_idx + 8'd1;
 		end
 	end
 
-	// Byte address of the word being walked: page (dbg_window) x 256 words.
-	wire [24:0] walk_addr = {12'd0, dbg_window, walk_idx, 1'b0};
+	// SDRAM byte address of the word being walked: 512-byte page x index.
+	wire [25:0] walk_addr = (dump_page == 20'd0) ? {13'd0, dbg_window, walk_idx, 1'b0}
+	                                             : {dump_page[16:0], walk_idx, 1'b0};
 
 	always_comb begin
 		case (dbg_src)
@@ -738,7 +822,10 @@ module fuuki_core (
 	// fuuki_sdram_top.sv.
 	// =====================================================================
 	fuuki_sdram_top u_sdram (
+		.board(board),
 		.clk(clk), .reset(reset), .init(init),
+		.ldr_active(ldr_active), .ldr_req(ldr_req), .ldr_addr(ldr_addr),
+		.ldr_data(ldr_data), .ldr_we16(ldr_we16), .ldr_busy(ldr_busy),
 		.SDRAM_A(SDRAM_A), .SDRAM_DQ(SDRAM_DQ),
 		.SDRAM_DQML(SDRAM_DQML), .SDRAM_DQMH(SDRAM_DQMH),
 		.SDRAM_BA(SDRAM_BA), .SDRAM_nCS(SDRAM_nCS), .SDRAM_nWE(SDRAM_nWE),
@@ -756,8 +843,8 @@ module fuuki_core (
 		.spr_valid(spr_valid), .spr_data(spr_gdata),
 		// rom_addr is a WORD address; the backend takes an even BYTE address
 		// and adds BASE_MAINCPU itself.
-		.cpu_req (walk_active ? walk_req  : rom_req),
-		.cpu_addr(walk_active ? walk_addr : 25'({rom_addr, 1'b0})),
+		.cpu_req (walk_active ? (walk_req && walk_sdram) : rom_req),
+		.cpu_addr(walk_active ? walk_addr : 26'({rom_addr, 1'b0})),
 		.cpu_valid(rom_valid), .cpu_data(rom_data),
 		.dbg_dl_wr(dbg_dl_wr), .dbg_dl_addr(dl_addr_dbg)
 	);

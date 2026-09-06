@@ -64,7 +64,8 @@ def main():
                            capture_output=True, text=True, cwd=str(REPO))
         if "launching" not in r.stdout:
             sys.exit(f"launch failed: {r.stdout[-200:]}")
-        time.sleep(12)   # ROM download
+        # ROM download: ~12 s for an FG-2 set, ~45 s for FG-3's 59 MB
+        time.sleep(45 if a.game.startswith("asura") else 12)
     print(f"{'t':>5s} {'frames':>6s} {'reads':>6s} {'irq1':>5s} {'iack1':>5s} pend(5,3,1) {'pc(word)':>9s} frame")
     prev = None
     same = 0

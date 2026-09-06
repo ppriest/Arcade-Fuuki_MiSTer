@@ -27,7 +27,7 @@ module vregs (
 	input  logic clk,
 	input  logic reset,
 
-	input  logic board_fg3,
+	input  logic board,   // BOARD_FG2 / BOARD_FG3
 
 	// CPU port, from maincpu.sv
 	input  logic [4:0]  cpu_addr,     // word index within the selected block
@@ -52,6 +52,8 @@ module vregs (
 	output logic [1:0]  tmap_back
 );
 
+
+	localparam logic BOARD_FG2 = 1'b0, BOARD_FG3 = 1'b1;   // .mra mod byte bit 0
 	logic [15:0] regs [0:15];
 	logic [15:0] unk  [0:1];
 	logic [15:0] priority_reg;
@@ -169,8 +171,8 @@ module vregs (
 	localparam logic [15:0] YOFFS_FLIP_FG2 = 16'h02A7;
 	localparam logic [15:0] YOFFS_FLIP_FG3 = 16'h02C7;
 
-	wire [15:0] yoffs_flip = board_fg3 ? YOFFS_FLIP_FG3 : YOFFS_FLIP_FG2;
-	wire [15:0] layer2_xoffs = board_fg3 ? 16'h0000 : 16'h0010;
+	wire [15:0] yoffs_flip = (board == BOARD_FG3) ? YOFFS_FLIP_FG3 : YOFFS_FLIP_FG2;
+	wire [15:0] layer2_xoffs = (board == BOARD_FG3) ? 16'h0000 : 16'h0010;
 
 	// Deliberately paired the way the driver pairs them (see above).
 	wire [15:0] scrolly_offs = regs[4'h6] - (flip ? XOFFS_FLIP : XOFFS);

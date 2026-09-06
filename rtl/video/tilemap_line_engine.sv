@@ -57,7 +57,7 @@ module tilemap_line_engine (
 	input  logic        gran256,       // palette granularity 256 (else 16)
 	input  logic [12:0] pal_base,      // palette colour base for this layer
 	input  logic [7:0]  trans_pen,     // pen treated as transparent
-	input  logic [24:0] gfx_base,      // byte address of this layer's tile ROM
+	input  logic [25:0] gfx_base,      // byte address of this layer's tile ROM
 	input  logic [15:0] scroll_x,
 	input  logic [15:0] scroll_y,
 
@@ -80,7 +80,7 @@ module tilemap_line_engine (
 	// data rather than hanging (LESSONS_LEARNED, "Treat any direct,
 	// non-arbitrated connection to a req/valid transport as suspect").
 	output logic        gfx_req,
-	output logic [24:0] gfx_addr,      // byte address, 8-byte aligned
+	output logic [25:0] gfx_addr,      // byte address, 8-byte aligned
 	input  logic        gfx_valid,
 	input  logic [63:0] gfx_data,
 
@@ -97,7 +97,7 @@ module tilemap_line_engine (
 	logic        c_tile16, c_bpp8, c_shift4, c_gran256;
 	logic [12:0] c_pal_base;
 	logic [7:0]  c_trans;
-	logic [24:0] c_gfx_base;
+	logic [25:0] c_gfx_base;
 	logic [15:0] c_scroll_x;
 
 	// ---- per-line derived state ----
@@ -144,7 +144,7 @@ module tilemap_line_engine (
 	//   16x16x8  256 bytes/tile, 16 bytes/row
 	//   16x16x4  128 bytes/tile,  8 bytes/row
 	//   8x8x4     32 bytes/tile,  4 bytes/row
-	logic [24:0] row_addr;
+	logic [25:0] row_addr;
 	always_comb begin
 		if (!c_tile16)        row_addr = c_gfx_base + {tile_code, 5'd0} + {src_row[2:0], 2'd0};
 		else if (c_bpp8)      row_addr = c_gfx_base + {tile_code, 8'd0} + {src_row, 4'd0};
@@ -282,7 +282,7 @@ module tilemap_line_engine (
 
 			S_REQ_LO: begin
 				gfx_req  <= 1'b1;
-				gfx_addr <= {row_addr[24:3], 3'd0};
+				gfx_addr <= {row_addr[25:3], 3'd0};
 				st       <= S_WAIT_LO;
 			end
 			S_WAIT_LO: begin
@@ -296,7 +296,7 @@ module tilemap_line_engine (
 			end
 			S_REQ_HI: begin
 				gfx_req  <= 1'b1;
-				gfx_addr <= {row_addr[24:3], 3'd0} + 25'd8;
+				gfx_addr <= {row_addr[25:3], 3'd0} + 26'd8;
 				st       <= S_WAIT_HI;
 			end
 			S_WAIT_HI: begin

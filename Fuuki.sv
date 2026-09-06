@@ -39,6 +39,8 @@ module emu
 	`include "sys/emu_ports.vh"
 );
 
+
+	localparam logic BOARD_FG2 = 1'b0, BOARD_FG3 = 1'b1;   // .mra mod byte bit 0
 ///////// Default values for ports not used in this core /////////
 
 assign ADC_BUS  = 'Z;
@@ -46,13 +48,13 @@ assign USER_OUT = '1;
 assign {UART_RTS, UART_TXD, UART_DTR} = 0;
 assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 
-// DDR3 is deliberately left unowned. Every memory client here is on SDRAM by
-// decision (docs/ROADMAP.md), which is what keeps the rotator's future use of
-// DDR3 single-owner -- Psikyo shared DDRAM between its ROM loader and the
-// rotator, and the rotator, which has no reset and infers acceptance from
-// DDRAM_BUSY, took phantom writes as accepted and left a permanent stale band
-// in the frame buffer.
-assign {DDRAM_CLK, DDRAM_BURSTCNT, DDRAM_ADDR, DDRAM_DIN, DDRAM_BE, DDRAM_RD, DDRAM_WE} = '0;
+// DDR3 has ONE owner: the fast ROM loader (see "FAST ROM LOADING" below).
+// Psikyo shared DDRAM between its loader and the HDMI rotator and paid for it
+// -- the rotator has no reset and infers acceptance from DDRAM_BUSY, so it
+// took phantom writes as accepted and left a permanent stale band in the frame
+// buffer. When rotation arrives here it must mux the pins on ldr_active as
+// Psikyo eventually did, not share them.
+assign DDRAM_CLK = clk_sys;
 
 assign VGA_F1 = 0;
 assign VGA_SCALER  = 0;
@@ -106,6 +108,7 @@ localparam CONF_STR = {
 	"P1O[57],Trace mode,First N,Ring (latest);",
 	"P1O[58],Re-arm capture,A,B;",
 	"P1O[59],Ring trigger,Off,Vector 2-4 read;",
+	"P1O[60],Sprite order,Record 1023 on top,Record 0 on top;",
 	"-;",
 	"R[0],Reset;",
 	// This list MUST agree with the .mra <buttons> positions, because the
@@ -123,7 +126,12 @@ localparam CONF_STR = {
 // "cannot be assigned more than one value" pointing at the DECLARATION, not
 // at the use. rtl/cpu/maincpu.sv carries the same note for the same reason.
 wire clk_sys, clk_sdram_shifted, pll_locked;
-wire [7:0] probe_src;   // ISSP source bits; driven by issp_probe below, consumed above it
+// Fast ROM loader, declared here because core_reset below reads ldr_active.
+wire        ldr_active, ldr_req, ldr_we16, ldr_busy;
+wire [25:0] ldr_addr;
+wire [15:0] ldr_data;
+wire [31:0] probe_src;  // ISSP source bits; driven by issp_probe below, consumed above it
+                        // [7:0] controls (see the probe), [31:8] memory-dump {region, page}
 
 wire        forced_scandoubler;
 wire [21:0] gamma_bus;
@@ -229,12 +237,14 @@ wire [63:0] rcfg_to_pll, rcfg_from_pll;
 
 reg [7:0] psrc_s1 = 8'd0, psrc_s2 = 8'd0, psrc_d = 8'd0;
 always @(posedge CLK_50M) begin
-	psrc_s1 <= probe_src;
+	psrc_s1 <= probe_src[7:0];
 	psrc_s2 <= psrc_s1;
 	psrc_d  <= psrc_s2;
 end
-wire        dps_up   = psrc_s2[1] & ~psrc_d[1];
-wire        dps_dn   = psrc_s2[2] & ~psrc_d[2];
+// The phase-step controls are retired: bit 1 is DUMP NOW and bit 2 flips
+// the sprite depth order (both above).
+wire        dps_up   = 1'b0;
+wire        dps_dn   = 1'b0;
 wire [15:0] dps_n    = 16'd8;   // ~1 ns per command; bits 4:3 now select the readout page
 
 reg         cfg_write = 1'b0;
@@ -297,13 +307,22 @@ wire reset      = RESET | status[0] | buttons[1] | ~pll_locked;
 // index-0 transfer has ended and stays set, so an OSD reset later still
 // resets the game normally. It is not cleared by a later download either --
 // at that point RESET and ioctl_download hold the core anyway.
-reg rom_loaded = 1'b0, dl_index0_seen = 1'b0;
+//
+// On the FAST path there are no ioctl_wr pulses at all, so dl_index0_seen
+// never sets and this would hold the core in reset forever. The copy
+// finishing is the equivalent event, and is what releases it there.
+reg rom_loaded = 1'b0, dl_index0_seen = 1'b0, ldr_active_d = 1'b0;
 always @(posedge clk_sys) begin
+	ldr_active_d <= ldr_active;
 	if (ioctl_wr && ioctl_index == 16'd0) dl_index0_seen <= 1'b1;
 	if (dl_index0_seen && !ioctl_download) rom_loaded     <= 1'b1;
+	if (ldr_active_d && !ldr_active)       rom_loaded     <= 1'b1;
 end
 
-wire core_reset = reset | ioctl_download | ~rom_loaded;
+// ldr_active is in core_reset, NOT in `reset`: `reset` is what resets the
+// loader itself, so putting the loader's own busy flag in it would hold it in
+// reset for as long as it tried to run.
+wire core_reset = reset | ioctl_download | ~rom_loaded | ldr_active;
 
 // MiSTer asserts RESET for the WHOLE ROM download, so the memory path gets the
 // reset with the download masked out of it. Passing plain `reset` here is what
@@ -342,7 +361,7 @@ always @(posedge clk_sys) begin
 	if (ioctl_wr && ioctl_index == 16'd1 && ioctl_addr == 27'd0) mod_board <= ioctl_dout;
 end
 
-wire board_fg3   = mod_board[0];
+wire board = mod_board[0];   // BOARD_FG2 / BOARD_FG3
 // bit 1: pbancho PORT_MODIFYs gogomile's SYSTEM port to swap SERVICE1 and
 // COIN2, and asurabld happens to use pbancho's arrangement. Two games on one
 // board with different input wiring is not something the board-select bit can
@@ -433,13 +452,81 @@ wire        dbg_rom_valid;
 wire        dbg_frozen;
 wire [15:0] dbg_rom_data;
 wire        dbg_dl_wr;
-wire [24:0] dbg_dl_addr;
+wire [25:0] dbg_dl_addr;
+
+// ---------------------------------------------------------------------------
+// FAST ROM LOADING
+//
+// scripts/build_mra.py puts address="0x30000000" on <rom index="0">, so the
+// HPS DMAs the ROM straight into DDR3 and the core sees ioctl_download assert
+// and deassert with NO ioctl_wr pulses. rom_loader then copies DDR3 -> SDRAM
+// with the core held in reset. An .mra WITHOUT the attribute still streams
+// through ioctl exactly as before -- which is what the inline-hex .mra files
+// in scripts/sdram_pattern_test.py depend on -- so the two paths are told
+// apart by whether any byte arrived during the download.
+//
+// The copy length is the whole board map, so no per-set length is needed;
+// copying the padding beyond a smaller set costs only time.
+// ---------------------------------------------------------------------------
+reg  dl_active_d = 1'b0, ldr_pending = 1'b0, ldr_start = 1'b0;
+reg  ldr_done    = 1'b0, dl_seen_wr  = 1'b0;
+wire dl_index0 = ioctl_download && (ioctl_index == 16'd0);
+
+always @(posedge clk_sys) begin
+	ldr_start   <= 1'b0;
+	dl_active_d <= dl_index0;
+	if (dl_index0 && !dl_active_d)  dl_seen_wr <= 1'b0;   // a new index-0 load begins
+	else if (dl_index0 && ioctl_wr) dl_seen_wr <= 1'b1;   // ...and it is streaming bytes
+
+	// A new index-0 download is the only thing that makes a copy due again.
+	if (dl_index0 && !dl_active_d) ldr_done <= 1'b0;
+
+	if (reset) begin
+		ldr_pending <= 1'b1;
+	end else if (ldr_pending && !ioctl_download && !ldr_active) begin
+		ldr_pending <= 1'b0;
+		// Only when the ROM did NOT come through the byte path, and only once
+		// per download: dl_seen_wr stays 0 forever after a DDR3 load, so
+		// without ldr_done every later reset -- OSD reset, the reset button, a
+		// PLL relock -- would recopy the whole map.
+		if (!dl_seen_wr && !ldr_done) begin
+			ldr_start <= 1'b1;
+			ldr_done  <= 1'b1;
+		end
+	end
+end
+
+wire        ldr_ddr_req, ldr_ddr_busy, ldr_ddr_valid;
+wire [27:0] ldr_ddr_addr;
+wire [63:0] ldr_ddr_rdata;
+
+rom_loader u_rom_loader (
+	.clk(clk_sys), .reset(reset),
+	// FG-2's map ends at 0x1180000 (17.5 MB), FG-3's at 0x3880000 (56.5 MB)
+	// -- rtl/memory/fuuki_sdram_top.sv's FG2_BASE_* / FG3_BASE_* tables.
+	.length(board ? 28'h3880000 : 28'h1180000),
+	.start(ldr_start), .busy(ldr_active),
+	.ddr_req(ldr_ddr_req), .ddr_addr(ldr_ddr_addr), .ddr_busy(ldr_ddr_busy),
+	.ddr_valid(ldr_ddr_valid), .ddr_rdata(ldr_ddr_rdata),
+	.dl_req(ldr_req), .dl_addr(ldr_addr), .dl_data(ldr_data),
+	.dl_we16(ldr_we16), .dl_busy(ldr_busy)
+);
+
+ddram_phy u_ldr_ddram (
+	.clk(clk_sys), .reset(reset),
+	.DDRAM_BUSY(DDRAM_BUSY), .DDRAM_BURSTCNT(DDRAM_BURSTCNT),
+	.DDRAM_ADDR(DDRAM_ADDR), .DDRAM_DOUT(DDRAM_DOUT),
+	.DDRAM_DOUT_READY(DDRAM_DOUT_READY), .DDRAM_RD(DDRAM_RD),
+	.DDRAM_DIN(DDRAM_DIN), .DDRAM_BE(DDRAM_BE), .DDRAM_WE(DDRAM_WE),
+	.req(ldr_ddr_req), .we(1'b0), .addr(ldr_ddr_addr), .wdata(8'd0),
+	.busy(ldr_ddr_busy), .valid(ldr_ddr_valid), .rdata(ldr_ddr_rdata)
+);
 
 fuuki_core u_core (
 	.clk(clk_sys), .ce_pix(ce_pix),
 	.reset(sdram_reset), .init(sdram_init), .core_reset(core_reset),
 
-	.board_fg3(board_fg3), .sysport_alt(sysport_alt),
+	.board(board), .sysport_alt(sysport_alt),
 
 	.SDRAM_A(SDRAM_A), .SDRAM_DQ(SDRAM_DQ),
 	.SDRAM_DQML(SDRAM_DQML), .SDRAM_DQMH(SDRAM_DQMH),
@@ -447,8 +534,11 @@ fuuki_core u_core (
 	.SDRAM_nRAS(SDRAM_nRAS), .SDRAM_nCAS(SDRAM_nCAS), .SDRAM_CKE(SDRAM_CKE),
 
 	.ioctl_download(ioctl_download), .ioctl_index(ioctl_index),
-	.ioctl_wr(ioctl_wr), .ioctl_addr(ioctl_addr[24:0]),
+	.ioctl_wr(ioctl_wr), .ioctl_addr(ioctl_addr),
 	.ioctl_dout(ioctl_dout), .ioctl_wait(ioctl_wait),
+
+	.ldr_active(ldr_active), .ldr_req(ldr_req), .ldr_addr(ldr_addr),
+	.ldr_data(ldr_data), .ldr_we16(ldr_we16), .ldr_busy(ldr_busy),
 
 	.system_in(system_in), .p1p2_in(p1p2_in),
 	.dsw_in(dsw_in), .dsw2_in(dsw2_in),
@@ -472,10 +562,17 @@ fuuki_core u_core (
 	.dbg_rom_valid(dbg_rom_valid), .dbg_rom_data(dbg_rom_data),
 	.dbg_dl_wr(dbg_dl_wr), .dbg_dl_addr(dbg_dl_addr),
 
-	.dbg_overlay(status[50]), .dbg_src(status[52:51]),
+	// JTAG source bit 1 = DUMP NOW: forces the overlay on and the walker
+	// (source 3, which pauses the CPU) selected, so a game runs normally
+	// with the overlay off until the moment scripts/memdump.py --live
+	// asserts it, dumps from that instant, and releases it.
+	.dbg_overlay(status[50] | probe_src[1]), .dbg_src(probe_src[1] ? 2'd3 : status[52:51]),
 	.dbg_window(status[56:53]), .dbg_ring(status[57]),
 	.dbg_rearm(status[58] ^ probe_src[6]), .dbg_page({probe_src[7], probe_src[4:3]}),
-	.dbg_trig(status[59]),
+	.dbg_trig(status[59]), .dbg_dump(probe_src[31:8]),
+	// Sprite depth order. probe_src[2] flips it over JTAG without a
+	// relaunch, so both orders can be photographed in one session.
+	.dbg_spr_rev(status[60] ^ probe_src[2]),
 	.dbg_irq_pending(dbg_irq_pending), .dbg_iack(dbg_iack), .dbg_iack_level(dbg_iack_level),
 	.dbg_irq1_trig(dbg_irq1_trig),
 	.dbg_frozen(dbg_frozen)
@@ -620,14 +717,14 @@ wire dl_tick = dbg_dl_wr && (dl_pre == 8'd255);
 // freeze on a pause between .mra parts and look like the end of the transfer;
 // a high-water mark cannot. A complete gogomile load must reach 0x1180000,
 // i.e. 0x8C00 here.
-reg [15:0] max_dl_addr = 16'd0;
+reg [16:0] max_dl_addr = 17'd0;
 always @(posedge clk_sys) begin
-	if (ctr_clear) max_dl_addr <= 16'd0;
-	else if (dbg_dl_wr && (dbg_dl_addr[24:9] > max_dl_addr))
-		max_dl_addr <= dbg_dl_addr[24:9];
+	if (ctr_clear) max_dl_addr <= 17'd0;
+	else if (dbg_dl_wr && (dbg_dl_addr[25:9] > max_dl_addr))
+		max_dl_addr <= dbg_dl_addr[25:9];
 end
 
-issp_probe #(.INSTANCE_ID("F"), .PROBE_W(128), .SOURCE_W(8)) u_probe (
+issp_probe #(.INSTANCE_ID("F"), .PROBE_W(128), .SOURCE_W(32)) u_probe (
 	.clk(clk_sys),
 	.probe({
 		c_dl_edges,          // 127..122  ioctl_download rising edges, any index

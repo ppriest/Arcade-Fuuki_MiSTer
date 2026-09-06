@@ -30,8 +30,7 @@ THE ADDRESS MAP IS NOT DEFINED HERE
 It is parsed out of rtl/memory/fuuki_sdram_top.sv, which is the authority. A
 `.mra` that loads to different offsets than the RTL reads from produces a
 black screen with no other symptom, so the two must not be able to drift.
-There are two tables there, one per board; FG-2 uses `BASE_*` and FG-3 uses
-`FG3_BASE_*`.
+There are two tables there, one per board: `FG2_BASE_*` and `FG3_BASE_*`.
 """
 import argparse
 import re
@@ -437,11 +436,11 @@ GAMES = {
         }),
 }
 
-# Region order in the image. The BASE_ localparam that fixes each offset is
-# `BASE_<NAME>` for FG-2 and `FG3_BASE_<NAME>` for FG-3.
+# Region order in the image. The localparam that fixes each offset is
+# `FG2_BASE_<NAME>` for FG-2 and `FG3_BASE_<NAME>` for FG-3.
 REGION_ORDER = ["maincpu", "audiocpu", "tiles_l0", "tiles_l1",
                 "tiles_l2", "sprites", "oki"]
-BASE_PREFIX = {"fg2": "BASE_", "fg3": "FG3_BASE_"}
+BASE_PREFIX = {"fg2": "FG2_BASE_", "fg3": "FG3_BASE_"}
 SOURCE_FILE = {"fg2": "MAME fuukifg2.cpp", "fg3": "MAME fuukifg3.cpp"}
 
 
@@ -454,7 +453,7 @@ def read_sdram_map():
     txt = SDRAM_SV.read_text(encoding="utf-8", errors="replace")
     bases = {}
     for m in re.finditer(
-            r"localparam\s+logic\s*\[\d+:\d+\]\s*((?:FG3_)?BASE_\w+)\s*=\s*\d+'h([0-9a-fA-F_]+)",
+            r"localparam\s+logic\s*\[\d+:\d+\]\s*(FG[23]_BASE_\w+)\s*=\s*\d+'h([0-9a-fA-F_]+)",
             txt):
         bases[m.group(1)] = int(m.group(2).replace("_", ""), 16)
     missing = [base_name(b, r) for b in BASE_PREFIX for r in REGION_ORDER
@@ -691,7 +690,7 @@ def emit(setname, game, bases, zip_dir, out_dir, check_only):
 \t<!-- Board select: bit 0 = FG-2 / FG-3, bit 1 = SYSTEM port wiring (gogomile / pbancho+asura). -->
 \t<rom index="1"><part>{game['mod']:02X}</part></rom>
 
-\t<rom index="0" zip="{zipattr}" md5="none">
+\t<rom index="0" zip="{zipattr}" md5="none" address="0x30000000">
 {chr(10).join(body).rstrip()}
 \t</rom>
 

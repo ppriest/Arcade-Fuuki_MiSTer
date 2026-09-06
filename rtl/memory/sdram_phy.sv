@@ -23,7 +23,7 @@ module sdram_phy (
 	input  logic reset,
 
 	// one of sdram.sv's three physical ports
-	output logic [24:1] port_addr,
+	output logic [25:1] port_addr,
 	output logic         port_wrl,
 	output logic         port_wrh,
 	output logic [15:0] port_din,
@@ -40,7 +40,7 @@ module sdram_phy (
 	// per transfer in hps_io WIDE mode and would otherwise burn two full
 	// SDRAM transactions on it.
 	input  logic         we16,
-	input  logic [24:0] addr,     // byte offset into the 32MB SDRAM chip
+	input  logic [25:0] addr,     // byte offset: 64 MB, the first chip of the 128 MB module
 	input  logic [15:0] wdata,    // data to write (we=1 only); see we16
 	output logic         busy,     // 1 while a transaction is in flight
 	output logic         valid,    // 1-cycle pulse: rdata holds the requested granule (read only)
@@ -66,7 +66,7 @@ module sdram_phy (
 			case (state)
 				S_IDLE: begin
 					if (req) begin
-						port_addr  <= addr[24:1];
+						port_addr  <= addr[25:1];
 						port_wrl   <= we && (we16 || !addr[0]);
 						port_wrh   <= we && (we16 ||  addr[0]);
 						// byte form replicates so the lane select picks the real one;

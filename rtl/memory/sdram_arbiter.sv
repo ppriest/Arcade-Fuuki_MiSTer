@@ -42,7 +42,7 @@ module sdram_arbiter #(
 	output logic         phy_req,
 	output logic         phy_we,
 	output logic         phy_we16,
-	output logic [24:0]  phy_addr,
+	output logic [25:0]  phy_addr,
 	output logic [15:0]  phy_wdata,
 	input  logic         phy_busy,
 	input  logic         phy_valid,
@@ -51,13 +51,13 @@ module sdram_arbiter #(
 	// ---- read clients, packed ----
 	// c_req is a LEVEL held until the matching c_valid pulses.
 	input  logic [N-1:0]      c_req,
-	input  logic [25*N-1:0]   c_addr,
+	input  logic [26*N-1:0]   c_addr,
 	output logic [N-1:0]      c_valid,
 	output logic [63:0]       c_rdata,     // shared; capture it on your own valid
 
 	// ---- download write path, absolute priority ----
 	input  logic         dl_req,
-	input  logic [24:0]  dl_addr,
+	input  logic [25:0]  dl_addr,
 	input  logic [15:0]  dl_data,
 	input  logic         dl_we16,
 	output logic         dl_busy
@@ -98,11 +98,11 @@ module sdram_arbiter #(
 	end
 
 	// Address slice for the chosen client.
-	logic [24:0] pick_addr;
+	logic [25:0] pick_addr;
 	always_comb begin
-		pick_addr = 25'd0;
+		pick_addr = 26'd0;
 		for (int k = 0; k < N; k++)
-			if (k == int'(pick)) pick_addr = c_addr[25*k +: 25];
+			if (k == int'(pick)) pick_addr = c_addr[26*k +: 26];
 	end
 
 	// LATCH THE DATA ON phy_valid. Nothing in the path from sdram.sv's dout to

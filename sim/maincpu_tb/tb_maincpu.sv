@@ -20,6 +20,7 @@
 
 module tb_maincpu;
 
+	localparam logic BOARD_FG2 = 1'b0, BOARD_FG3 = 1'b1;   // .mra mod byte bit 0
 	// 85.909091 MHz = 14.318181 MHz x 6. Half period 5.8207 ns.
 	localparam real HALF = 5.8207;
 
@@ -74,7 +75,7 @@ module tb_maincpu;
 
 	maincpu dut (
 		.clk(clk), .reset(reset),
-		.board_fg3(1'b0),                      // FG-2: 68000 @ 16 MHz
+		.board(BOARD_FG2),                      // FG-2: 68000 @ 16 MHz
 		.rom_req(rom_req), .rom_addr(rom_addr),
 		.rom_valid(rom_valid), .rom_data(rom_data),
 		.workram_addr(workram_addr), .workram_wel(workram_wel), .workram_weh(workram_weh),

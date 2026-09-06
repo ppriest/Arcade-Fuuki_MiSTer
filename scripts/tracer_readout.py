@@ -87,13 +87,17 @@ def entries_from_rows(rows):
     return entries, problems
 
 
-def read_buffer(tag="trace", settle=0.6):
-    """Walk all pages; return (entries[256], problems)."""
+def read_buffer(tag="trace", settle=0.6, src_high=0, low_or=0):
+    """Walk all pages; return (entries[256], problems).
+
+    src_high: value kept in JTAG source bits [31:8] throughout (the memory
+    dump's {region, page}); the readout page bits live in [7:0]. low_or is
+    OR-ed into every [7:0] write (0x20 = hold the CPU paused)."""
     OUT.mkdir(parents=True, exist_ok=True)
     entries = [None] * 256
     problems = []
     for page in range(PAGES):
-        issp("set", PAGE_BITS[page]); time.sleep(settle)
+        issp("set", (src_high << 8) | PAGE_BITS[page] | low_or); time.sleep(settle)
         png = OUT / f"{tag}_p{page}.png"
         if not shot(png):
             problems.append(f"page {page}: no screenshot"); continue
@@ -105,7 +109,7 @@ def read_buffer(tag="trace", settle=0.6):
             idx = page * PER_PAGE + k
             if idx < 256:
                 entries[idx] = v
-    issp("set", 0)
+    issp("set", (src_high << 8) | low_or)
     return entries, problems
 
 

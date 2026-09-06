@@ -36,7 +36,11 @@ OUT = REPO / "debug" / "hw" / "trace"
 MRA = {
     "gogomile": "Susume! Mile Smile - Go Go! Mile Smile (newer)",
     "pbancho":  "Gyakuten!! Puzzle Bancho (Japan, set 1)",
+    "asurabld": "Asura Blade - Sword of Dynasty (Japan)",
+    "asurabus": "Asura Buster - Eternal Warriors (USA)",
 }
+# FG-2: (zip, high-byte ROM, low-byte ROM). FG-3 program images are built by
+# scripts/build_mra.py's rom_load32_byte; compare() only supports FG-2 here.
 PROG = {
     "gogomile": ("gogomile", "fp2n.rom2", "fp1n.rom1"),
     "pbancho":  ("pbancho", "no1..rom2", "no2..rom1"),

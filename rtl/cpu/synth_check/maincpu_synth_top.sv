@@ -79,7 +79,7 @@ module maincpu_synth_top (
 
 	maincpu dut (
 		.clk(clk), .reset(reset),
-		.board_fg3(pat[31]),
+		.board(pat[31]),
 		.rom_req(rom_req), .rom_addr(rom_addr),
 		.rom_valid(rom_valid), .rom_data(rom_data),
 		.workram_addr(workram_addr), .workram_wel(workram_wel), .workram_weh(workram_weh),

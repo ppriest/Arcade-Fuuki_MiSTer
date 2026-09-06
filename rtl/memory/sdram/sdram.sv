@@ -48,7 +48,7 @@ module sdram
 	// should be 00 for reads -- see docs/phase1_sdram_map.md). Writes are
 	// still single-word (wrl0/wrh0 select byte lanes of din0), unaffected
 	// by the burst-4 read extension.
-	input      [24:1] addr0,
+	input      [25:1] addr0,
 	input             wrl0,
 	input             wrh0,
 	input      [15:0] din0,
@@ -57,7 +57,7 @@ module sdram
 	output reg        ack0 = 1'b0,   // see PROVENANCE.md -- simulation-fidelity fix,
 	                                  // matches ack1/ack2 and `state` below
 
-	input      [24:1] addr1,
+	input      [25:1] addr1,
 	input             wrl1,
 	input             wrh1,
 	input      [15:0] din1,
@@ -65,7 +65,7 @@ module sdram
 	input             req1,
 	output reg        ack1 = 1'b0,
 
-	input      [24:1] addr2,
+	input      [25:1] addr2,
 	input             wrl2,
 	input             wrh2,
 	input      [15:0] din2,
@@ -110,6 +110,7 @@ reg  [3:0] state = 4'd0;   // upstream relies on Quartus's zero-power-up default
                             // which would otherwise wedge the whole state machine (state==X
                             // never equals STATE_LAST, so `reset`/`mode` never advance)
 reg [22:1] a;
+reg        a25;   // byte address bit 25: column bit A9 on a 64 MB chip
 reg [15:0] data;
 reg        we;
 reg  [1:0] ba = 0;
@@ -185,7 +186,7 @@ always @(posedge clk) begin
 			state <= STATE_START;
 		end
 		else if (ack0 != req0) begin
-			{ba,a} <= addr0;
+			{a25,ba,a} <= addr0;
 			data <= din0;
 			we <= wr[0];
 			dqm <= wr[0] ? ~{wrh0,wrl0} : 2'b00;
@@ -195,7 +196,7 @@ always @(posedge clk) begin
 			state <= STATE_START;
 		end
 		else if (ack1 != req1) begin
-			{ba,a} <= addr1;
+			{a25,ba,a} <= addr1;
 			data <= din1;
 			we <= wr[1];
 			dqm <= wr[1] ? ~{wrh1,wrl1} : 2'b00;
@@ -205,7 +206,7 @@ always @(posedge clk) begin
 			state <= STATE_START;
 		end
 		else if (ack2 != req2) begin
-			{ba,a} <= addr2;
+			{a25,ba,a} <= addr2;
 			data <= din2;
 			we <= wr[2];
 			dqm <= wr[2] ? ~{wrh2,wrl2} : 2'b00;
@@ -304,7 +305,13 @@ always @(posedge clk) begin
 			// silently read from rows N, N+1, N+2, N+3 at column 0 each
 			// time -- wrong data, not just misaligned. See PROVENANCE.md.
 			STATE_START: SDRAM_A <= a[22:10];
-			STATE_CONT:  SDRAM_A <= {dqm, 2'b10, a[9:1]};
+			// A10 = auto-precharge; A9 = byte address bit 25, which is column
+			// bit 9 on a 64 MB chip (13 row x 10 column x 4 bank) and ignored by
+			// the 32 MB chip (9 column bits) -- so the low 32 MB map identically
+			// on both modules. This is the 128 MB module's layout: 2 x 64 MB, the
+			// second chip selected by byte address bit 26, which this core does
+			// not use (FG-3 needs 56.5 MB).
+			STATE_CONT:  SDRAM_A <= {dqm, 1'b1, a25, a[9:1]};
 		endcase
 	end
 	else if(mode == MODE_LDM && state == STATE_START) SDRAM_A <= MODE;

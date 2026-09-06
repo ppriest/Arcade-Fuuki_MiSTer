@@ -1,13 +1,24 @@
-// Sprite RAM with the boards' own frame buffering.
+// Sprite RAM, snapshotted once per frame for the renderer.
 //
-// The CPU sees ONE persistent 8 KB RAM (1024 records x 4 words). What the
-// renderer sees depends on the board:
+// The CPU sees ONE persistent 8 KB RAM (1024 records x 4 words). At each
+// frame boundary (copy_start, in vblank) the whole of it is copied into
+// `snap`, and the sprite line list and line engine read only `snap` for the
+// frame that follows. So a frame is drawn from the sprite RAM as it was at
+// one instant -- which is what MAME's screen_update does when it draws the
+// sprites in one pass -- however the CPU rewrites records during the frame.
 //
-//   FG-2   the live RAM. MAME draws FG-2 sprites straight from spriteram.
-//   FG-3   two generations behind, matching fuukifg3.cpp's screen_vblank():
-//              buf[1] = buf[0];  buf[0] = live;
-//          and the sprite TILE BANK is delayed by the same two frames, in
-//          lockstep, because it is part of the same snapshot.
+// The first version rendered FG-2 from the live RAM, on the reading that the
+// once-per-frame candidate list already froze the display list. It froze the
+// LIST; each scanline then re-read the records themselves from the live RAM
+// while the game was rewriting them, so a sprite could change tile or
+// position mid-frame, and a record rewritten between the list build and its
+// scanline dropped out for a frame. gogomile's title showed it as flicker.
+//
+// FG-3's hardware appears (fuukifg3.cpp screen_vblank) to hold sprites two
+// generations back; that second generation is deliberately NOT modelled --
+// the lag MAME shows may be interrupt timing rather than hardware, and one
+// snapshot is the behaviour that can be checked against a still frame. The
+// sprite tile bank travels with the snapshot it describes.
 //
 // ---------------------------------------------------------------------------
 // A SWAP IS NOT A COPY.
@@ -19,21 +30,15 @@
 // ghosting and per-scene sprite freezes that compounded under load. A real
 // copy removed both. See LESSONS_LEARNED, "A swap is not a copy".
 //
-// So the CPU always addresses `live`, and the generations are genuine copies.
-// The cost is 8192 cycles per frame against vblank's 120,384 -- 7%.
+// So the CPU always addresses `live`, and `snap` is a genuine copy: 4096
+// cycles per frame against vblank's 120,384.
 // ---------------------------------------------------------------------------
-//
-// FG-2 performs no copy at all and reads `live` directly. That is not a
-// shortcut: the per-frame candidate list (sprite_line_list) is itself built
-// once in vblank, so it already freezes the display list for the frame. Adding
-// a copy underneath it would buy a second generation of delay that the real
-// board does not have.
 
 module spriteram_dbuf (
 	input  logic clk,
 	input  logic reset,
 
-	input  logic        board_fg3,
+	input  logic        board,   // BOARD_FG2 / BOARD_FG3 (both snapshot; kept for the tile bank's home)
 
 	// ---- CPU port (0x600000-0x601FFF) ----
 	input  logic [11:0] cpu_addr,
@@ -42,7 +47,7 @@ module spriteram_dbuf (
 	input  logic [15:0] cpu_wdata,
 	output logic [15:0] cpu_rdata,
 
-	// ---- tile bank (FG-3, 0xA00000), buffered with the sprite data ----
+	// ---- tile bank (FG-3, 0xA00000), snapshotted with the sprite data ----
 	input  logic [31:0] tilebank_live,
 	output logic [31:0] tilebank_render,
 
@@ -57,6 +62,8 @@ module spriteram_dbuf (
 	output logic [15:0] rd_data
 );
 
+
+	localparam logic BOARD_FG2 = 1'b0, BOARD_FG3 = 1'b1;   // .mra mod byte bit 0
 	// =====================================================================
 	// Three arrays of 4096 words, and a strict TWO PORTS EACH budget.
 	//
@@ -75,103 +82,68 @@ module spriteram_dbuf (
 	// module should account for 3 x 65,536 bits and not a bit more.
 	// =====================================================================
 	logic [15:0] live [0:4095];
-	logic [15:0] buf0 [0:4095];
-	logic [15:0] buf1 [0:4095];
+	logic [15:0] snap  [0:4095];   // the frame's snapshot
 
 	// Declared before the always_ff blocks that assign them: using a signal
 	// before its declaration makes the tool infer an implicit net and then
 	// reject the real one.
-	logic [12:0] cp_cnt;
+	logic [11:0] cp_cnt;
 	logic        cp_run;
 	logic [11:0] cp_wr_addr;
 	logic        cp_wr_en;
-	logic        cp_pass_d;
-	logic [15:0] buf0_q, portb_q, buf1_q;
-	logic [31:0] tilebank_buf0;
+	logic [15:0] portb_q, buf_q;
 
-	wire [11:0] cp_rd_addr = cp_cnt[11:0];
-	wire        cp_pass    = cp_cnt[12];
-
-	// ---- live: port A = CPU (read/write), port B = copy engine OR render ----
-	wire [11:0] portb_addr = board_fg3 ? cp_rd_addr : rd_addr;
-
+	// ---- live: port A = CPU (read/write), port B = the copy engine ----
 	always_ff @(posedge clk) begin
 		if (cpu_wel) live[cpu_addr][7:0]  <= cpu_wdata[7:0];
 		if (cpu_weh) live[cpu_addr][15:8] <= cpu_wdata[15:8];
 		cpu_rdata <= live[cpu_addr];
-		portb_q   <= live[portb_addr];
+		portb_q   <= live[cp_cnt];
 	end
 
-	// ---- buf0: read by the copy engine, written by it ----
+	// ---- snap: written by the copy engine, read by the render port ----
 	always_ff @(posedge clk) begin
-		buf0_q <= buf0[cp_rd_addr];
-		if (cp_wr_en && cp_pass_d) buf0[cp_wr_addr] <= portb_q;
+		buf_q <= snap[rd_addr];
+		if (cp_wr_en) snap[cp_wr_addr] <= portb_q;
 	end
 
-	// ---- buf1: written by the copy engine, read by the render port ----
-	always_ff @(posedge clk) begin
-		buf1_q <= buf1[rd_addr];
-		if (cp_wr_en && !cp_pass_d) buf1[cp_wr_addr] <= buf0_q;
-	end
-
-	// =====================================================================
-	// Copy engine: two passes over 4096 words, in this order and no other.
-	//
-	//   pass 0   buf1 <= buf0     the OLDER generation moves along first
-	//   pass 1   buf0 <= live
-	//
-	// Doing pass 1 first would let this frame's data reach buf1 immediately,
-	// collapsing two generations of delay into one -- and the symptom would be
-	// sprites arriving a frame early, which is not obviously a bug when you
-	// are looking at a moving picture.
-	//
-	// One read is issued per cycle and written one cycle later, so the RAM's
-	// read latency is spent rather than assumed. Reading and writing in the
-	// same cycle would store the PREVIOUS address's data (LESSONS_LEARNED,
-	// "Give a registered RAM its full read latency before consuming it").
-	// =====================================================================
+	// Copy engine: one pass over 4096 words. One read is issued per cycle and
+	// written one cycle later, so the RAM's read latency is spent rather than
+	// assumed (LESSONS_LEARNED, "Give a registered RAM its full read latency
+	// before consuming it").
 	always_ff @(posedge clk or posedge reset) begin
 		if (reset) begin
-			cp_cnt          <= 13'd0;
+			cp_cnt          <= 12'd0;
 			cp_run          <= 1'b0;
 			cp_wr_en        <= 1'b0;
-			cp_pass_d       <= 1'b0;
 			copy_busy       <= 1'b0;
-			tilebank_buf0   <= 32'd0;
 			tilebank_render <= 32'd0;
 		end else begin
 			cp_wr_en <= 1'b0;
-
 			if (!cp_run) begin
-				// FG-2 keeps no generations, so nothing is copied and
-				// copy_busy never asserts.
-				if (copy_start && board_fg3) begin
-					cp_cnt    <= 13'd0;
-					cp_run    <= 1'b1;
-					copy_busy <= 1'b1;
-					// The tile bank shifts along with the data it describes.
-					tilebank_render <= tilebank_buf0;
-					tilebank_buf0   <= tilebank_live;
+				if (copy_start) begin
+					cp_cnt          <= 12'd0;
+					cp_run          <= 1'b1;
+					copy_busy       <= 1'b1;
+					tilebank_render <= tilebank_live;
 				end
 			end else begin
-				// Commit what last cycle's read produced.
 				cp_wr_en   <= 1'b1;
-				cp_wr_addr <= cp_rd_addr;
-				cp_pass_d  <= cp_pass;
-
-				if (cp_cnt == 13'h1FFF) begin
+				cp_wr_addr <= cp_cnt;
+				if (cp_cnt == 12'hFFF) begin
 					cp_run    <= 1'b0;
 					copy_busy <= 1'b0;
 				end else begin
-					cp_cnt <= cp_cnt + 13'd1;
+					cp_cnt <= cp_cnt + 12'd1;
 				end
 			end
 		end
 	end
 
-	// FG-2 renders from live (through port B), FG-3 from the two-generation
-	// copy. Selected combinationally on the registered outputs, so both paths
-	// have identical one-cycle read latency.
-	assign rd_data = board_fg3 ? buf1_q : portb_q;
+	assign rd_data = buf_q;
+
+	// verilator lint_off UNUSED
+	wire _unused_board = board;
+	// verilator lint_on UNUSED
 
 endmodule

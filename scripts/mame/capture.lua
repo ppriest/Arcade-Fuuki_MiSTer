@@ -37,7 +37,6 @@ local regions = {
 }
 if BOARD == "fg3" then
     regions[#regions+1] = { 0x410000, 0x10000, "workram2" }
-    regions[#regions+1] = { 0xa00000, 0x4,     "tilebank" }
 end
 
 local function dump(addr, len, name)
@@ -53,6 +52,46 @@ local function dump(addr, len, name)
     f:write(table.concat(buf))
     f:close()
     print(string.format("CAPTURE  %-10s %06X +%05X -> %s", name, addr, len, path))
+end
+
+-- FG-3's sprite tile bank cannot be dumped from the address space:
+-- fuukifg3.cpp maps 0xa00000 as writeonly(), so a read returns 0 rather than
+-- the register. That failure is silent and severe -- a zero bank collapses all
+-- four sprite code ranges into one, which on asurabld points them at the EMPTY
+-- first 4 MB of the sprite region, so every sprite draws as a solid block.
+--
+-- (install_write_tap on that range aborts the whole script at load, which is
+-- its own silent failure: MAME then runs normally and simply never captures.)
+--
+-- MAME exposes the driver's own share instead, which is both simpler and
+-- authoritative. It is sampled EVERY frame into a small ring because the
+-- hardware delays this register by two frames along with the sprite data it
+-- describes, so the value in force for the frame being rendered is the one
+-- from two frames earlier, not the newest.
+local tb_ring = {}
+local function tb_sample()
+    if BOARD ~= "fg3" then return end
+    local ok, v = pcall(function()
+        return manager.machine.memory.shares[":tilebank"]:read_u32(0)
+    end)
+    if not ok then return end
+    tb_ring[#tb_ring+1] = v
+    if #tb_ring > 4 then table.remove(tb_ring, 1) end
+end
+
+-- Sample only; the file is written ONCE, at capture time. An earlier version
+-- wrote it from here on every frame, which opened and closed a file ~1800
+-- times per run and stopped the frame notifier reaching its capture body at
+-- all -- dumps and snapshot silently never appeared while the tile bank file
+-- did, which is a confusing signature. Keep per-frame work to arithmetic.
+local function tb_write(n)
+    if BOARD ~= "fg3" then return end
+    local inforce = tb_ring[math.max(1, #tb_ring - 2)] or 0
+    local f = assert(io.open(OUT .. "/" .. BOARD .. "_tilebank.txt", "w"))
+    f:write(string.format("%08X", inforce))
+    f:close()
+    print(string.format("CAPTURE  tilebank = %08X (live %08X)",
+                        inforce, tb_ring[#tb_ring] or 0))
 end
 
 -- Optional: log video-register writes as they happen, tagged with the frame
@@ -82,8 +121,20 @@ end
 -- at frame 120 worked (the callback fired long before a collection happened)
 -- while the identical capture at frame 1100 produced nothing at all, no error,
 -- and MAME exited cleanly with status 0.
+-- An error INSIDE a frame notifier is reported by MAME with a dialog and does
+-- not propagate to the loader, so run.lua's pcall cannot see it. Catch it here
+-- and record it the same way, then stop -- continuing would produce a
+-- half-written capture that looks valid.
+local function fail(msg)
+    local f = io.open(OUT .. "/lua_error.txt", "w")
+    if f then f:write("notifier: " .. tostring(msg) .. "\n"); f:close() end
+    print("LUAFAIL notifier: " .. tostring(msg))
+    manager.machine:exit()
+end
+
 local done = false
-_G.__fuuki_frame_notifier = emu.add_machine_frame_notifier(function()
+local function frame_body()
+    tb_sample()
     if done then return end
     local n = scr:frame_number()
     if n < FRAME then return end
@@ -91,6 +142,7 @@ _G.__fuuki_frame_notifier = emu.add_machine_frame_notifier(function()
 
     print(string.format("CAPTURE  frame %d, board %s -> %s", n, BOARD, OUT))
     for _, r in ipairs(regions) do dump(r[1], r[2], r[3]) end
+    tb_write(n)
 
     -- The screenshot is as important as the dumps: it is the reference the
     -- RTL's own rendering of this exact state gets compared against.
@@ -107,4 +159,9 @@ _G.__fuuki_frame_notifier = emu.add_machine_frame_notifier(function()
     if vreglog then vreglog:close() end
     print("CAPTURE  done")
     mach:exit()
+end
+
+_G.__fuuki_frame_notifier = emu.add_machine_frame_notifier(function()
+    local ok, err = pcall(frame_body)
+    if not ok then fail(err) end
 end)

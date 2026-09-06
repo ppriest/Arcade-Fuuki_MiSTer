@@ -746,6 +746,42 @@ hierarchical access to the core's own `MCycle`/`TState`, not by "the test passes
   there. Found in one JTAG probe read: `last_rom_addr` alternating over a 4-word loop, decoded
   from the ROM as `btst #1,$403446.l / beq`. Where a driver hands a register to a MAME
   framework call, follow the framework's arithmetic too, not just the driver's.
+- **[Fuuki] Freezing the display LIST is not freezing the display.** FG-2 sprites were drawn from
+  the live sprite RAM on the reading that the once-per-frame candidate list already froze the
+  frame. The list was frozen; each scanline then re-read the records from the live RAM while the
+  game rewrote them, so a sprite could change tile or position mid-frame, and a record rewritten
+  between the build and its scanline dropped out for a frame. MAME draws the sprites in one pass
+  from one instant of the RAM. Everything a per-line renderer reads during the frame -- records
+  and the registers that qualify them -- has to come from one snapshot taken at the frame
+  boundary (`rtl/video/spriteram_dbuf.sv`).
+- **[Fuuki] When widening an address, grep for every packed bus that carries it, and give the
+  bench a read at a non-zero offset per client.** The 26-bit widening changed every declared
+  `[24:0]`, but `sdram_arbiter` packs its clients' addresses as `[25*N-1:0]` / `c_addr[25*k +: 25]`
+  -- a width written as arithmetic, not as a range -- and `fuuki_sdram_top` went on concatenating
+  three sums that had become 26 bits. Layer 0 still lined up; layers 1 and 2 read from addresses
+  shifted by one and two bits, and both boards drew garbage tilemaps while sprites (a single-client
+  arbiter) stayed right. `sim/sdram_tb` passed because its layer-1/2 reads were at offset 0, where a
+  shifted zero is still zero. It now reads every client at a non-zero offset inside its own region,
+  and drives the top's `board` input -- an undriven select had turned the base addresses to `X`.
+- **[Fuuki] One unsigned operand makes the whole comparison unsigned, and a coordinate that can
+  go negative then wraps.** The sprite engine chose which sub-tile row covers a scanline with
+  `line12 < (row_origin + 12'(dst_h))`. `row_origin` was signed and `dst_h` was not, so the
+  addition and the comparison were evaluated unsigned: a sub-tile row entirely above the top of
+  the screen has a negative end, which wrapped to ~4092 and made the test true on EVERY scanline.
+  The row search then stopped at that row for the whole sprite and drew its tiles on every line --
+  the same tiles repeated down the screen, on tall sprites only, and only while part of one was
+  off the top. Nearby tests survived the same mistake by luck (their true sums were positive and
+  fitted, so the wrapped bit pattern was still right), which is why one bug and not four. Make
+  every operand of a signed comparison explicitly signed and wide enough not to overflow, and
+  distrust "it works" where a coordinate has simply not gone negative yet.
+- **[Fuuki] A debug gate that keys off the load path dies when the load path changes.** The trace
+  sources and the memory walker were gated on `dl_done`, set by seeing `ioctl_wr` with index 0.
+  Adding the fast DDR ROM load -- where the HPS DMAs straight into DDR3 and NO ioctl write ever
+  reaches the core -- left that flag clear forever, so every dump came back as 256 zeros with the
+  readout reporting no problems at all, because the buffer genuinely held zeros. The same omission
+  would have held the core in reset via `rom_loaded`; that one was caught by reading, this one by
+  a dump that had worked an hour earlier. When a transport is replaced, grep for every flag
+  derived from the old one.
 - **[Fuuki] `write_source_data -value` takes a binary string; pass `-value_in_hex`.** The ISSP
   Tcl wrote `-value 8`, printed "source set to 8", and the source read back `00`: a decimal string
   is silently rejected. Every page select, phase step and walker re-arm issued that way had been a

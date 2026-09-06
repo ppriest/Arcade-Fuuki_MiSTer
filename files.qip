@@ -22,6 +22,8 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram/sdram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram_phy.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram_arbiter.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram_download.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/ddram_phy.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/rom_loader.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram_narrow_bridge.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/fuuki_sdram_top.sv
 

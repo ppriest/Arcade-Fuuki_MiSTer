@@ -21,6 +21,7 @@
 
 module tb_video;
 
+	localparam logic BOARD_FG2 = 1'b0, BOARD_FG3 = 1'b1;   // .mra mod byte bit 0
 	localparam real HALF = 5.8207;
 	localparam int  H_TOTAL = 456, V_TOTAL = 262, H_ACTIVE = 320, V_ACTIVE = 240;
 	localparam int  W = 320, H = 240;
@@ -53,6 +54,12 @@ module tb_video;
 	int cfg_bank [0:2], cfg_t16 [0:2], cfg_b8 [0:2], cfg_s4 [0:2];
 	int cfg_g256 [0:2], cfg_pb [0:2], cfg_tr [0:2], cfg_sx [0:2], cfg_sy [0:2];
 	int prio_reg;
+	// Board select and the FG-3 sprite tile bank. FG-3 replaces the top two
+	// bits of every sprite tile code with a 4-bit bank looked up here
+	// (spr_tile_cb), so a zero bank silently collapses four code ranges into
+	// one and draws the wrong sprites.
+	logic board = BOARD_FG2;
+	logic [31:0] tilebank = 0;
 
 	// Layer order, decoded exactly as vregs.sv does.
 	logic [1:0] tmap_front, tmap_middle, tmap_back;
@@ -175,7 +182,7 @@ module tb_video;
 		.line_start(spr_ready_rise && !build_busy),
 		.render_line(vcnt_next2),
 		.busy(spr_busy), .ovr_ev(spr_ovr),
-		.board_fg3(1'b0), .tilebank(32'd0), .gfx_base(25'd0),
+		.board(board), .tilebank(tilebank), .gfx_base(26'd0), .spr_reverse(1'b0),
 		.n_entries(n_entries),
 		.yt_addr(yt_addr), .yt_data(yt_data),
 		.rec_addr(rec_addr), .rec_data(rec_data),
@@ -210,10 +217,10 @@ module tb_video;
 
 	// ---- graphics ROM models, one per region ----
 	localparam int GFX_LAT = 12;
-	byte unsigned g0 [0:2*1024*1024-1];
+	byte unsigned g0 [0:8*1024*1024-1];   // FG-3 layer 0 is 8 MB, FG-2 layer 0 is 2 MB
 	byte unsigned g1 [0:8*1024*1024-1];
 	byte unsigned g2 [0:2*1024*1024-1];
-	byte unsigned gs [0:2*1024*1024-1];
+	byte unsigned gs [0:34*1024*1024-1];   // FG-3's sprite region is 32 MB
 
 	`define GFXMODEL(NAME, MEM, REQ, ADDR, VALID, DATA)                        \
 		int   NAME``_ctr = 0;                                                   \
@@ -300,6 +307,18 @@ module tb_video;
 			f = $fopen("sim/tilemap_tb/palette.bin", "rb");
 			vbuf = new [16384]; n = $fread(vbuf, f); $fclose(f);
 			for (int i = 0; i < n/2; i++) pal[i] = {vbuf[2*i], vbuf[2*i+1]};
+
+			// +FG3=1 selects the FG-3 configuration; the tile bank comes from
+			// the capture and is absent for FG-2.
+			if ($value$plusargs("FG3=%d", n)) board = (n != 0) ? BOARD_FG3 : BOARD_FG2;
+			f = $fopen("sim/tilemap_tb/tilebank.bin", "rb");
+			if (f != 0) begin
+				vbuf = new [4];
+				n = $fread(vbuf, f);
+				$fclose(f);
+				tilebank = {vbuf[0], vbuf[1], vbuf[2], vbuf[3]};
+				$display("  sprite tile bank = %08x", tilebank);
+			end
 
 			f = $fopen("sim/tilemap_tb/priority.bin", "rb");
 			vbuf = new [2]; n = $fread(vbuf, f); $fclose(f);

@@ -42,9 +42,20 @@ module sprite_line_engine (
 	output logic        busy,
 	output logic        ovr_ev,       // pulse: a line was cut short
 
-	input  logic        board_fg3,
+	input  logic        board,   // BOARD_FG2 / BOARD_FG3
 	input  logic [31:0] tilebank,     // FG-3 sprite tile bank, already buffered
-	input  logic [24:0] gfx_base,     // byte address of the sprite tile ROM
+	// SPRITE DEPTH ORDER, SWITCHABLE AT RUNTIME.
+	// sprite_line_list stores record 1023 first and record 0 last, and
+	// rendering the list forwards with later writes overwriting earlier
+	// ones puts record 0 on top -- which is what MAME does, drawing from
+	// the last record to the first (fuukispr.cpp: `start = size-4;
+	// inc = -4`, "Draw them backwards, for pdrawgfx"). Scanning the list
+	// backwards instead inverts sprite-vs-sprite depth. It is a switch
+	// rather than a rewrite because the two orders differ only where
+	// sprites overlap, and one screenshot each settles it without the
+	// ~13-minute rebuild a code change would cost.
+	input  logic        spr_reverse,
+	input  logic [25:0] gfx_base,     // byte address of the sprite tile ROM
 
 	// ---- candidate list ----
 	input  logic [10:0] n_entries,
@@ -55,7 +66,7 @@ module sprite_line_engine (
 
 	// ---- graphics ROM, req/valid, one-cycle req pulse ----
 	output logic        gfx_req,
-	output logic [24:0] gfx_addr,
+	output logic [25:0] gfx_addr,
 	input  logic        gfx_valid,
 	input  logic [63:0] gfx_data,
 
@@ -65,6 +76,8 @@ module sprite_line_engine (
 	output logic [15:0] lb_data       // { opaque, priority[1:0], pal[12:0] }
 );
 
+
+	localparam logic BOARD_FG2 = 1'b0, BOARD_FG3 = 1'b1;   // .mra mod byte bit 0
 	localparam int SCREEN_W = 320;
 	localparam logic [12:0] SPRITE_PAL_BASE = 13'h800;   // 0x400*2
 	localparam logic [3:0]  TRANS_PEN       = 4'd15;
@@ -131,7 +144,19 @@ module sprite_line_engine (
 	wire [7:0] dst_h = nonzoom ? 8'd16 : dsty_r;
 
 	wire signed [11:0] line12 = 12'({3'd0, cur_line});
-	wire row_hit = (line12 >= row_origin) && (line12 < (row_origin + 12'(dst_h)));
+
+	// EVERY OPERAND OF THIS TEST IS EXPLICITLY SIGNED, AND WIDE ENOUGH NOT TO
+	// WRAP. Written as `line12 < (row_origin + 12'(dst_h))`, the unsigned
+	// dst_h made the addition and the comparison unsigned: a sub-tile row
+	// lying entirely ABOVE the screen has a negative end, which wrapped to
+	// ~4092 and made row_hit true on every scanline. S_FINDROW then stopped
+	// at that row for the whole sprite and drew its tiles on every line --
+	// the same tiles repeated down the screen, on tall sprites only, and only
+	// while part of one was off the top. 13 bits so the sum cannot overflow.
+	wire signed [12:0] row_top = 13'(row_origin);
+	wire signed [12:0] row_end = row_top + $signed({5'd0, dst_h});
+	wire signed [12:0] line13  = 13'(line12);
+	wire row_hit = (line13 >= row_top) && (line13 < row_end);
 
 	// ---- code index ----
 	// MAME increments the tile code in LOOP order while positioning by the
@@ -165,7 +190,7 @@ module sprite_line_engine (
 	// 16x16x4: 128 bytes per tile, 8 bytes per row -- one granule, no second fetch.
 	// tile_no_r, not tile_no: the code_index multiply is done a state earlier,
 	// so S_REQ's path into gfx_addr is two adds rather than a multiply-add.
-	wire [24:0] row_addr = gfx_base + {tile_no_r, 7'd0} + {row_f, 3'd0};
+	wire [25:0] row_addr = gfx_base + {tile_no_r, 7'd0} + {row_f, 3'd0};
 
 	// ---- pixel extraction, 4bpp packed, MSB nibble first ----
 	wire [3:0] src_px = nonzoom ? dx[3:0] : 4'((xacc >> 16));
@@ -215,7 +240,7 @@ module sprite_line_engine (
 				case (st)
 				S_IDLE: begin
 					if (line_start) begin
-						scan_i   <= 10'd0;
+						scan_i   <= spr_reverse ? 10'(n_entries - 11'd1) : 10'd0;
 						cur_line <= render_line;
 						busy     <= 1'b1;
 						st       <= (n_entries == 11'd0) ? S_IDLE : S_SCAN;
@@ -296,7 +321,7 @@ module sprite_line_engine (
 					// declarations. Computed here in parallel with src_row,
 					// not chained behind it.
 					ny_r        <= flipy ? (ynum - 5'd1 - iy) : iy;
-					code_base_r <= board_fg3
+					code_base_r <= (board == BOARD_FG3)
 					             ? ({4'd0, base_code[13:0]} + {bank_val, 14'd0})
 					             : ({2'd0, base_code});
 					st      <= S_TILE;
@@ -316,7 +341,7 @@ module sprite_line_engine (
 
 				S_REQ: begin
 					gfx_req  <= 1'b1;
-					gfx_addr <= {row_addr[24:3], 3'd0};
+					gfx_addr <= {row_addr[25:3], 3'd0};
 					st       <= S_WAIT;
 				end
 
@@ -352,11 +377,12 @@ module sprite_line_engine (
 				end
 
 				S_NEXT: begin
-					if (scan_i == 10'(n_entries - 11'd1)) begin
+					if (spr_reverse ? (scan_i == 10'd0)
+					                : (scan_i == 10'(n_entries - 11'd1))) begin
 						busy <= 1'b0;
 						st   <= S_IDLE;
 					end else begin
-						scan_i <= scan_i + 10'd1;
+						scan_i <= spr_reverse ? scan_i - 10'd1 : scan_i + 10'd1;
 						st     <= S_SCAN;
 					end
 				end

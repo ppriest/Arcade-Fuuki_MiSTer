@@ -34,6 +34,7 @@ by anyone else with a MAME install and the ROM sets.
 | `read_issp.tcl` | read the core's debug counters over JTAG via In-System Sources and Probes (`quartus_stp -t`), since SignalTap acquisition is GUI-only in Quartus Prime Lite 17.0 |
 | `report_worst_paths.tcl` | `quartus_sta -t scripts/report_worst_paths.tcl Fuuki` -- the 15 worst clk_sys setup paths from the compiled database, to `output_files/worst_paths_Fuuki.rpt`. |
 | `soak.py` | `python scripts/soak.py gogomile --seconds 120` -- run a game and sample the probe (irq pulses, pending flags, PC) and a screenshot every 10 s; flags a hang. |
+| `memdump.py` | `python scripts/memdump.py vram 0 64` -- read SDRAM / VRAM / palette / sprite RAM / vregs / work RAM back from the running core over JTAG (CPU paused per page), optionally `--compare` against an expected image. Needs `cfg.py <game> --set overlay=1 src=3 ring=0`. |
 | `boot_trace.py` | `capture` the first 256 CPU accesses, `--trig` the 255 before the first exception, `hang` the last 256 before a JTAG pause, `compare` against MAME. |
 
 MAME lives wherever `MAME_DIR` points (default `C:\Emulation\Emulators\MAME`).
