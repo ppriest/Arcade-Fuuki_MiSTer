@@ -288,17 +288,36 @@ module fg2_sound (
 	// in 1/32 steps: 5, 10, 27 -- 0.156, 0.313, 0.844. The OKI's 14-bit
 	// output is brought to 16 bits first. The gains sum past unity, so the
 	// sum saturates rather than wrapping.
+	//
+	// PIPELINED IN THREE STAGES, and that is a timing fix, not a style
+	// choice. Done in one clock -- three multiplies, a three-way add, a
+	// shift, two comparisons and a mux, all starting from the chips' own
+	// combinational outputs -- this was the design's worst path family:
+	// jt49's sound and jt03_acc's snd into audio[*], -0.161 ns with
+	// TNS -2.347 across the whole failing set. The mute muxes made it
+	// longer still. Splitting it costs three clk_sys cycles of latency on a
+	// signal sampled at 48 kHz, which is 1/600th of a sample.
 	// =====================================================================
 	wire signed [15:0] oki16 = {oki_snd, 2'b00};
-	wire signed [15:0] ym1_g = en_fm  ? ym1_snd : 16'sd0;
-	wire signed [15:0] ym2_g = en_fm  ? ym2_snd : 16'sd0;
-	wire signed [15:0] oki_g = en_pcm ? oki16   : 16'sd0;
-	wire signed [21:0] mix = (22'(ym1_g) * 22'sd5) + (22'(ym2_g) * 22'sd10) + (22'(oki_g) * 22'sd27);
-	wire signed [16:0] mix32 = 17'(mix >>> 5);
+
+	logic signed [15:0] s1_ym1, s1_ym2, s1_oki;
+	logic signed [21:0] s2_ym1, s2_ym2, s2_oki;
+	logic signed [22:0] s3_sum;
+
 	always_ff @(posedge clk) begin
-		if      (mix32 >  17'sd32767) audio <= 16'sd32767;
-		else if (mix32 < -17'sd32768) audio <= -16'sd32768;
-		else                          audio <= 16'(mix32);
+		// 1: gate
+		s1_ym1 <= en_fm  ? ym1_snd : 16'sd0;
+		s1_ym2 <= en_fm  ? ym2_snd : 16'sd0;
+		s1_oki <= en_pcm ? oki16   : 16'sd0;
+		// 2: scale
+		s2_ym1 <= 22'(s1_ym1) * 22'sd5;
+		s2_ym2 <= 22'(s1_ym2) * 22'sd10;
+		s2_oki <= 22'(s1_oki) * 22'sd27;
+		// 3: sum, then shift and saturate
+		s3_sum <= 23'(s2_ym1) + 23'(s2_ym2) + 23'(s2_oki);
+		if      ((s3_sum >>> 5) >  23'sd32767) audio <=  16'sd32767;
+		else if ((s3_sum >>> 5) < -23'sd32768) audio <= -16'sd32768;
+		else                                   audio <= 16'(s3_sum >>> 5);
 	end
 
 	// ---- probes ----

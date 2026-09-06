@@ -606,7 +606,7 @@ fuuki_core u_core (
 	.dbg_trig(status[59]), .dbg_dump(probe_src[31:8]),
 	.dbg_marker(status[60]), .raster_lead(status[62:61]),
 	.dbg_irq_pending(dbg_irq_pending), .dbg_iack(dbg_iack), .dbg_iack_level(dbg_iack_level),
-	.dbg_irq1_trig(dbg_irq1_trig), .dbg_lb_check(dbg_lb_check),
+	.dbg_irq1_trig(dbg_irq1_trig), .dbg_smp(dbg_smp),
 	.dbg_z80_m1(dbg_z80_m1), .dbg_ym_wr(dbg_ym_wr),
 	.dbg_pcm_keyon(dbg_pcm_keyon), .dbg_fm_keyon(dbg_fm_keyon),
 	.dbg_frozen(dbg_frozen)
@@ -783,7 +783,7 @@ wire       ctr_clear = probe_src[0];
 // acknowledges advance) and the handler simply never sets the flag.
 wire [2:0] dbg_irq_pending, dbg_iack_level;
 wire       dbg_iack, dbg_irq1_trig;
-wire [15:0] dbg_lb_check;   // {spr_delta, tm1_delta, spr_bad, tm1_bad}, see fuuki_core.sv
+wire [15:0] dbg_smp;   // sample-ROM fetch health, see fuuki_core.sv's SAMPLE FETCH WATCH
 wire        dbg_z80_m1, dbg_ym_wr, dbg_pcm_keyon, dbg_fm_keyon;
 reg  [7:0] c_irq1  = 8'd0;   // irq1_trig pulses (one per frame when healthy)
 reg  [4:0] c_iack1 = 5'd0;   // level-1 acknowledge cycles
@@ -878,7 +878,7 @@ issp_probe #(.INSTANCE_ID("F"), .PROBE_W(128), .SOURCE_W(32)) u_probe (
 	.probe({
 		c_dl_edges,          // 127..122  ioctl_download rising edges, any index
 		pll_unlock,          // 121
-		dbg_lb_check,        // 120..105  line-buffer check: {spr_delta, tm1_delta, spr_bad, tm1_bad}
+		dbg_smp,             // 120..105  sample fetch: {stalled, outstanding, worst latency, done}
 		c_fm_kon, c_z80_m1,  // 104..84  [104:100] OPL4 FM key-ons, [99:84] Z80 fetches
 		dbg_frozen,          //  83  ring mode: has the buffer stopped moving
 		pause_latched,       //  82

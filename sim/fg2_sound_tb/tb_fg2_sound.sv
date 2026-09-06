@@ -50,6 +50,9 @@ module tb_fg2_sound;
 		.clk(clk), .reset(reset),
 		.cen_z80(cen_z80), .cen_ym(cen_ym), .cen_oki(cen_oki),
 		.latch_data(latch_data), .latch_write(latch_write),
+		// Both halves on: this bench asks whether the board makes sound at
+		// all, not what each half contributes.
+		.en_fm(1'b1), .en_pcm(1'b1),
 		.rom_req(rom_req), .rom_addr(rom_addr), .rom_valid(rom_valid), .rom_data(rom_data),
 		.oki_req(oki_req), .oki_addr(oki_addr), .oki_valid(oki_valid), .oki_data(oki_data),
 		.audio(audio), .dbg_m1(dbg_m1), .dbg_ym_wr(dbg_ym_wr)

@@ -39,6 +39,20 @@ Some links discussing the games and hardware:
 
 ## History
 
+* Arcade-Fuuki_20260906.rbf  (commit 5700b36)
+  * **Sound.** FG-2's Z80 with the YM2203 / YM3812 / OKI M6295 set, and FG-3's Z80 with the
+    YMF278B — Psikyo's OPL4 PCM engine plus gtaylormb/opl3_fpga for the FM half. All four
+    parent sets play with music and effects.
+  * FG-3's 68020 and Z80 now talk through the real 16 shared bytes; the bring-up stub is gone.
+  * HDMI rotation and Flip 180, vertical crop, integer scaling, CRT offset.
+  * `Sound: FM` and `Sound: PCM` OSD switches mute either half, on either board.
+  * gogomile's title-cloud jitter is fixed: the raster register is 8 bits, not 9.
+  * Known faults: **Asura Buster's audio can stop entirely a short way into a game** — the Z80
+    keeps running and keying on voices, so the suspect is the wave-ROM fetch path, and this
+    build carries the probe that will say. Sounds tied to character actions are missing. The
+    two tilemap raster faults below are unchanged.
+  * Timing: `clk_sys` setup +0.438 ns, 57% ALMs, 72% RAM blocks.
+
 * Arcade-Fuuki_20260905.rbf
   * **Alpha release**
   * Games all run fine

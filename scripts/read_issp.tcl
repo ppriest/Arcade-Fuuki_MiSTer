@@ -31,20 +31,25 @@ set fields {
     {ring_frozen     83  83 bit}
     {z80_fetches     84  99 dec}
     {fm_keyons      100 104 dec}
-    {lb_tm1_bad      105 108 dec}
-    {lb_spr_bad      109 112 dec}
-    {lb_tm1_delta    113 116 hex}
-    {lb_spr_delta    117 120 hex}
+    {smp_done        105 112 dec}
+    {smp_maxlat      113 118 dec}
+    {smp_outstanding 119 119 bit}
+    {smp_stalled     120 120 bit}
     {pll_unlock      121 121 bit}
     {ioctl_dl_edges  122 127 dec}
 }
 
-# lb_* is the line-buffer check (fuuki_core.sv, LINE-BUFFER CHECK): delta is
-# (display line - the row the displayed bank was rendered for), 4-bit two's
-# complement, sampled every displayed line; 0 means row V is shown on line V,
-# 1 means the picture is one line low. bad counts lines with a non-zero
-# delta, saturating at 15, since the core reset. tm1 is tilemap layer 1,
-# spr the sprite buffer.
+# smp_* watches the sample ROM port, shared by FG-2's OKI and FG-3's OPL4
+# wavetable (fuuki_core.sv, SAMPLE FETCH WATCH). Both chips assume the fetch
+# completes -- the OPL4 issues one request and holds busy_mem until a valid
+# only this path can give it -- so one lost valid is a PERMANENT stall, not
+# a glitch: the PCM engine stops advancing and its output goes to a
+# constant, which is silence at a non-zero level.
+#   smp_stalled      a fetch has been outstanding > 4096 clk (sticky). This
+#                    being set is the fault; nothing healthy comes close.
+#   smp_outstanding  one is outstanding at this instant
+#   smp_maxlat       worst latency seen, in units of 64 clk (~0.75 us)
+#   smp_done         fetches completed, saturating at 255
 #
 # max_dl_addr512 is the HIGHEST download address written, in 512-byte units:
 # multiply by 0x200 for the byte address. Unlike the trace buffer it has no

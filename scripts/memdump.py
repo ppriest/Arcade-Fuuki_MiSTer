@@ -9,8 +9,9 @@
 Regions (rtl/fuuki_core.sv, "MEMORY DUMP"): sdram (512-byte pages of the
 64 MB), vram (64 pages), palette (32), spriteram (16, the live RAM), vregs (1:
 words 0-15 registers, 16-17 unknown, 18 priority, 19-20 the sprite tile bank), workram (256),
-linecap (4: the per-line display record, four words per line -- layers 0-2 at
-x=160 as {opaque, 2'b0, palette index} and sprites as {any, 6'b0, first opaque x}).
+linecap (8: the per-line display record, EIGHT words per line -- see
+fuuki_core.sv's PER-LINE DISPLAY RECORD; words 5-7 are layer 2's latched X
+scroll, layer 0's latched Y scroll and the reduced raster register).
 
 The core must be running with the trace overlay on and source 3 (the walker)
 selected: `cfg.py <game> --set overlay=1 src=3 ring=0` before the launch. The
@@ -33,7 +34,7 @@ OUT = REPO / "debug" / "hw" / "dump"
 REGION = {"sdram": 0, "vram": 1, "palette": 2, "spriteram": 3, "vregs": 4, "workram": 5,
           "linecap": 6}
 PAGES = {"sdram": 1 << 17, "vram": 64, "palette": 32, "spriteram": 16, "vregs": 1, "workram": 256,
-         "linecap": 4}
+         "linecap": 8}
 
 
 def dump_page(region, page, tag, low=0):

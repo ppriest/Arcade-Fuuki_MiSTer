@@ -65,7 +65,13 @@ echo "--- vlog: RTL + testbench ---"
 #   *_upstream_reference.sv pristine upstream copies kept beside the vendored
 #                           modules purely so the local changes can be diffed.
 #                           They are not part of any design.
-RTL=$(find rtl -name '*.sv'         -not -path '*/synth_check/*'         -not -name 'screen_rotate_two.sv'         -not -name '*_upstream_reference.sv' | sort)
+# opl3_pkg.sv FIRST. Quartus resolves SystemVerilog packages across the whole
+# project, so file order does not matter to it; ModelSim needs a package
+# compiled before anything that imports it, and a plain alphabetical sort puts
+# channels.sv and operator.sv ahead of it -- which fails as a cascade of
+# "Undefined variable" on every constant in the package.
+OPL3_PKG=rtl/sound/opl3/opl3_pkg.sv
+RTL=$(find rtl -name '*.sv'         -not -path '*/synth_check/*'         -not -name 'screen_rotate_two.sv'         -not -name '*_upstream_reference.sv' -not -name 'opl3_pkg.sv' | sort)
 # The jotego sound cores are plain Verilog. Their trees carry alternates and
 # retired versions of the same module names (jt12's alt/ and deprecated/),
 # and jt6295 ships its own jt12_comb.v -- one copy of each is compiled.
@@ -78,7 +84,7 @@ JT=$(find rtl/sound -name '*.v' -not -path '*/alt/*' -not -path '*/deprecated/*'
 # a sound. +initreg/+initmem =r+0 give every un-reset variable and array
 # the power-up zero.
 "$MS/vlog.exe" -quiet -sv -work work +define+SIMULATION +initreg=r+0 +initmem=r+0 $JT
-"$MS/vlog.exe" -quiet -sv -work work $RTL "sim/$TB"/*.sv
+"$MS/vlog.exe" -quiet -sv -work work $OPL3_PKG $RTL "sim/$TB"/*.sv
 
 echo "--- vsim: tb_${TB%_tb} ---"
 "$MS/vsim.exe" -c -do "run -all; quit -f" "work.tb_${TB%_tb}" "$@" 2>&1 \

@@ -118,7 +118,7 @@ module fuuki_core (
 	output logic        dbg_iack,        // interrupt-acknowledge access in progress
 	output logic [2:0]  dbg_iack_level,  // level on A3..A1 during it
 	output logic        dbg_irq1_trig,   // the line-248 interrupt source, one clk per frame
-	output logic [15:0] dbg_lb_check,    // line-buffer row tags vs display line, see LINE-BUFFER CHECK
+	output logic [15:0] dbg_smp,         // sample-ROM fetch health, see SAMPLE FETCH WATCH
 	output logic        dbg_z80_m1,      // one pulse per Z80 opcode fetch, either board
 	output logic        dbg_ym_wr,       // one pulse per write to a sound chip, either board
 	output logic        dbg_pcm_keyon,   // FG-3: OPL4 PCM voice keyed on
@@ -628,36 +628,107 @@ module fuuki_core (
 			if (vcnt != spr_disp_tag && spr_bad != 4'd15) spr_bad <= spr_bad + 4'd1;
 		end
 	end
-	assign dbg_lb_check = {spr_delta, tm1_delta, spr_bad, tm1_bad};
+	// The line-buffer check that used to be on the probe is retired: it read
+	// delta 0 for hundreds of frames on both engines, and the sprite-offset
+	// fault it was built for turned out to be the scaler. The counters stay
+	// so the check can be re-exported without rebuilding the logic.
+	wire [15:0] lb_check_unused = {spr_delta, tm1_delta, spr_bad, tm1_bad};
 
 	// =====================================================================
-	// PER-LINE DISPLAY RECORD (dump region 6). Four words per display line,
-	// 240 lines, written from the compositor's inputs as the line is shown:
-	//   word 0..2  layer 0..2 at x = 160: { opaque, 2'b0, palette index }
-	//   word 3     sprites: { any opaque on the line, 6'b0, first opaque x }
-	// What the screen shows, line by line, readable over JTAG -- so a
-	// vertical offset against the same scene rendered in simulation is a
-	// number, not an impression.
+	// SAMPLE FETCH WATCH. The sample ROM port serves FG-2's OKI and FG-3's
+	// OPL4 wavetable, and BOTH chips assume their fetch completes: jt6295
+	// does not wait at all, and the OPL4 issues a one-cycle request and then
+	// holds busy_mem until a valid it can only get from us. So a single lost
+	// valid is not a glitch, it is a permanent stall -- the PCM engine stops
+	// advancing, its accumulator holds its last value, and the mix goes to a
+	// constant. That is silence with a non-zero level, which is exactly what
+	// a peak-hold reads as "still working".
+	//
+	// So: is a fetch outstanding right now, how long has the worst one
+	// taken, and has any ever exceeded a threshold no healthy fetch should.
+	//   [15]     stalled: a fetch has been outstanding > 4096 clk (sticky)
+	//   [14]     a fetch is outstanding at this instant
+	//   [13:8]   worst latency seen, in units of 64 clk, saturating
+	//   [7:0]    fetches completed, saturating
 	// =====================================================================
-	logic [15:0] linecap [0:1023];
+	logic        smp_out = 1'b0, smp_stall = 1'b0;
+	logic [15:0] smp_age = 16'd0;
+	logic [5:0]  smp_maxlat = 6'd0;
+	logic [7:0]  smp_done = 8'd0;
+	always_ff @(posedge clk) begin
+		if (core_reset) begin
+			smp_out <= 1'b0; smp_stall <= 1'b0; smp_age <= 16'd0;
+			smp_maxlat <= 6'd0; smp_done <= 8'd0;
+		end else begin
+			if (smp_valid) begin
+				smp_out <= 1'b0;
+				smp_age <= 16'd0;
+				if (smp_done != 8'hFF) smp_done <= smp_done + 8'd1;
+				if (smp_age[15:6] != 10'd0)          smp_maxlat <= 6'h3F;
+				else if (smp_age[5:0] > smp_maxlat)  smp_maxlat <= smp_age[5:0];
+			end else if (smp_out) begin
+				if (smp_age != 16'hFFFF) smp_age <= smp_age + 16'd1;
+				if (smp_age > 16'd4096)  smp_stall <= 1'b1;
+			end else if (smp_req) begin
+				smp_out <= 1'b1;
+				smp_age <= 16'd0;
+			end
+		end
+	end
+	// smp_age counts in clk; >>6 puts the reported worst latency in units of
+	// 64 clk, so 1 unit is about 0.75 us at 85.909 MHz.
+	assign dbg_smp = {smp_stall, smp_out, smp_maxlat, smp_done};
+
+	// =====================================================================
+	// The compositor's resolved layer-priority value. Declared HERE, above
+	// the record that samples it, not beside the compositor 240 lines below:
+	// vlog rejects use-before-declare and Quartus quietly accepts it, which
+	// is how a truncated bus once reached hardware (LESSONS_LEARNED).
+	logic [2:0] dbg_pri;
+
+	// PER-LINE DISPLAY RECORD (dump region 6). EIGHT words per display line,
+	// 240 lines, written as the line is shown:
+	//   0..2  layer 0..2 at x = 160: { opaque, 2'b0, palette index }
+	//   3     sprite at x = 160:     { opaque, priority[1:0], palette index }
+	//   4     { any sprite on the line, 3'b0, layer priority value, first x }
+	//   5     layer 2's LATCHED X scroll -- gogomile's cloud chain
+	//   6     layer 0's LATCHED Y scroll -- pbancho's per-line effect
+	//   7     the raster register in force, reduced ({7'b0, raster_line})
+	//
+	// Words 5-7 are what make a raster fault answerable. The chain's own
+	// arithmetic is known from a MAME capture -- gogomile's clouds are five
+	// bands at 2, 1, 1/2, 0, 0 pixels per frame, starting at lines 0, 30, 64,
+	// 89 and 119 -- so the question is only ever WHICH DISPLAY LINE GOT WHICH
+	// SCROLL, and this answers it directly instead of by inference from the
+	// picture. It also measures whether a change (the Raster IRQ lead switch,
+	// say) moved those boundaries at all, which by eye is a guess.
+	logic [15:0] linecap [0:2047];
 	logic [13:0] lc_l0, lc_l1, lc_l2;
+	logic [15:0] lc_spr;
+	logic [2:0]  lc_pri;
+	logic [15:0] lc_sx2, lc_sy0;
 	logic [8:0]  lc_spr_x = 9'd0;
 	logic        lc_spr_seen = 1'b0, lc_writing = 1'b0;
-	logic [1:0]  lc_wcnt = 2'd0;
+	logic [2:0]  lc_wcnt = 3'd0;
 	logic [7:0]  lc_line = 8'd0;
 	logic [15:0] lc_wdata, linecap_rdata;
 	always_comb begin
 		case (lc_wcnt)
-			2'd0:    lc_wdata = {lc_l0[13], 2'b0, lc_l0[12:0]};
-			2'd1:    lc_wdata = {lc_l1[13], 2'b0, lc_l1[12:0]};
-			2'd2:    lc_wdata = {lc_l2[13], 2'b0, lc_l2[12:0]};
-			default: lc_wdata = {lc_spr_seen, 6'b0, lc_spr_x};
+			3'd0:    lc_wdata = {lc_l0[13], 2'b0, lc_l0[12:0]};
+			3'd1:    lc_wdata = {lc_l1[13], 2'b0, lc_l1[12:0]};
+			3'd2:    lc_wdata = {lc_l2[13], 2'b0, lc_l2[12:0]};
+			3'd3:    lc_wdata = {lc_spr[15], lc_spr[14:13], lc_spr[12:0]};
+			3'd4:    lc_wdata = {lc_spr_seen, 3'b0, lc_pri, lc_spr_x};
+			3'd5:    lc_wdata = lc_sx2;
+			3'd6:    lc_wdata = lc_sy0;
+			default: lc_wdata = {7'b0, raster_line};
 		endcase
 	end
 	always_ff @(posedge clk) begin
 		if (ce_pix && h_active && v_active) begin
 			if (hcnt == 9'd160) begin
 				lc_l0 <= tm_rd[0]; lc_l1 <= tm_rd[1]; lc_l2 <= tm_rd[2];
+				lc_spr <= spr_rd;  lc_pri <= dbg_pri;
 			end
 			if (spr_rd[15] && !lc_spr_seen) begin
 				lc_spr_seen <= 1'b1;
@@ -666,17 +737,23 @@ module fuuki_core (
 		end
 		if (line_start && v_active) begin
 			lc_writing <= 1'b1;
-			lc_wcnt    <= 2'd0;
+			lc_wcnt    <= 3'd0;
 			lc_line    <= vcnt[7:0];
+			// The scrolls as the line just DISPLAYED was rendered with. They
+			// are captured here, at the same edge the next line's latch
+			// happens, so the value recorded against line V is the one the
+			// engines used for it.
+			lc_sx2     <= r_scrollx[2];
+			lc_sy0     <= r_scrolly[0];
 		end else if (lc_writing) begin
 			linecap[{lc_line, lc_wcnt}] <= lc_wdata;
-			lc_wcnt <= lc_wcnt + 2'd1;
-			if (lc_wcnt == 2'd3) begin
+			lc_wcnt <= lc_wcnt + 3'd1;
+			if (lc_wcnt == 3'd7) begin
 				lc_writing  <= 1'b0;
 				lc_spr_seen <= 1'b0;
 			end
 		end
-		linecap_rdata <= linecap[{dump_page[1:0], walk_idx}];
+		linecap_rdata <= linecap[{dump_page[2:0], walk_idx}];
 	end
 
 	// =====================================================================
@@ -754,7 +831,7 @@ module fuuki_core (
 	//   region 2  palette           (32 pages)               (0-15 regs, 16-17 unknown,
 	//   region 3  sprite RAM (live) (16 pages)               18 priority, 19-20 tile bank)
 	//   region 5  work RAM          (256 pages)
-	//   region 6  per-line display record (4 pages) -- see PER-LINE DISPLAY RECORD
+	//   region 6  per-line display record (8 pages) -- see PER-LINE DISPLAY RECORD
 	// Non-SDRAM regions read the CPU-side port of each memory, which is why
 	// the CPU is paused while the walker runs. Each entry is {index, word}.
 	logic        walk_active_d = 1'b0, walk_rearm_d = 1'b0, dl_done_d = 1'b0;
@@ -895,7 +972,6 @@ module fuuki_core (
 		.frozen(dbg_frozen)
 	);
 
-	logic [2:0] dbg_pri;
 
 	compositor u_comp (
 		.l0(tm_rd[0]), .l1(tm_rd[1]), .l2(tm_rd[2]),
