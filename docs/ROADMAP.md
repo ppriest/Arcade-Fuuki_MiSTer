@@ -57,7 +57,7 @@ the real Z80 lands.
 `time_until_pos()` reduces it modulo the driver's 256-line screen (`set_size(320, 256)` /
 `set_size(512, 256)`), so the game's parked `0xFFFE` fires on line 254, in vblank. The RTL was
 reducing modulo its own 262-line frame, which put that interrupt on line 34, in the picture; the
-captured register log shows the clouds are a five-band layer-1 scroll chain whose `0xFFFE` step
+captured register log shows the clouds are a five-band layer-2 X-scroll chain whose `0xFFFE` step
 writes the top band's scroll and restarts the chain, so it ran mid-frame and only every other
 frame's chain started from line 29. `vregs.sv` now takes the low byte. Confirmed on hardware.
 
@@ -75,7 +75,10 @@ MAME fires it every frame the value stands, as the comparator does.
   per-line latch at the next hblank and rendered two lines ahead, so it first shows on N+3 where
   MAME's partial update applies it from N+1. The `Raster IRQ lead` OSD switch (page 1;
   `cfg.py --set lead=N`) fires IRQ5 one or two lines early to move that band without a rebuild.
-  With the lead at 0 the cloud is still one line off; the other settings have not been reported.
+  **Leads 1 and 2 changed nothing on the screen** — the stray line is in the same place at all
+  three settings — so it is not the band boundary landing late. Whatever it is happens at the
+  boundary wherever the boundary falls: the first line after a scroll change. Not pursued further
+  yet.
 - **The credits text sits one line lower than in MAME**, its bottom row lost off the picture.
   Reported on hardware, unexplained. What has been measured against it:
   - the framing is exact — the `Line markers` switch draws lines 0 and 239 and both sit on the
