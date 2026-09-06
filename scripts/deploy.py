@@ -34,6 +34,7 @@ grossly fails timing (Fuuki.sdc's header says so), and a bitstream that failed
 timing is not worth the time it takes to test.
 """
 import argparse
+import re
 import os
 import shutil
 import subprocess
@@ -189,6 +190,36 @@ def check_build(rbf, log, sta, allow_timing_miss=False):
     return problems, warnings
 
 
+# ---------------------------------------------------------------------------
+# Remote naming: Arcade-Fuuki_NNNNNNNN.rbf, the number incrementing per deploy.
+#
+# MiSTer resolves the .mra's <rbf>Arcade-Fuuki</rbf> to the highest-sorting
+# Arcade-Fuuki_*.rbf in the cores folder, so every deploy leaves the previous
+# builds in place as fallbacks: rename the newest to .held (any name that no
+# longer ends in .rbf) and the one before it is what the .mra launches. The
+# counter starts at 10000001 and is read back from the device, .held files
+# included, so a held build's number is never reused. A plain Arcade-Fuuki.rbf
+# from before this convention is moved aside to .held rather than left to
+# compete with the numbered ones.
+# ---------------------------------------------------------------------------
+RBF_STEM = "Arcade-Fuuki"
+RBF_FIRST = 10000001
+
+
+def next_rbf_name(m):
+    if m.dry:
+        return f"{RBF_STEM}_{RBF_FIRST}.rbf"   # a dry run never asks the device
+    listing = m.run(f"ls -1 {REMOTE_CORES} 2>/dev/null; true")
+    numbers = [int(n) for n in
+               re.findall(rf"^{RBF_STEM}_(\d+)\.rbf(?:\.held)?$", listing, re.M)]
+    plain = f"{RBF_STEM}.rbf"
+    if plain in listing.split():
+        print(f"    {plain} -> {plain}.held  (pre-numbering build, moved aside)")
+        m.run(f"mv {REMOTE_CORES}/{plain} {REMOTE_CORES}/{plain}.held")
+    n = max(numbers) + 1 if numbers else RBF_FIRST
+    return f"{RBF_STEM}_{n}.rbf"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rbf", default=str(REPO / "output_files" / "Fuuki.rbf"))
@@ -198,9 +229,11 @@ def main():
     logs = sorted((REPO / "output_files").glob("compile*.log"), key=lambda f: f.stat().st_mtime)
     ap.add_argument("--log", default=str(logs[-1]) if logs else str(REPO / "output_files" / "compile.log"))
     ap.add_argument("--sta", default=str(REPO / "output_files" / "Fuuki.sta.summary"))
-    ap.add_argument("--name", default="Arcade-Fuuki.rbf",
-                    help="remote core filename; the .mra's <rbf> tag must match "
-                         "its stem")
+    ap.add_argument("--name", default=None,
+                    help="remote core filename. Default: the next numbered "
+                         "Arcade-Fuuki_NNNNNNNN.rbf on the device (see "
+                         "next_rbf_name); the .mra's <rbf> tag must match the "
+                         "part before the underscore")
     ap.add_argument("--all", action="store_true",
                     help="also deploy the FG-3 .mra files (they cannot run yet)")
     ap.add_argument("--mra-only", action="store_true")
@@ -236,7 +269,8 @@ def main():
             print("\n--force given; deploying anyway.")
         print(f"\n  core -> {REMOTE_CORES}")
         m.run(f"mkdir -p {REMOTE_CORES}")
-        m.put(Path(a.rbf), f"{REMOTE_CORES}/{a.name}")
+        name = a.name or next_rbf_name(m)
+        m.put(Path(a.rbf), f"{REMOTE_CORES}/{name}")
 
     # ---- .mra files ----
     if not a.rbf_only:

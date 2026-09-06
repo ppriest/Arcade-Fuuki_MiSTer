@@ -59,17 +59,23 @@ Two remain, both on the current bitstream:
   shows layer fragments where MAME draws black.**
 
   Latching every renderer-visible register once per line at hblank did not fix either, so neither
-  is a sampling race. **Leading hypothesis: the raster interrupt should be a ONE-SHOT.** MAME's
-  `vregs_w` hands the value to `screen::time_until_pos()`, which schedules a timer, so IRQ5 fires
-  once per WRITE to the register at `0x1c`. The RTL compares `vcnt` against the register every
-  frame instead, so a game that writes it once and leaves it gets one interrupt in MAME and one
-  per frame here; the extra handler calls step the band chain further every frame, which is both a
-  chain that drifts down the screen and an image alternating between two states. The fix is to arm
-  on a write to `0x1c`, after the modulo reduction settles, and disarm when it fires.
+  is a sampling race. Two hypotheses have been tried and dropped: rendering the tilemaps one line
+  ahead instead of two (broke both games — the render window is too short, see the note in
+  `rtl/fuuki_core.sv`), and making the interrupt a one-shot armed per write. The second was
+  dropped on reading `fuukitmap.cpp`, not on hardware: `vregs_w` schedules the raster timer with a
+  frame-length period and the callback re-arms it, so MAME fires it every frame the value stands,
+  exactly as the comparator does.
+
+  **What that reading did turn up: the register is effectively 8 bits.** `time_until_pos()`
+  reduces the line modulo the screen *height*, and both drivers declare a 256-line screen
+  (`set_size(320, 256)` / `set_size(512, 256)`), so gogomile's parked `0xFFFE` fires on line 254,
+  in vblank. The RTL was reducing modulo its own 262-line frame, which put that interrupt on line
+  34, in the picture, so the handler ran mid-frame. `vregs.sv` now takes the low 8 bits. Whether
+  that is the jitter is a hardware question.
 
 - **Raster bands land about three lines low.** The engines render two lines ahead, so a write from
   a raster ISR reaches the display later than MAME's partial update puts it. A constant offset,
-  not a flicker, and independent of the one-shot question.
+  not a flicker.
 
 Sprite faults found and fixed on hardware are recorded in
 [`LESSONS_LEARNED.md`](LESSONS_LEARNED.md) rather than here; the short version is that a signed
@@ -454,7 +460,7 @@ Phases 0 to 2 and 4 are done: the toolchain, the CPU, the whole renderer, the SD
 `.mra` files and both boards running on hardware. What is left, in the order it makes sense to do
 it:
 
-**Finish the raster path.** The one-shot raster interrupt above, then the two open video faults,
+**Finish the raster path.** The two open video faults above,
 then flip screen in the tilemap and sprite engines. Flip is a game feature, not an output
 transform: MAME substitutes different offset constants when flipped and recomputes every sprite
 position, so the flipped image is not a rotation of the unflipped one.
@@ -649,7 +655,9 @@ tree stays editable during a compile — was not ported; the protection that mat
 in `deploy.py`, which refuses to copy a `.rbf` unless the build log says the compile succeeded, the
 `.rbf` is not older than that log, and the timing summary has no negative slack. A Psikyo build
 once died mid-Fitter and its deploy then verified the *previous* build's stale `.rbf` as green.
-`deploy.py` also prints every clock's slack before it copies anything.
+`deploy.py` also prints every clock's slack before it copies anything, and names each core
+`Arcade-Fuuki_NNNNNNNN.rbf` with an incrementing number so earlier builds stay on the device as
+fallbacks (rename the newest to `.held` to drop back one).
 
 Toolchain is Quartus Prime 17.0.2, per the
 [MiSTer developer documentation](https://mister-devel.github.io/MkDocs_MiSTer/developer/mistercompile/).
@@ -692,10 +700,11 @@ both boards. See "Sprite rendering architecture".
 width: gogomile drives an interrupt on *every* scanline, cycling `240 -> 1 -> 2 ... -> 239 -> 240`,
 and an 8-bit comparator against vtotal 262 aliases lines 256-261 onto 0-5, eating the values for
 lines 1-5 and taking five spurious interrupts a frame. pbancho uses lines `0xA8`-`0xDF` with a
-per-line layer-0 Y scroll. `vregs.sv` reduces the register modulo 262, as MAME's
-`time_until_pos()` does, so gogomile's parked `0xFFFE` fires at line 34 — which the game needs,
-because its main loop spins on a bit only the level-5 handler sets. `tb_video_timing` has a case
-that fails at 8 bits.
+per-line layer-0 Y scroll. The *register* is 8 bits, though: MAME's `time_until_pos()` reduces
+it modulo the driver's 256-line screen, so `vregs.sv` zero-extends the low byte and gogomile's
+parked `0xFFFE` fires at line 254, in vblank — which the game needs, because its main loop spins
+on a bit only the level-5 handler sets. `tb_video_timing` has a case that fails at 8 bits of
+comparator; `tb_vregs` checks the 8-bit register.
 
 **Asura Blade needs OPL4 FM; Asura Buster does not.** Measured with `scripts/mame/fm_probe.lua`
 over five emulated minutes of attract per game: 299 key-ons on three channels for Blade, with all
@@ -709,10 +718,8 @@ reading of `fuukispr.cpp`. See "Sprites" above; the discrepancy is unexplained.
 
 ### Open
 
-1. **The raster interrupt should probably be a one-shot** armed by a write to the register at
-   `0x1c`, as MAME's timer is, rather than a comparator firing every frame the value matches. This
-   is the leading explanation for both remaining video faults — see "Progress" above, which carries
-   the reasoning.
+1. **The two open video faults** — gogomile's title-cloud jitter and pbancho's bottom strip. See
+   "Progress" above for what has been tried and what the driver reading changed.
 2. **Raster bands land about three lines low**, because the engines render two lines ahead of the
    display. Fixing it means either reducing that lead or firing IRQ5 correspondingly early.
 3. **Layer-order values 6-15** — MAME indexes a 6-entry table with `priority & 0x0f`, so those read

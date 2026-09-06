@@ -95,44 +95,32 @@ module vregs (
 	assign flip          = regs[4'hF][0];    // 0x1e.w bit 0
 	assign layer2_buffer = regs[4'hF][6];    // 0x1e.w bit 6
 
-	// ---- raster line: regs[0x1c] MODULO 262, as MAME ----
-	// The first version took the low 9 bits, on the reading that gogomile
-	// parks the register at 0xFFFE (line 510, unreachable) to mean "no raster
-	// interrupt". On hardware gogomile then hung within seconds of its
-	// attract: its main loop spins on `btst #1,$403446 / beq`, and bit 1 is
-	// set only by the level-5 handler -- the game needs one IRQ5 per frame
-	// even with the chain parked. MAME provides it because vregs_w hands the
-	// value to screen::time_until_pos(), which does `vpos %= height`: 0xFFFE
-	// fires at line 34 there, every frame, and the game is known to work.
-	// Values below 262 are unchanged, so docs/ROADMAP.md item 5 (9-bit
-	// comparator, from captured traces) still holds; this only defines the
-	// out-of-range values. Computed by repeated subtraction after each write
-	// -- at most 250 clocks, under a twentieth of a scanline -- while the
-	// previous line stays in force.
-	localparam int V_TOTAL = 262;
-	logic [15:0] raster_raw_q;
-	logic [15:0] raster_work;
-	logic        raster_busy;
+	// ---- raster line: the LOW 8 BITS of regs[0x1c], as MAME ----
+	// MAME's fuukitmap.cpp hands every changed value to
+	// screen::time_until_pos(), which reduces it modulo the screen HEIGHT --
+	// and both boards declare a 256-line screen (fuukifg2.cpp set_size(320,
+	// 256); fuukifg3.cpp set_size(512, 256)). So the register is effectively
+	// 8 bits wide: 0..255 fire on that line, and gogomile's parked 0xFFFE
+	// fires on line 254, in vblank, every frame. The game needs that IRQ5
+	// each frame even with its raster chain parked -- its main loop spins on
+	// `btst #1,$403446 / beq` and only the level-5 handler sets the bit -- so
+	// on hardware the first RTL, which let 0xFFFE fire nothing, hung within
+	// seconds of the attract.
+	//
+	// The intermediate version reduced modulo THIS core's 262-line frame,
+	// which put 0xFFFE on line 34, in the middle of the picture: the handler
+	// then ran mid-frame instead of in vblank. 262 is the RTL's own vertical
+	// total (the 28.64 MHz crystal, see video_timing.sv); the value the game
+	// was written against is the one MAME reduces by.
+	//
+	// The COMPARATOR stays 9 bits (video_timing.sv): an 8-bit compare against
+	// a 9-bit line counter aliases lines 256-261 onto 0-5 and fires five
+	// spurious interrupts a frame -- the captured gogomile chain 1..240 showed
+	// exactly that. Zero-extending the 8-bit value keeps lines 256-261 out of
+	// reach.
 	always_ff @(posedge clk or posedge reset) begin
-		if (reset) begin
-			raster_line  <= 9'd0;
-			raster_raw_q <= 16'h0000;
-			raster_work  <= 16'h0000;
-			raster_busy  <= 1'b0;
-		end else begin
-			raster_raw_q <= regs[4'hE];
-			if (regs[4'hE] != raster_raw_q) begin
-				raster_work <= regs[4'hE];
-				raster_busy <= 1'b1;
-			end else if (raster_busy) begin
-				if (raster_work >= 16'(V_TOTAL)) begin
-					raster_work <= raster_work - 16'(V_TOTAL);
-				end else begin
-					raster_line <= raster_work[8:0];
-					raster_busy <= 1'b0;
-				end
-			end
-		end
+		if (reset) raster_line <= 9'd0;
+		else       raster_line <= {1'b0, regs[4'hE][7:0]};
 	end
 
 	// =====================================================================

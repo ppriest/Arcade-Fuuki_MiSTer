@@ -233,12 +233,12 @@ module tb_vregs;
 
 		// The game parks the raster line at 0xfffe between raster chains.
 		// MAME hands the register to screen_device::time_until_pos(), which
-		// takes vpos modulo the screen height, so 0xfffe fires at line 34 --
-		// and gogomile depends on that IRQ5 every frame (it hung on hardware
-		// when the RTL let the value fire nothing; see vregs.sv). vregs.sv
-		// reduces by repeated subtraction, up to 250 clocks after the write.
-		repeat (300) @(posedge clk);
-		check(raster_line == 9'd34, "capture: raster line 0xfffe -> 34 (0xfffe mod 262), as MAME");
+		// takes vpos modulo the screen height, and the driver declares a
+		// 256-line screen: 0xfffe fires at line 254, in vblank -- and
+		// gogomile depends on that IRQ5 every frame (it hung on hardware
+		// when the RTL let the value fire nothing; see vregs.sv).
+		repeat (4) @(posedge clk);
+		check(raster_line == 9'd254, "capture: raster line 0xfffe -> 254 (low 8 bits), as MAME");
 
 		$display("\n=== %0d error(s) ===", errors);
 		if (errors == 0) $display("ALL CHECKS PASSED");

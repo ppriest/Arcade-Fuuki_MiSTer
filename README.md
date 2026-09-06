@@ -78,7 +78,7 @@ Known issues:
 
 ### Todo
 
-- [ ] Raster interrupt as a one-shot armed per write, and close the remaining raster faults above
+- [ ] Close the remaining raster faults above
 - [ ] Sound: Z80, and the FG-2 chip set (YM2203, YM3812, OKI M6295)
 - [ ] Sound: OPL4 — vendor [gtaylormb/opl3_fpga](https://github.com/gtaylormb/opl3_fpga) for the FM
       half and put Psikyo's PCM wavetable engine on top

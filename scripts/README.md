@@ -10,7 +10,7 @@ by anyone else with a MAME install and the ROM sets.
 | - | - |
 | `run_sim.sh` | compile the RTL and run one testbench, from the repository root |
 | `build.sh` | run the full Quartus flow and fail on negative slack rather than on the Fitter's opinion |
-| `deploy.py` | copy the `.rbf` and the `.mra` files to a MiSTer; prints every clock's slack first, and refuses a bitstream the build did not actually produce |
+| `deploy.py` | copy the `.rbf` and the `.mra` files to a MiSTer; prints every clock's slack first, and refuses a bitstream the build did not actually produce. The core lands as `Arcade-Fuuki_NNNNNNNN.rbf`, numbered from 10000001 and incrementing per deploy, read back from the device; MiSTer launches the highest-numbered one, so renaming the newest to `.held` falls back to the one before |
 | `mame_capture.py` | drive MAME headlessly and capture a reference frame: every video region, the screenshot, and optionally a video-register write log |
 | `mame/capture.lua` | the Lua half of the above, run inside MAME |
 | `mame/run.lua` | autoboot wrapper that catches Lua syntax and runtime errors and writes them to a file the Python runner reads back — otherwise a broken script fails as a modal dialog that is invisible headlessly |

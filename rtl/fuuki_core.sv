@@ -484,10 +484,25 @@ module fuuki_core (
 			// where the clear owns the write port and they vanish.
 			//
 			// NOTE video_timing.sv's header prescribes vcnt_next for tilemaps
-			// and vcnt_next2 only for sprites. The ready-edge start costs the
-			// extra line, which is why both use vcnt_next2 here. If the rows
-			// land one scanline off on hardware, that is the knob -- and it
-			// is visible as tilemaps and sprites moving TOGETHER, not apart.
+			// and vcnt_next2 only for sprites, and jtcps1 does the same thing
+			// (scroll at `vrender`, CPS2 objects at `vrender1`). This core
+			// uses vcnt_next2 for BOTH, and the extra line is load-bearing:
+			// it is what gives the engine a WHOLE LINE to render in.
+			//
+			// TRIED AND REVERTED: swapping the tilemap line buffers at the
+			// start of active instead of at line_start, which presents a bank
+			// one line earlier and so allows vcnt_next. It broke both games --
+			// the right-hand side of every tilemap went blank and flickered --
+			// because it also cuts the render window down to hblank: 1632 clk,
+			// less the 320-clk clear, against a worst line measured at 1123
+			// clk for ONE layer in isolation. Three layers share one SDRAM
+			// port, so the real figure is larger and the engine simply does
+			// not finish the line. jtcps1 gets away with one line because its
+			// scroll layers render on the fly during the active display
+			// rather than into a buffer during hblank.
+			//
+			// So the two-line lead stays until the renderer is fast enough,
+			// or overlaps its fetch with the display, to live inside hblank.
 			tilemap_line_engine u_tm (
 				.clk(clk), .reset(core_reset),
 				.line_start(tm_ready_rise[g]), .render_line(vcnt_next2),

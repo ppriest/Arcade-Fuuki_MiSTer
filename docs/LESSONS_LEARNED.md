@@ -742,10 +742,14 @@ hierarchical access to the core's own `MCycle`/`TState`, not by "the test passes
   spec.** The raster register parked at `0xFFFE` was read as "disable", and the RTL fired
   nothing. The game hung on hardware: its main loop waits on a flag only the level-5 handler
   sets, so it needs one IRQ5 per frame however the register is parked. MAME's `time_until_pos()`
-  wraps the line modulo the screen height and fires at line 34, and the game is known to work
+  wraps the line modulo the screen height and fires it every frame, and the game is known to work
   there. Found in one JTAG probe read: `last_rom_addr` alternating over a 4-word loop, decoded
   from the ROM as `btst #1,$403446.l / beq`. Where a driver hands a register to a MAME
-  framework call, follow the framework's arithmetic too, not just the driver's.
+  framework call, follow the framework's arithmetic too, not just the driver's — **with the
+  framework's numbers.** The first fix reduced modulo this core's 262-line frame and put the
+  interrupt on line 34, mid-picture; the driver's screen is 256 lines, which puts it on 254, in
+  vblank. The height that matters is the one the game was written against, and that is whatever
+  the driver declares, not whatever the RTL's crystal produces.
 - **[Fuuki] Freezing the display LIST is not freezing the display.** FG-2 sprites were drawn from
   the live sprite RAM on the reading that the once-per-frame candidate list already froze the
   frame. The list was frozen; each scanline then re-read the records from the live RAM while the
