@@ -28,11 +28,11 @@
 //     bit 0   0 = FG-2 (M68000)   1 = FG-3 (M68EC020)
 //     bit 1   SYSTEM ($800000) layout -- see `sysport_alt` below
 //
-// NOT IN THIS BUILD, and each is a deliberate omission rather than an
-// oversight: sound (Phase 3 -- the Z80, YM2203/YM3812/OKI and the OPL4 are all
-// later), HDMI rotation via screen_rotate_two (Fuuki is ROT0, so rotation is a
-// convenience, not correctness), and hiscore save. FG-3 will not run until the
-// SDRAM controller is widened past 32 MB -- see rtl/memory/fuuki_sdram_top.sv.
+// NOT IN THIS BUILD: FG-3 sound (the OPL4) and hiscore save. FG-2 sound is
+// rtl/sound/fg2_sound.sv. The output chain below the core is: CRT offset
+// (crt_adjust) -> arcade_video (scandoubler, gamma) -> video_freak (crop,
+// integer scale, aspect) -> the framework, with screen_rotate_two tapping
+// the final output into a rotated or 180-flipped HDMI framebuffer.
 
 module emu
 (
@@ -48,13 +48,14 @@ assign USER_OUT = '1;
 assign {UART_RTS, UART_TXD, UART_DTR} = 0;
 assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 
-// DDR3 has ONE owner: the fast ROM loader (see "FAST ROM LOADING" below).
-// Psikyo shared DDRAM between its loader and the HDMI rotator and paid for it
-// -- the rotator has no reset and infers acceptance from DDRAM_BUSY, so it
-// took phantom writes as accepted and left a permanent stale band in the frame
-// buffer. When rotation arrives here it must mux the pins on ldr_active as
-// Psikyo eventually did, not share them.
-assign DDRAM_CLK = clk_sys;
+// DDR3 has two owners and they never overlap: the fast ROM loader, which
+// only runs with the core in reset, and the HDMI rotator the rest of the
+// time. The pins are MUXED on ldr_active (see "HDMI ROTATION" below) rather
+// than shared: the rotator has no reset and infers acceptance from
+// DDRAM_BUSY, so Psikyo's first attempt, which let the two share the bus,
+// had it take phantom writes as accepted and leave a permanent stale band in
+// the frame buffer. Its DDRAM_BUSY is also held high for the loader's whole
+// run so it cannot issue at all.
 
 assign VGA_F1 = 0;
 assign VGA_SCALER  = 0;
@@ -63,11 +64,11 @@ assign HDMI_FREEZE = 0;
 assign HDMI_BLACKOUT = 0;
 assign HDMI_BOB_DEINT = 0;
 
-// Silent until Phase 3. AUDIO_S = 0 (unsigned) is the right pairing for a
-// constant zero; a signed zero is the same bits, but this says what it means.
-assign AUDIO_S   = 0;
-assign AUDIO_L   = 0;
-assign AUDIO_R   = 0;
+// FG-2's mono mix on both channels, signed. FG-3 is silent until the OPL4.
+wire signed [15:0] core_audio;
+assign AUDIO_S   = 1;
+assign AUDIO_L   = core_audio;
+assign AUDIO_R   = core_audio;
 assign AUDIO_MIX = 0;
 
 assign LED_DISK  = 0;
@@ -77,19 +78,37 @@ assign BUTTONS   = 0;
 
 //////////////////////////////////////////////////////////////////
 
-// Fuuki boards are all ROT0 horizontal, so the original aspect is 4:3 with no
-// rotation case to handle. ar != 0 selects Full Screen / ARC1 / ARC2, where a
-// zero ARY means "stretch" in the framework's convention.
+// Fuuki boards are all ROT0 horizontal: the original aspect is 4:3, or 3:4
+// once the picture is rotated for a portrait display. ar != 0 selects Full
+// Screen / ARC1 / ARC2, where a zero ARY means "stretch" in the framework's
+// convention. video_freak turns these into VIDEO_ARX/ARY, adjusted for its
+// crop and integer-scale settings.
 wire [1:0] ar = status[122:121];
-assign VIDEO_ARX = (!ar) ? 12'd4 : 12'({ar} - 2'd1);
-assign VIDEO_ARY = (!ar) ? 12'd3 : 12'd0;
+wire [1:0] rotate_sel = status[64:63];
+wire       rotate_en  = |rotate_sel;
+wire       rotate_ccw = (rotate_sel == 2'd2);
+wire       flip_180   = status[65];
+wire [11:0] base_arx = (!ar) ? (rotate_en ? 12'd3 : 12'd4) : 12'({ar} - 2'd1);
+wire [11:0] base_ary = (!ar) ? (rotate_en ? 12'd4 : 12'd3) : 12'd0;
+
+// Required output once MISTER_FB is enabled; the rotator needs no blanking.
+assign FB_FORCE_BLANK = 0;
 
 `include "build_id.v"
 localparam CONF_STR = {
 	"Fuuki;;",
 	"-;",
 	"O[122:121],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
+	"O[64:63],Rotation,Off,CW,CCW;",
+	"O[65],Flip 180,Off,On;",
 	"O[46:44],Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
+	"O[68:66],Scale,Normal,V-Integer,Narrower HV-Integer,Wider HV-Integer,HV-Integer;",
+	"O[70:69],Vertical crop,Disabled,216p (5x),224p;",
+	"O[75:71],Crop offset,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
+	"-;",
+	"O[76],CRT offset,Off,On;",
+	"O[83:77],CRT H-Position,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,+16,+17,+18,+19,+20,+21,+22,+23,+24,+25,+26,+27,+28,+29,+30,+31,+32,+33,+34,+35,+36,+37,+38,+39,+40,+41,+42,+43,+44,+45,+46,+47,+48,-48,-47,-46,-45,-44,-43,-42,-41,-40,-39,-38,-37,-36,-35,-34,-33,-32,-31,-30,-29,-28,-27,-26,-25,-24,-23,-22,-21,-20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
+	"O[89:84],CRT V-Shift,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,+16,+17,+18,+19,+20,+21,+22,+23,+24,+25,+26,+27,+28,+29,+30,+31,-32,-31,-30,-29,-28,-27,-26,-25,-24,-23,-22,-21,-20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
 	"-;",
 	"DIP;",
 	"-;",
@@ -513,12 +532,18 @@ rom_loader u_rom_loader (
 	.dl_we16(ldr_we16), .dl_busy(ldr_busy)
 );
 
+// The loader's side of the DDR3 mux (see "HDMI ROTATION").
+wire [7:0]  ldr_DDRAM_BURSTCNT, ldr_DDRAM_BE;
+wire [28:0] ldr_DDRAM_ADDR;
+wire        ldr_DDRAM_RD, ldr_DDRAM_WE;
+wire [63:0] ldr_DDRAM_DIN;
+
 ddram_phy u_ldr_ddram (
 	.clk(clk_sys), .reset(reset),
-	.DDRAM_BUSY(DDRAM_BUSY), .DDRAM_BURSTCNT(DDRAM_BURSTCNT),
-	.DDRAM_ADDR(DDRAM_ADDR), .DDRAM_DOUT(DDRAM_DOUT),
-	.DDRAM_DOUT_READY(DDRAM_DOUT_READY), .DDRAM_RD(DDRAM_RD),
-	.DDRAM_DIN(DDRAM_DIN), .DDRAM_BE(DDRAM_BE), .DDRAM_WE(DDRAM_WE),
+	.DDRAM_BUSY(DDRAM_BUSY), .DDRAM_BURSTCNT(ldr_DDRAM_BURSTCNT),
+	.DDRAM_ADDR(ldr_DDRAM_ADDR), .DDRAM_DOUT(DDRAM_DOUT),
+	.DDRAM_DOUT_READY(DDRAM_DOUT_READY), .DDRAM_RD(ldr_DDRAM_RD),
+	.DDRAM_DIN(ldr_DDRAM_DIN), .DDRAM_BE(ldr_DDRAM_BE), .DDRAM_WE(ldr_DDRAM_WE),
 	.req(ldr_ddr_req), .we(1'b0), .addr(ldr_ddr_addr), .wdata(8'd0),
 	.busy(ldr_ddr_busy), .valid(ldr_ddr_valid), .rdata(ldr_ddr_rdata)
 );
@@ -556,6 +581,7 @@ fuuki_core u_core (
 	.video_hs(core_hs), .video_vs(core_vs),
 	.video_hb(core_hb), .video_vb(core_vb),
 	.video_ce(core_ce),
+	.audio(core_audio),
 
 	.dbg_frame_start(dbg_frame_start), .dbg_line_start(dbg_line_start),
 	.dbg_spr_ovr(dbg_spr_ovr), .dbg_cpu_req(dbg_cpu_req),
@@ -574,6 +600,7 @@ fuuki_core u_core (
 	.dbg_marker(status[60]), .raster_lead(status[62:61]),
 	.dbg_irq_pending(dbg_irq_pending), .dbg_iack(dbg_iack), .dbg_iack_level(dbg_iack_level),
 	.dbg_irq1_trig(dbg_irq1_trig), .dbg_lb_check(dbg_lb_check),
+	.dbg_z80_m1(dbg_z80_m1), .dbg_ym_wr(dbg_ym_wr),
 	.dbg_frozen(dbg_frozen)
 );
 
@@ -583,16 +610,54 @@ fuuki_core u_core (
 // from its own clk_video input), so they must not be assigned here as well --
 // a second driver on CLK_VIDEO propagates back to clk_sys and Quartus reports
 // it against the clock, not against this line.
+// ---- CRT offset (rtl/video/crt_adjust.sv) ----
+// Slides the picture for an analog CRT without touching the sync: the content
+// moves inside a line buffer while HSync/VSync stay native, so the monitor
+// keeps its lock while you adjust. It sits between the core and arcade_video,
+// so HDMI follows the adjustment too -- leave it Off for an untouched HDMI
+// image. Only the two offsets are wired; hsize is 0, the module's documented
+// no-scaling case, which makes the read rate the write rate.
+//
+// H-Position: the OSD stores the INDEX into a 97-entry list (0, +1..+48,
+// -48..-1), so the negative half wraps at 97, not 128. V-Shift's 64-entry
+// list IS two's complement.
+wire crt_adj_on = status[76];
+wire  [6:0] crt_hpos_idx = crt_adj_on ? status[83:77] : 7'd0;
+wire signed [8:0] crt_hoffset = (crt_hpos_idx <= 7'd48)
+	? $signed({2'b00, crt_hpos_idx})
+	: $signed({2'b00, crt_hpos_idx}) - 9'sd97;
+wire signed [5:0] crt_voffset = crt_adj_on ? $signed(status[89:84]) : 6'sd0;
+
+wire [7:0] crt_r, crt_g, crt_b;
+wire       crt_hs, crt_vs, crt_hb, crt_vb;
+
+crt_adjust #(
+	.VTOTAL(262), .HTOTAL(456),
+	// CONTENTSHIFT keeps HSync byte-for-byte native; SYNCSHIFT moves the sync.
+	.HPOS_MODE(1)
+) u_crt_adjust (
+	.clk(clk_sys), .pxl_cen(core_ce), .pxl2_cen(core_ce),
+	.active(crt_adj_on), .hsize(5'sd0),
+	.hoffset(crt_hoffset), .voffset(crt_voffset),
+	.r_in(core_r), .g_in(core_g), .b_in(core_b),
+	.hs_in(core_hs), .vs_in(core_vs), .hb_in(core_hb), .vb_in(core_vb),
+	.r_out(crt_r), .g_out(crt_g), .b_out(crt_b),
+	.hs_out(crt_hs), .vs_out(crt_vs), .hb_out(crt_hb), .vb_out(crt_vb),
+	.hs_ref_out()
+);
+
+wire vga_de_raw;
+
 arcade_video #(.WIDTH(320), .DW(24), .GAMMA(1)) arcade_video
 (
 	.clk_video(clk_sys),
 	.ce_pix(core_ce),
 
-	.RGB_in({core_r, core_g, core_b}),
-	.HBlank(core_hb),
-	.VBlank(core_vb),
-	.HSync(core_hs),
-	.VSync(core_vs),
+	.RGB_in({crt_r, crt_g, crt_b}),
+	.HBlank(crt_hb),
+	.VBlank(crt_vb),
+	.HSync(crt_hs),
+	.VSync(crt_vs),
 
 	.CLK_VIDEO(CLK_VIDEO),
 	.CE_PIXEL(CE_PIXEL),
@@ -601,13 +666,94 @@ arcade_video #(.WIDTH(320), .DW(24), .GAMMA(1)) arcade_video
 	.VGA_B(VGA_B),
 	.VGA_HS(VGA_HS),
 	.VGA_VS(VGA_VS),
-	.VGA_DE(VGA_DE),
+	.VGA_DE(vga_de_raw),
 	.VGA_SL(VGA_SL),
 
 	.fx(status[46:44]),
 	.forced_scandoubler(forced_scandoubler),
 	.gamma_bus(gamma_bus_video)
 );
+
+// ---- crop, integer scaling, aspect (sys/video_freak.sv) ----
+// CROP_SIZE is the number of lines kept out of 240: 216 is exactly 5x on a
+// 1080-line display, 224 trims 8 lines top and bottom. The offset moves the
+// crop window; the scale modes are the framework's.
+wire [1:0] vcrop_sel = status[70:69];
+wire [11:0] crop_size = (vcrop_sel == 2'd1) ? 12'd216 :
+                        (vcrop_sel == 2'd2) ? 12'd224 : 12'd0;
+
+video_freak video_freak
+(
+	.CLK_VIDEO(CLK_VIDEO),
+	.CE_PIXEL(CE_PIXEL),
+	.VGA_VS(VGA_VS),
+	.HDMI_WIDTH(HDMI_WIDTH),
+	.HDMI_HEIGHT(HDMI_HEIGHT),
+	.VGA_DE(VGA_DE),
+	.VIDEO_ARX(VIDEO_ARX),
+	.VIDEO_ARY(VIDEO_ARY),
+
+	.VGA_DE_IN(vga_de_raw),
+	.ARX(base_arx),
+	.ARY(base_ary),
+	.CROP_SIZE(crop_size),
+	.CROP_OFF(status[75:71]),
+	.SCALE(status[68:66])
+);
+
+// ---- HDMI ROTATION and flip (rtl/video/screen_rotate_two.sv) ----
+// A TAP, not a filter: the analog output keeps the native raster while a
+// rotated (or 180-flipped) copy goes into DDR3 and the HPS framebuffer is
+// pointed at it. So the DIP "Flip Screen" is not this -- that is the game
+// redrawing itself upside down through its own scroll constants, which both
+// MAME drivers say they get wrong, and it stays commented out of the .mra
+// files. This flip is the output turned round, which is what a cocktail
+// cabinet or an upside-down monitor wants.
+//
+// DDR3 is muxed against the ROM loader on ldr_active; the loader only runs
+// with the core in reset, when there is no picture. The rotator's
+// DDRAM_BUSY is ORed with ldr_active so it cannot mistake the loader's
+// transactions for its own accepted writes.
+wire        rot_DDRAM_CLK, rot_DDRAM_WE, rot_DDRAM_RD;
+wire [7:0]  rot_DDRAM_BURSTCNT, rot_DDRAM_BE;
+wire [28:0] rot_DDRAM_ADDR;
+wire [63:0] rot_DDRAM_DIN;
+
+screen_rotate_two screen_rotate_two
+(
+	.CLK_VIDEO(CLK_VIDEO),
+	.CE_PIXEL(CE_PIXEL),
+	.VGA_R(VGA_R), .VGA_G(VGA_G), .VGA_B(VGA_B),
+	.VGA_HS(VGA_HS), .VGA_VS(VGA_VS), .VGA_DE(VGA_DE),
+
+	.rotate_ccw(rotate_ccw),
+	.no_rotate(~rotate_en),
+	.flip(flip_180),
+	.two_screen(1'b0),
+	.video_rotated(),
+
+	.FB_EN(FB_EN), .FB_FORMAT(FB_FORMAT),
+	.FB_WIDTH(FB_WIDTH), .FB_HEIGHT(FB_HEIGHT),
+	.FB_BASE(FB_BASE), .FB_STRIDE(FB_STRIDE),
+	.FB_VBL(FB_VBL), .FB_LL(FB_LL),
+
+	.DDRAM_CLK(rot_DDRAM_CLK),
+	.DDRAM_BUSY(DDRAM_BUSY | ldr_active),
+	.DDRAM_BURSTCNT(rot_DDRAM_BURSTCNT),
+	.DDRAM_ADDR(rot_DDRAM_ADDR),
+	.DDRAM_DIN(rot_DDRAM_DIN),
+	.DDRAM_BE(rot_DDRAM_BE),
+	.DDRAM_WE(rot_DDRAM_WE),
+	.DDRAM_RD(rot_DDRAM_RD)
+);
+
+assign DDRAM_CLK      = ldr_active ? clk_sys            : rot_DDRAM_CLK;
+assign DDRAM_BURSTCNT = ldr_active ? ldr_DDRAM_BURSTCNT : rot_DDRAM_BURSTCNT;
+assign DDRAM_ADDR     = ldr_active ? ldr_DDRAM_ADDR     : rot_DDRAM_ADDR;
+assign DDRAM_DIN      = ldr_active ? ldr_DDRAM_DIN      : rot_DDRAM_DIN;
+assign DDRAM_BE       = ldr_active ? ldr_DDRAM_BE       : rot_DDRAM_BE;
+assign DDRAM_WE       = ldr_active ? ldr_DDRAM_WE       : rot_DDRAM_WE;
+assign DDRAM_RD       = ldr_active ? ldr_DDRAM_RD       : rot_DDRAM_RD;
 
 ///////////////////////   JTAG PROBE   ////////////////////////////
 
@@ -630,6 +776,7 @@ wire       ctr_clear = probe_src[0];
 wire [2:0] dbg_irq_pending, dbg_iack_level;
 wire       dbg_iack, dbg_irq1_trig;
 wire [15:0] dbg_lb_check;   // {spr_delta, tm1_delta, spr_bad, tm1_bad}, see fuuki_core.sv
+wire        dbg_z80_m1, dbg_ym_wr;
 reg  [7:0] c_irq1  = 8'd0;   // irq1_trig pulses (one per frame when healthy)
 reg  [4:0] c_iack1 = 5'd0;   // level-1 acknowledge cycles
 reg        iack_d  = 1'b0;
@@ -675,25 +822,14 @@ debug_counter #(.W(16)) u_c_gfx    (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_gf
 wire dl_seen;
 debug_sticky u_dl_seen (.clk(clk_sys), .clear(ctr_clear), .ev(ioctl_wr && ioctl_index == 16'd0), .seen(dl_seen));
 
-// The most recent program fetch, ADDRESS AND DATA CAPTURED AS A PAIR.
-//
-// The address alone was not enough: it showed the CPU fetching from varied
-// places without saying whether what came back was real code. The pair is
-// checkable against the ROM image -- gogomile's word 0 must read 0x0040
-// (reset SP 0x0040fffc, PC 0x00000400).
-//
-// The address is latched on the request and only committed when the matching
-// data returns, so the two always describe the same fetch.
-reg [20:0] pend_rom_addr = '0;
-reg [20:0] last_rom_addr = '0;
-reg [15:0] last_rom_data = '0;
-always @(posedge clk_sys) begin
-	if (dbg_cpu_req) pend_rom_addr <= dbg_rom_addr;
-	if (dbg_rom_valid) begin
-		last_rom_addr <= pend_rom_addr;
-		last_rom_data <= dbg_rom_data;
-	end
-end
+// SOUND: the Z80 running (opcode fetches) and driving the FM chips (writes)
+// are the two facts a silent core needs told apart. Both saturate at 65535;
+// clear and read again for a rate. They replace the main-CPU fetch pair
+// (last_rom_addr / last_rom_data), which answered a boot question both
+// games have since passed.
+wire [15:0] c_z80_m1, c_ym_wr;
+debug_counter #(.W(16)) u_c_z80m1 (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_z80_m1), .count(c_z80_m1));
+debug_counter #(.W(16)) u_c_ymwr  (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_ym_wr),  .count(c_ym_wr));
 
 // HIGHEST download address written, in 512-byte units. The trace buffer can
 // freeze on a pause between .mra parts and look like the end of the transfer;
@@ -712,12 +848,12 @@ issp_probe #(.INSTANCE_ID("F"), .PROBE_W(128), .SOURCE_W(32)) u_probe (
 		c_dl_edges,          // 127..122  ioctl_download rising edges, any index
 		pll_unlock,          // 121
 		dbg_lb_check,        // 120..105  line-buffer check: {spr_delta, tm1_delta, spr_bad, tm1_bad}
-		last_rom_addr,       // 104..84
+		5'd0, c_z80_m1,      // 104..84  [99:84] Z80 opcode fetches
 		dbg_frozen,          //  83  ring mode: has the buffer stopped moving
 		pause_latched,       //  82
 		ioctl_download,      //  81
 		dl_seen,             //  80
-		last_rom_data,       //  79..64  what the CPU was actually fed
+		c_ym_wr,             //  79..64  writes to the FM chips
 		c_cpu,               //  63..48
 		dbg_irq_pending,     //  47..45  {irq5, irq3, irq1} pending
 		c_iack1,             //  44..40  level-1 acknowledges (wraps)

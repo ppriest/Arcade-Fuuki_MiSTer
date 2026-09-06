@@ -96,6 +96,9 @@ module fuuki_core (
 	output logic        video_vb,
 	output logic        video_ce,
 
+	// ---- audio: FG-2's mono mix, signed. Silent on FG-3 (no OPL4 yet). ----
+	output logic signed [15:0] audio,
+
 	// ---- for the JTAG probe ----
 	output logic        dbg_frame_start,
 	output logic        dbg_line_start,
@@ -112,6 +115,8 @@ module fuuki_core (
 	output logic [2:0]  dbg_iack_level,  // level on A3..A1 during it
 	output logic        dbg_irq1_trig,   // the line-248 interrupt source, one clk per frame
 	output logic [15:0] dbg_lb_check,    // line-buffer row tags vs display line, see LINE-BUFFER CHECK
+	output logic        dbg_z80_m1,      // one pulse per Z80 opcode fetch
+	output logic        dbg_ym_wr,       // one pulse per write to either FM chip
 
 	// ---- trace-to-screen controls (see the debug_tracer instance) ----
 	input  logic        dbg_overlay,
@@ -238,8 +243,6 @@ module fuuki_core (
 	assign dbg_rom_valid = rom_valid;
 	assign dbg_rom_data  = rom_data;
 
-	// No sound hardware yet, so the FG-2 latch goes nowhere.
-	//
 	// FG-3 SHARED RAM, WITH A FAKE Z80 HANDSHAKE FOR BRING-UP. The 16 bytes
 	// at 0x903FE0 (odd bytes; MAME numbers the umask32 0x00ff00ff lanes
 	// consecutively) are the Z80's 0x7FF0-0x7FFF. srom.u7's protocol, read
@@ -974,6 +977,13 @@ module fuuki_core (
 	// framework's RESET -- see this file's header and the port comment in
 	// fuuki_sdram_top.sv.
 	// =====================================================================
+	// FG-2 sound's two memory clients (declared before the backend that serves them)
+	logic        z80_rom_req, z80_rom_valid, oki_req, oki_valid;
+	logic [16:0] z80_rom_addr;
+	logic [19:0] oki_addr;
+	logic [7:0]  z80_rom_data, oki_data;
+	logic signed [15:0] snd_audio;
+
 	fuuki_sdram_top u_sdram (
 		.board(board),
 		.clk(clk), .reset(reset), .init(init),
@@ -999,7 +1009,47 @@ module fuuki_core (
 		.cpu_req (walk_active ? (walk_req && walk_sdram) : rom_req),
 		.cpu_addr(walk_active ? walk_addr : 26'({rom_addr, 1'b0})),
 		.cpu_valid(rom_valid), .cpu_data(rom_data),
+		.z80_req(z80_rom_req), .z80_addr(z80_rom_addr),
+		.z80_valid(z80_rom_valid), .z80_data(z80_rom_data),
+		.oki_req(oki_req), .oki_addr(oki_addr),
+		.oki_valid(oki_valid), .oki_data(oki_data),
 		.dbg_dl_wr(dbg_dl_wr), .dbg_dl_addr(dl_addr_dbg)
 	);
+
+	// =====================================================================
+	// FG-2 SOUND (rtl/sound/fg2_sound.sv). Held in reset on FG-3, whose
+	// sound hardware is the OPL4 board and is not built.
+	//
+	// Clock enables, all exact on the 85.909 MHz grid (14.318181 x 6):
+	//   Z80    6 MHz      66/945
+	//   YM     3.58 MHz   1/24      (28.640 / 8 = 85.909 / 24)
+	//   OKI    1 MHz      11/945
+	// The fractional ones are Bresenham accumulators, as the main CPU's.
+	// =====================================================================
+	logic [9:0] cen_z80_acc = 10'd0, cen_oki_acc = 10'd0;
+	logic [4:0] cen_ym_cnt  = 5'd0;
+	logic       cen_z80, cen_ym, cen_oki;
+	always_ff @(posedge clk) begin
+		cen_z80_acc <= (cen_z80_acc >= 10'd945 - 10'd66) ? cen_z80_acc + 10'd66 - 10'd945 : cen_z80_acc + 10'd66;
+		cen_oki_acc <= (cen_oki_acc >= 10'd945 - 10'd11) ? cen_oki_acc + 10'd11 - 10'd945 : cen_oki_acc + 10'd11;
+		cen_ym_cnt  <= (cen_ym_cnt == 5'd23) ? 5'd0 : cen_ym_cnt + 5'd1;
+	end
+	assign cen_z80 = (cen_z80_acc >= 10'd945 - 10'd66);
+	assign cen_oki = (cen_oki_acc >= 10'd945 - 10'd11);
+	assign cen_ym  = (cen_ym_cnt == 5'd0);
+
+
+	fg2_sound u_snd (
+		.clk(clk), .reset(core_reset || (board == BOARD_FG3)),
+		.cen_z80(cen_z80), .cen_ym(cen_ym), .cen_oki(cen_oki),
+		.latch_data(latch_data), .latch_write(latch_write),
+		.rom_req(z80_rom_req), .rom_addr(z80_rom_addr),
+		.rom_valid(z80_rom_valid), .rom_data(z80_rom_data),
+		.oki_req(oki_req), .oki_addr(oki_addr),
+		.oki_valid(oki_valid), .oki_data(oki_data),
+		.audio(snd_audio),
+		.dbg_m1(dbg_z80_m1), .dbg_ym_wr(dbg_ym_wr)
+	);
+	assign audio = (board == BOARD_FG3) ? 16'sd0 : snd_audio;
 
 endmodule

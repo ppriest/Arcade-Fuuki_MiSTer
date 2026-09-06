@@ -43,9 +43,24 @@ every clock, `clk_sys` setup slack +0.482 ns, 30% of the ALMs and 64% of the RAM
 
 ### Not built
 
-Sound of any kind (Phase 3 and the OPL4 work below), flip screen in the renderer, hiscore support,
-and HDMI rotation — `screen_rotate_two.sv` is vendored but not wired, and DDR3 now belongs to the
-ROM loader, so its pins must be muxed on the loader's busy flag before the rotator can have them.
+FG-3 sound (the OPL4 work below), the DIP flip screen in the renderer, and hiscore support.
+
+**FG-2 sound is built** (`rtl/sound/fg2_sound.sv`): T80 at 6 MHz behind Psikyo's stretched
+req/valid ROM handshake, jt03 (YM2203) and jtopl2 (YM3812) at 3.58 MHz with the OPL2's timer IRQ
+on the Z80's INT, jt6295 (M6295) at 1 MHz with the four 256 KB banks folded into its address, the
+main CPU's `0x8A0001` byte latched with a pulsed NMI, and the driver's mix (0.15 / 0.30 / 0.85)
+saturating into one signed channel. The Z80 fetches through a byte-wide narrow bridge and the OKI
+through an 8-entry prefetching granule cache, both as extra clients on SDRAM port 2.
+`sim/fg2_sound_tb` runs the real gogomile firmware against ROM models with 4-160 and 3-170 clock
+latencies: the firmware initialises the chips, takes the two commands the captured main-CPU trace
+sends at boot, sequences on the timer interrupt and both FM chips produce output. Whether it
+sounds right is a hardware question.
+
+**The output chain is wired**: CRT offset (`crt_adjust`, from Psikyo) -> `arcade_video` ->
+`video_freak` (vertical crop 216p/224p, integer scale modes, aspect) -> the framework, with
+`screen_rotate_two` tapping the final output into a rotated (CW/CCW) or 180-flipped HDMI
+framebuffer in DDR3, muxed against the ROM loader on `ldr_active`. Untested on hardware at the
+time of writing.
 
 FG-3's Z80 handshake is a **stub**: `rtl/fuuki_core.sv` plays the sound CPU's side of the shared-RAM
 protocol read out of `srom.u7`, because asurabld's boot spins until it sees `0xCD`. It must go when
@@ -463,15 +478,15 @@ commit, licence and any integration notes. That is Psikyo's convention, and the 
 |---|---|---|
 | **M68000 (FG-2) and M68EC020 (FG-3)** | **One `TG68KdotC_Kernel`, mode-switched at runtime.** Its `CPU` port is `00`=68000, `01`=68010, `11`=68020, and the 68020-only features (`extAddr_Mode`, `MUL_Mode`, `DIV_Mode`, `BitField`, `VBR_Stackframe`) are all generics already set to "switchable with CPU". One instance, one bus wrapper, mod-byte selected. Its data bus is 16-bit in both modes, so the memory path does not change shape. | `Arcade-Psikyo_MiSTer/rtl/cpu/tg68k/` (TobiFlex/TG68K.C) |
 | 68k bus wrapper | Port Psikyo's `maincpu.sv` — it instantiates the kernel **directly** (not the `TG68K.vhd` adapter, deliberately), owns DTACK, address decode and held-autovector IRQs, and its header records why each choice is what it is. | `Arcade-Psikyo_MiSTer/rtl/cpu/maincpu.sv` |
-| Z80 (both boards) | **T80** | already vendored in `Arcade-Psikyo_MiSTer/rtl/cpu/t80/` |
-| YM2203 (FG-2) | **jt03** (`jt12` repo, GPL-3.0) — `cen`, `irq_n`, separate and combined PSG+FM outputs | github.com/jotego/jt12 |
-| YM3812 / OPL2 (FG-2) | **jtopl2** (`jtopl` repo, GPL-3.0) — `jtopl #(.OPL_TYPE(2))`, has `cen` and `irq_n`, which FG-2 needs for the Z80 INT line | github.com/jotego/jtopl |
-| OKI M6295 (FG-2) | **jt6295** (GPL-3.0) — 18-bit `rom_addr` = 256 KB, matching gogomile's 4 x `0x40000` banking exactly | github.com/jotego/jt6295 |
+| Z80 (both boards) | **T80** — vendored, `rtl/cpu/t80/` | Psikyo's copy, unchanged |
+| YM2203 (FG-2) | **jt03** (`jt12` repo, GPL-3.0) — vendored, `rtl/sound/jt12/` | Psikyo's copy of jotego/jt12 |
+| YM3812 / OPL2 (FG-2) | **jtopl2** (`jtopl` repo, GPL-3.0) — vendored, `rtl/sound/jtopl/`; its `irq_n` is the Z80's INT | github.com/jotego/jtopl `7ac0c81` |
+| OKI M6295 (FG-2) | **jt6295** (GPL-3.0) — vendored, `rtl/sound/jt6295/`; 18-bit `rom_addr` = 256 KB, the bank folded in above it | github.com/jotego/jt6295 `7d76b0b` |
 | YMF278B / OPL4 — PCM half (FG-3) | Psikyo's from-scratch core: full bus protocol, timers/IRQ and the 24-channel PCM wavetable engine, working on hardware. The **timers are load-bearing on their own** — both games hammer FM register `0x04` ~35,000 times per 5 minutes as the sound driver's sequencer heartbeat, whether or not they use FM voices. | `Arcade-Psikyo_MiSTer/rtl/sound/opl4/` |
 | YMF278B / OPL4 — FM half (FG-3) | **DECIDED: vendor `gtaylormb/opl3_fpga`** — a reverse-engineered SystemVerilog YMF262 (OPL3), LGPL-3.0. Required because Asura Blade drives three 4-operator voices (measured, open item 4), and 4-op is an OPL3 feature that jtopl2/OPL2 cannot provide. See "OPL4: an OPL3 core under Psikyo's PCM engine". | github.com/gtaylormb/opl3_fpga |
 | SDRAM controller | **Ported from Psikyo** — burst-4 `sdram.sv` (Sorgelig, extended), multi-port arbiters, `sdram_download.sv` HPS wrapper, granule cache. Widened to 26 bits here for FG-3. Done. | `Arcade-Psikyo_MiSTer/rtl/memory/` |
 | **Video mixer / scaling** | **`sys/arcade_video.v`** — the MiSTer-devel standard (`video_mixer` + `video_freak`), already present in the template's `sys/`. | Template_MiSTer `sys/` |
-| **Screen rotation** | **`screen_rotate_two.sv`** (Sorgelig) -- vendored, **not wired**. A TAP on the video output, not a filter: analog keeps the native raster while a rotated copy goes to DDR3 for the HDMI framebuffer. Fuuki is ROT0, so this serves rotated displays rather than correcting orientation. DDR3 now belongs to the ROM loader, so the pins must be muxed on its busy flag first. See "Output chain". | vendored to `rtl/video/` |
+| **Screen rotation** | **`screen_rotate_two.sv`** (Sorgelig) -- vendored and wired. A TAP on the video output, not a filter: analog keeps the native raster while a rotated or flipped copy goes to DDR3 for the HDMI framebuffer. Fuuki is ROT0, so this serves rotated displays rather than correcting orientation. DDR3 is muxed against the ROM loader on `ldr_active`. See "Output chain". | vendored to `rtl/video/` |
 | Framework | **MiSTer-devel/Template_MiSTer**, tracked as a `template` remote so upstream fixes can be pulled | github.com/MiSTer-devel/Template_MiSTer |
 | Tilemap + sprite engines (FI-002K / FI-003K) | **Custom RTL, no shortcut.** This is the project. | `fuukispr.cpp`, `fuukitmap.cpp` |
 | Sprite pipeline *shape* | Psikyo's per-scanline path is the template: buffered sprite RAM, a once-per-frame candidate list, a per-scanline engine, a double-buffered line buffer, plus the reusable decode stages (record decode, position transform, zoom LUT, sub-tile step, zoom source index, tile row decode). Fuuki's record format, zoom curve and depth order are substituted; the `spritelut` stage is dropped entirely. | `Arcade-Psikyo_MiSTer/rtl/video/sprite_*.sv`, `spriteram_dbuf.sv`, `docs/sprite_buffering.md` |
@@ -490,16 +505,15 @@ then flip screen in the tilemap and sprite engines. Flip is a game feature, not 
 transform: MAME substitutes different offset constants when flipped and recomputes every sprite
 position, so the flipped image is not a rotation of the unflipped one.
 
-**FG-2 sound.** Z80 plus latch/NMI, jt03, jtopl2 (IRQ to the Z80's INT), jt6295 with the 4-bank OKI
-ROM. Psikyo's sound bring-up cost four separate transport root causes before audio worked; its
-"Fix sound" narrative is the checklist.
+**FG-2 sound: listen to it.** Built and simulated (see Progress); the hardware questions are the
+ones Psikyo's bring-up asked -- does every fetch meet its deadline behind the priority chain, does
+the mix balance match the board.
 
 **FG-3 sound.** The OPL4, built as described below, and the real Z80 in place of the shared-RAM
 handshake stub in `rtl/fuuki_core.sv`.
 
-**Output chain and polish.** Hiscores, CRT offset and `video_freak`, then HDMI rotation once DDR3
-is shared with the ROM loader. Then the remaining clone sets and region variants, and savestates
-(Psikyo's `docs/savestates.md` is the feasibility study; the same TG68K/RAM/audio arguments apply).
+**Polish.** Hiscores, then the remaining clone sets and region variants, and savestates (Psikyo's
+`docs/savestates.md` is the feasibility study; the same TG68K/RAM/audio arguments apply).
 
 **Repair `sim/video_tb`.** It renders tilemaps blank on both boards, so the offline
 frame-versus-MAME comparison — the cheapest objective check this project has for exactly the
@@ -569,12 +583,11 @@ to swap when rotation is enabled.
 - **Fuuki games are all ROT0 horizontal**, so unlike Psikyo (vertical) rotation is not needed for
   correct orientation -- it is there for users running a rotated display. Aspect handling is
   correspondingly simpler: 4:3 normally, 3:4 when rotated.
-- **DDR3 is no longer free.** It was, while every memory client sat on SDRAM — but the fast ROM
-  loader now owns it, so wiring the rotator means muxing the pins on the loader's busy flag, which
-  is exactly the arbitration Psikyo needed. Its rotator has no reset port and samples `DDRAM_BUSY`
-  to decide whether a write was accepted, so between loader transactions it took phantom writes as
-  accepted and left a permanent stale band in the frame buffer. The loader only runs with the core
-  in reset, so the mux is straightforward — but it has to exist before the rotator does.
+- **DDR3 has two owners, muxed.** The fast ROM loader runs only with the core in reset; the
+  rotator has the pins the rest of the time, selected on `ldr_active`, and its `DDRAM_BUSY` is held
+  high for the loader's whole run. That is the arbitration Psikyo needed: its rotator has no reset
+  port and samples `DDRAM_BUSY` to decide whether a write was accepted, so when the two shared the
+  bus it took phantom writes as accepted and left a permanent stale band in the frame buffer.
 
 **Flip screen is a GAME feature and belongs in the renderer, not the output.** It comes from
 video register `0x1e` bit 0 (and a DIP), and MAME does not implement it as a 180-degree rotation of

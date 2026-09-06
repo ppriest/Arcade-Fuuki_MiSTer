@@ -30,7 +30,7 @@ from tracer_readout import issp     # noqa: E402
 HW = REPO / "scripts" / "hw.py"
 OUT = REPO / "debug" / "hw" / "soak"
 FIELDS = ("frames", "cpu_reads", "irq1_pulses", "iack_level1",
-          "irq1_pending", "irq3_pending", "irq5_pending", "last_rom_addr", "pause_latched")
+          "irq1_pending", "irq3_pending", "irq5_pending", "z80_fetches", "pause_latched")
 
 
 def probe(clear=False):
@@ -82,10 +82,10 @@ def main():
         prev = h
         pend = f"{v['irq5_pending'][0]}{v['irq3_pending'][0]}{v['irq1_pending'][0]}"
         print(f"{int(time.time()-t0):5d} {v['frames']:>6s} {v['cpu_reads']:>6s} {v['irq1_pulses']:>5s} "
-              f"{v['iack_level1']:>5s} {pend:^11s} {v['last_rom_addr'][-6:]:>9s} {changed}"
+              f"{v['iack_level1']:>5s} {pend:^11s} {v['z80_fetches']:>9s} {changed}"
               + ("  pause" if v["pause_latched"] == "yes" else ""))
         if same >= 3:
-            print(f"  frame unchanged for {same} samples -- hung? (last PC word {v['last_rom_addr']})")
+            print(f"  frame unchanged for {same} samples -- hung? (z80 fetches {v['z80_fetches']})")
     return 0
 
 

@@ -116,6 +116,17 @@ module fuuki_sdram_top (
 	output logic        cpu_valid,
 	output logic [15:0] cpu_data,
 
+	// ---- FG-2 sound: Z80 program bytes and OKI sample bytes ----
+	// Both are offsets within their region; the bases are added here.
+	input  logic        z80_req,
+	input  logic [16:0] z80_addr,
+	output logic        z80_valid,
+	output logic [7:0]  z80_data,
+	input  logic        oki_req,       // held until valid
+	input  logic [19:0] oki_addr,
+	output logic        oki_valid,
+	output logic [7:0]  oki_data,
+
 	// One pulse per download write the arbiter actually ACCEPTS. Counted into
 	// the JTAG probe, because "the ROM stream reached the core" and "the ROM
 	// reached the chip" are different claims and the first bitstream
@@ -169,6 +180,8 @@ module fuuki_sdram_top (
 	// The region bases the engines and CPU see, by board.
 	localparam logic BOARD_FG2 = 1'b0, BOARD_FG3 = 1'b1;   // .mra mod byte bit 0
 	wire [25:0] base_maincpu  = (board == BOARD_FG3) ? FG3_BASE_MAINCPU  : FG2_BASE_MAINCPU;
+	wire [25:0] base_audiocpu = (board == BOARD_FG3) ? FG3_BASE_AUDIOCPU : FG2_BASE_AUDIOCPU;
+	wire [25:0] base_oki      = (board == BOARD_FG3) ? FG3_BASE_OKI      : FG2_BASE_OKI;
 	wire [25:0] base_tiles_l0 = (board == BOARD_FG3) ? FG3_BASE_TILES_L0 : FG2_BASE_TILES_L0;
 	wire [25:0] base_tiles_l1 = (board == BOARD_FG3) ? FG3_BASE_TILES_L1 : FG2_BASE_TILES_L1;
 	wire [25:0] base_tiles_l2 = (board == BOARD_FG3) ? FG3_BASE_TILES_L2 : FG2_BASE_TILES_L2;
@@ -353,9 +366,43 @@ module fuuki_sdram_top (
 	// granules in ascending-address order, which is already what they want.
 	assign cpu_data = {cpu_word_le[7:0], cpu_word_le[15:8]};
 
-	logic [0:0] cpu_req_v, cpu_valid_v;
-	assign cpu_req_v   = cpu_g_req;
-	assign cpu_g_valid = cpu_valid_v[0];
+	// The Z80 fetches bytes through the same kind of bridge; its opcode
+	// stream hits the cached granule seven times in eight.
+	logic        z80_g_req, z80_g_valid;
+	logic [25:0] z80_g_addr;
+	logic [63:0] z80_g_data;
+	sdram_narrow_bridge #(.WORD_BYTES(1)) u_z80_bridge (
+		.clk(clk), .reset(reset), .inval(ioctl_download),
+		.req(z80_req), .addr(26'(z80_addr) + base_audiocpu),
+		.valid(z80_valid), .data(z80_data),
+		.g_req(z80_g_req), .g_addr(z80_g_addr),
+		.g_valid(z80_g_valid), .g_data(z80_g_data)
+	);
+
+	// The OKI's four channels interleave on one bus, so it gets the
+	// multi-entry prefetching cache (rtl/sound/sample_cache.sv).
+	logic        oki_g_req, oki_g_valid;
+	logic [25:0] oki_g_addr;
+	logic [63:0] oki_g_data;
+	sample_cache #(.ENTRIES(8)) u_oki_cache (
+		.clk(clk), .reset(reset), .inval(ioctl_download),
+		.req(oki_req), .addr(26'(oki_addr) + base_oki),
+		.valid(oki_valid), .data(oki_data),
+		.g_req(oki_g_req), .g_addr(oki_g_addr),
+		.g_valid(oki_g_valid), .g_data(oki_g_data)
+	);
+
+	// Three clients on port 2: main CPU, Z80, OKI. Packed 26 bits each, the
+	// width sdram_arbiter unpacks with -- see the note above port 0.
+	logic [2:0] p2_req_v, p2_valid_v;
+	logic [63:0] p2_rdata;
+	assign p2_req_v    = {oki_g_req, z80_g_req, cpu_g_req};
+	assign cpu_g_valid = p2_valid_v[0];
+	assign z80_g_valid = p2_valid_v[1];
+	assign oki_g_valid = p2_valid_v[2];
+	assign cpu_g_data  = p2_rdata;
+	assign z80_g_data  = p2_rdata;
+	assign oki_g_data  = p2_rdata;
 
 	// One download port on the arbiter, driven by whichever loader is live.
 	// dbg_dl_wr counts the arbiter's accepted writes either way, so the probe
@@ -370,13 +417,13 @@ module fuuki_sdram_top (
 	assign dl_busy     = ldr_active ? 1'b0        : arb_dl_busy;
 	assign ldr_busy    = ldr_active ? arb_dl_busy : 1'b0;
 
-	sdram_arbiter #(.N(1)) u_arb_cpu (
+	sdram_arbiter #(.N(3)) u_arb_cpu (
 		.clk(clk), .reset(reset),
 		.phy_req(phy_req[2]), .phy_we(phy_we[2]), .phy_we16(phy_we16[2]),
 		.phy_addr(phy_addr[2]), .phy_wdata(phy_wdata[2]),
 		.phy_busy(phy_busy[2]), .phy_valid(phy_valid[2]), .phy_rdata(phy_rdata[2]),
-		.c_req(cpu_req_v), .c_addr(cpu_g_addr),
-		.c_valid(cpu_valid_v), .c_rdata(cpu_g_data),
+		.c_req(p2_req_v), .c_addr({oki_g_addr, z80_g_addr, cpu_g_addr}),
+		.c_valid(p2_valid_v), .c_rdata(p2_rdata),
 		.dl_req(arb_dl_req), .dl_addr(arb_dl_addr), .dl_data(arb_dl_data),
 		.dl_we16(arb_dl_we16), .dl_busy(arb_dl_busy)
 	);

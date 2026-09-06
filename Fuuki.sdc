@@ -133,3 +133,60 @@ set_multicycle_path -hold  -from $kernel_k -to $core_k 1
 # by the framework. (Two scoped false paths were added for this and removed
 # again once that was checked -- a constraint that duplicates an existing cut
 # only invites a wrong comment about why it is there.)
+
+# ---------------------------------------------------------------------------
+# T80 sound CPU multicycle -- Psikyo's constraint, with its audit, transferred.
+# ---------------------------------------------------------------------------
+# The first sound build failed on T80-internal F/IR ALU-flag paths alone:
+# -1.258 ns worst, all fifteen reported endpoints inside T80:u0. Psikyo hit
+# the same family and audited it before relaxing:
+#   1. No half-cycle paths to sweep in: no falling_edge anywhere in
+#      rtl/cpu/t80/, and every clocked process in T80se.vhd / T80.vhd /
+#      T80_Reg.vhd is rising-edge gated by CEN/ClkEn. The one CEN-ungated
+#      branch (DIRSet, the save-state register load) is tied to its '0'
+#      default by rtl/sound/fg2_sound.sv's instantiation and synthesizes away.
+#   2. The relaxation is backed by RTL: cen_z80 ticks 14-15 clk_sys cycles
+#      apart (Bresenham 66/945, rtl/fuuki_core.sv), so every T80 register
+#      output is stable for ~14 cycles between updates.
+# T80 -> T80 gets 4 (14 is available; 4 clears the measured paths with
+# margin). T80 -> anywhere gets 2: fg2_sound samples the T80's bus pins at
+# full clk rate, and seeing a value one cycle later costs 1 of the ~14 cycles
+# its handshakes actually have. Paths INTO the T80 stay single-cycle.
+set t80 [get_registers {*|fg2_sound:u_snd|T80se:u_cpu|*}]
+if {[get_collection_size $t80] > 0} {
+    set_multicycle_path -setup -end 2 -from $t80 -to [all_registers]
+    set_multicycle_path -hold  -end 1 -from $t80 -to [all_registers]
+
+    set_multicycle_path -setup -end 4 -from $t80 -to $t80
+    set_multicycle_path -hold  -end 3 -from $t80 -to $t80
+} else {
+    post_message -type critical_warning \
+        "Fuuki.sdc: no T80se registers matched -- sound CPU multicycle NOT applied"
+}
+
+# ---------------------------------------------------------------------------
+# jt12 (YM2203) phase-generator multicycle -- Psikyo's audited family.
+# ---------------------------------------------------------------------------
+# With the T80 relaxed, the remaining failing set was one family: jt12_pg's
+# stage-II registers (detune_mod_II, phinc_II) -> jt12_pg's phase shift
+# register u_phsh (-0.226 ns worst, every reported endpoint). Audited here as
+# Psikyo audited it before constraining:
+#   * jt12_pg.v has exactly ONE clocked block, under `if (clk_en)`, holding
+#     keycode_II / detune_mod_II / phinc_II.
+#   * jt12_sh_rst.v (u_phsh, u_pad) has one clocked block, under `if (clk_en)`.
+#   * clk_en is jt12_div's post-prescaler enable, `cen & cen_int`, and cen is
+#     cen_ym at 1/24 of clk_sys -- so both ends tick >= 24 clk_sys apart.
+#   * jt12_reg's cur_ch / cur_op and jt12_lfo's lfo_mod are the same family's
+#     sources on Psikyo (both under clk_en; lfo_mod's only full-rate branch
+#     is the lfo_en clear, itself changed only by cen-cadenced MMR writes).
+# Collections are the NAMED registers, not subtree wildcards, so nothing
+# unaudited is swept in. A constraint, not a fork: jt12 stays untouched.
+set jtsrc [get_registers {*|jt03:u_ym1|*jt12_reg:u_reg|cur_ch[*] *|jt03:u_ym1|*jt12_reg:u_reg|cur_op[*] *|jt03:u_ym1|*jt12_lfo:*|lfo_mod[*] *|jt03:u_ym1|*jt12_pg:u_pg|phinc_II[*] *|jt03:u_ym1|*jt12_pg:u_pg|keycode_II[*] *|jt03:u_ym1|*jt12_pg:u_pg|detune_mod_II[*] *|jt03:u_ym1|*jt12_mmr:u_mmr|effect}]
+set jtdst [get_registers {*|jt03:u_ym1|*jt12_pg:u_pg|phinc_II[*] *|jt03:u_ym1|*jt12_pg:u_pg|keycode_II[*] *|jt03:u_ym1|*jt12_pg:u_pg|detune_mod_II[*] *|jt03:u_ym1|*jt12_pg:u_pg|jt12_sh_rst:u_pad|* *|jt03:u_ym1|*jt12_pg:u_pg|jt12_sh_rst:u_phsh|*}]
+if {[get_collection_size $jtsrc] > 0 && [get_collection_size $jtdst] > 0} {
+    set_multicycle_path -setup -end 2 -from $jtsrc -to $jtdst
+    set_multicycle_path -hold  -end 1 -from $jtsrc -to $jtdst
+} else {
+    post_message -type critical_warning \
+        "Fuuki.sdc: jt12 phase-generator multicycle NOT applied (empty collection)"
+}

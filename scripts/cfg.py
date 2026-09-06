@@ -49,6 +49,12 @@ BITS = {
     "rearm":    (58, 1),   # any CHANGE re-arms
     "trig":     (59, 1),   # ring mode: freeze on the first exception-vector read
     "marker":   (60, 1),   # white pixels x 0..7 on lines 0 and 239
+    "rotate":   (63, 2),   # HDMI rotation: 0 off, 1 CW, 2 CCW
+    "flip180":  (65, 1),   # HDMI picture turned round
+    "scale":    (66, 3),   # video_freak scale mode
+    "vcrop":    (69, 2),   # 0 off, 1 216p, 2 224p
+    "crop_off": (71, 5),   # crop window offset, two's complement
+    "crt":      (76, 1),   # CRT offset on
     "lead":     (61, 2),   # raster IRQ fires this many lines early: 0, 1, 2
     "aspect":   (121, 2),
 }

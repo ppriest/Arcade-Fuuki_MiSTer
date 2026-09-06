@@ -59,7 +59,7 @@ FG-3 (Asura Blade / Asura Buster) needs **64MB or more SDRAM module**
 
 ## Status
 
-**Runs on hardware, without sound.** All four parent sets boot and play on a DE10-nano
+**Runs on hardware; FG-2 sound is built and not yet heard.** All four parent sets boot and play on a DE10-nano
 with 0.482 ns of setup slack on `clk_sys`.
 
 What is built and running:
@@ -82,13 +82,12 @@ Known issues:
 ### Todo
 
 - [ ] Close the remaining raster faults above
-- [ ] Sound: Z80, and the FG-2 chip set (YM2203, YM3812, OKI M6295)
+- [x] Sound: Z80, and the FG-2 chip set (YM2203, YM3812, OKI M6295) — built, simulated, awaiting the ear
 - [ ] Sound: OPL4 — vendor [gtaylormb/opl3_fpga](https://github.com/gtaylormb/opl3_fpga) for the FM
       half and put Psikyo's PCM wavetable engine on top
-- [ ] Flip screen
+- [x] HDMI rotation and Flip 180, vertical crop, integer scaling, CRT offset — wired, untested
 - [ ] Hiscore support
-- [ ] HDMI rotation
-- [ ] CRT offset
+- [ ] The DIP Flip Screen in the renderer (both MAME drivers are marked inaccurate. Hidden in MRAs)
 
 ### Resource usage
 

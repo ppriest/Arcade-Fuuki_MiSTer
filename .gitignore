@@ -60,6 +60,10 @@ sim/**/*.hex
 sim/**/*.raw
 sim/**/*.dec
 sim/**/*dump*.txt
+# The jotego cores' own SIMULATION-only dumps, written into whatever CWD the
+# simulator runs from: a register-write log and raw sample streams.
+opl_wr.log
+/*.raw
 
 # ---------------------------------------------------------------------------
 # Copyrighted MAME ROM dumps -- used locally for bring-up and for building

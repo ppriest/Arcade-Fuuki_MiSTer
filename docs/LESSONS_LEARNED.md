@@ -833,6 +833,17 @@ hierarchical access to the core's own `MCycle`/`TState`, not by "the test passes
   frame is 262 lines. Reducing by 262 put gogomile's parked `0xFFFE` on line 34, in the picture,
   where MAME puts it on 254, in vblank — the title-cloud jitter. The value the game was written
   against is whatever the driver declares.
+- **[Fuuki] A vendored core that is silent in simulation may only be uninitialised.** jotego's
+  jtopl and jt12 leave their envelope and operator pipelines without reset; hardware powers them up
+  at zero, ModelSim leaves them X, and X through an envelope generator is a chip that takes every
+  register write and never makes a sound. `$isunknown` on the output named it in one run;
+  `+initreg=r+0 +initmem=r+0` on those files is the fix, not an edit to them.
+- **[Fuuki] A chip select from an address decode alone takes memory writes too.** `WR_n` is
+  asserted for memory and I/O cycles alike, so `cs_n = ~(a[7:1] == 0x28)` handed every RAM write to
+  `0x6x50/51` to the OPL's register file. Qualify with `IORQ_n`.
+- **[Fuuki] A bench that prints nothing has usually not run.** A ModelSim compile killed by a tool
+  timeout leaves `work/_lock`, on which every later `vlog`/`vcom` waits silently; three "silent
+  chip" investigations were a lock. `run_sim.sh` now recreates the library every run.
 - **[Fuuki] When reading finds nothing, tag the data and let the hardware say where it went.**
   A one-line offset was argued over three pipeline stages without a conclusion. Tagging each line
   buffer with the row its engine set out to render and subtracting the display line, on the probe,

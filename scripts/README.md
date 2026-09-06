@@ -8,7 +8,7 @@ by anyone else with a MAME install and the ROM sets.
 
 | script | purpose |
 | - | - |
-| `run_sim.sh` | compile the RTL and run one testbench, from the repository root |
+| `run_sim.sh` | compile the RTL and run one testbench, from the repository root. Rebuilds the `work` library every run, and compiles the jotego cores with `+define+SIMULATION +initreg=r+0 +initmem=r+0`: their un-reset pipelines are X in a four-state simulator and zero in hardware |
 | `build.sh` | run the full Quartus flow and fail on negative slack rather than on the Fitter's opinion |
 | `deploy.py` | copy the `.rbf` and the `.mra` files to a MiSTer; prints every clock's slack first, and refuses a bitstream the build did not actually produce. The core lands as `Arcade-Fuuki_NNNNNNNN.rbf`, numbered from 10000001 and incrementing per deploy, read back from the device; MiSTer launches the highest-numbered one, so renaming the newest to `.held` falls back to the one before |
 | `mame_capture.py` | drive MAME headlessly and capture a reference frame: every video region, the screenshot, and optionally a video-register write log |
@@ -22,6 +22,7 @@ by anyone else with a MAME install and the ROM sets.
 | `decode_gfx.py` | decode graphics tiles to ASCII, straight from the ROM zip |
 | `gfx_sheet.py` | render graphics tiles to a PNG sheet (ROM data only — not the game's real colours, which live in RAM) |
 | `prep_tilemap_tb.py` | build the tilemap testbench's ROM images and configuration from a capture |
+| `prep_sound_tb.py` | extract a set's Z80 and OKI ROMs from `roms/` as `$readmemh` files for `sim/fg2_sound_tb` (gitignored) |
 | `tilemap_png.py` | turn `tb_tilemap`'s rendered frame into a PNG using the captured palette |
 | `video_png.py` | turn `tb_video`'s composed frame into a PNG and diff it pixel-for-pixel against MAME's screenshot of the same state |
 | `build_mra.py` | generate every `.mra`, both boards, and prove each one byte-for-byte: each region is built from the driver's ROM_START semantics, the map digits are found by TESTING against that rather than derived, and the finished file is re-read and compared. Offsets come from `fuuki_sdram_top.sv`, never duplicated here. Parents land in `releases/`, clones in `releases/_alternatives/_<parent>/`, named from the MAME description |

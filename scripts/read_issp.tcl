@@ -23,12 +23,12 @@ set fields {
     {irq3_pending    46  46 bit}
     {irq5_pending    47  47 bit}
     {cpu_reads       48  63 dec}
-    {last_rom_data   64  79 hex}
+    {ym_writes       64  79 dec}
     {download_seen   80  80 bit}
     {ioctl_download  81  81 bit}
     {pause_latched   82  82 bit}
     {ring_frozen     83  83 bit}
-    {last_rom_addr   84 104 hex}
+    {z80_fetches     84  99 dec}
     {lb_tm1_bad      105 108 dec}
     {lb_spr_bad      109 112 dec}
     {lb_tm1_delta    113 116 hex}
@@ -53,8 +53,11 @@ set fields {
 # label did not. It decoded an FG-2 game as an FG-3 board -- exactly the
 # "silently shifted field reads as plausible nonsense" this file warns about.
 #
-# last_rom_addr / last_rom_data are captured as a PAIR, so they can be checked
-# against the ROM image directly. gogomile word 0 must read 0x0040.
+# z80_fetches / ym_writes: the sound CPU executing, and the sound CPU
+# programming the FM chips. A silent core with z80_fetches advancing and
+# ym_writes at zero is a Z80 that runs but never reaches the chips (latch,
+# NMI or I/O decode); both at zero is a Z80 that is not running (reset, ROM
+# path). Saturate at 65535; clear first for a rate.
 #
 # NOTE the counters SATURATE at 65535 and several of them count per-cycle
 # events, so they pin almost immediately. Always `clear` first and read again

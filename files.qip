@@ -38,10 +38,12 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_zoom_lut.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/sprite_line_engine.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/compositor.sv
 
-# Video helpers vendored from MiSTer-devel. Not instantiated yet: Fuuki is
-# ROT0, so rotation is a convenience rather than correctness, and wiring it
-# means taking ownership of DDR3.
+# Output chain. screen_rotate_two (MiSTer-devel, GPL v2) taps the output into
+# a rotated / flipped HDMI framebuffer in DDR3, which it shares with the ROM
+# loader on ldr_active. crt_adjust (vendored from Arcade-Raiden_MiSTer via
+# the Psikyo core) slides the picture for analog CRTs without moving sync.
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/screen_rotate_two.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/crt_adjust.sv
 
 # CPU pause, as a joystick button (bit 10 -- see Fuuki.sv's J1 list).
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/pause_control.sv
@@ -53,6 +55,136 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/debug/issp_probe.sv
 # Trace buffer read out through the video output: 256 events per screenshot,
 # which is the only wide channel available when a 128-bit probe is not enough.
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/debug/debug_tracer.sv
+
+# ---- FG-2 sound ----
+# T80 (Z80), vendored from the Psikyo core -- see rtl/cpu/t80/PROVENANCE.md.
+set_global_assignment -name VHDL_FILE rtl/cpu/t80/T80_Pack.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t80/T80_MCode.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t80/T80_ALU.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t80/T80_Reg.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t80/T80.vhd
+set_global_assignment -name VHDL_FILE rtl/cpu/t80/T80se.vhd
+
+# jotego cores, all GPL-3.0 -- see each directory's PROVENANCE.md.
+# jt12 (jt03 = YM2203, with the jt12 tree it is built from) and jt49 (its SSG):
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt03.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt03_acc.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt10.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt10_acc.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_acc.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_csr.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_div.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_dout.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_eg.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_eg_cnt.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_eg_comb.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_eg_ctrl.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_eg_final.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_eg_pure.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_eg_step.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_exprom.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_kon.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_lfo.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_logsin.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_mmr.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_mod.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_op.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_pcm.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_pcm_interpol.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_pg.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_pg_comb.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_pg_dt.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_pg_inc.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_pg_sum.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_pm.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_reg.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_reg_ch.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_rst.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_sh.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_sh24.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_sh_rst.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_single_acc.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_sumch.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_timers.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/jt12_top.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/adpcm/jt10_adpcm.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/adpcm/jt10_adpcm_acc.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/adpcm/jt10_adpcm_cnt.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/adpcm/jt10_adpcm_comb.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/adpcm/jt10_adpcm_dbrom.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/adpcm/jt10_adpcm_div.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/adpcm/jt10_adpcm_drvA.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/adpcm/jt10_adpcm_drvB.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/adpcm/jt10_adpcm_dt.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/adpcm/jt10_adpcm_gain.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/adpcm/jt10_adpcma_lut.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/adpcm/jt10_adpcmb.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/adpcm/jt10_adpcmb_cnt.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/adpcm/jt10_adpcmb_gain.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/adpcm/jt10_adpcmb_interpol.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/adpcm/jt10_cen_burst.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/dac/jt12_dac.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/dac/jt12_dac2.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/mixer/jt12_comb.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/mixer/jt12_decim.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/mixer/jt12_fm_uprate.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/mixer/jt12_genmix.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/mixer/jt12_interpol.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/hdl/mixer/jt12_mixer.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt49/hdl/jt49.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt49/hdl/jt49_bus.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt49/hdl/jt49_cen.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt49/hdl/jt49_div.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt49/hdl/jt49_eg.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt49/hdl/jt49_exp.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt49/hdl/jt49_noise.v
+# jtopl (jtopl2 = YM3812):
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl2.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_acc.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_csr.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_div.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_eg.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_eg_cnt.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_eg_comb.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_eg_ctrl.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_eg_final.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_eg_pure.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_eg_step.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_exprom.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_lfo.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_logsin.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_mmr.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_noise.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_op.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_pg.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_pg_comb.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_pg_inc.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_pg_rhy.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_pg_sum.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_pm.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_reg.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_reg_ch.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_sh.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_sh_rst.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_single_acc.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_slot_cnt.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jtopl/hdl/jtopl_timers.v
+# jt6295 (OKI M6295). jt12_comb.v is its own copy of a jt12 module; the
+# jt12 tree's mixer/jt12_comb.v is the same module, so only one is listed.
+set_global_assignment -name VERILOG_FILE rtl/sound/jt6295/hdl/jt6295.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt6295/hdl/jt6295_acc.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt6295/hdl/jt6295_adpcm.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt6295/hdl/jt6295_ctrl.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt6295/hdl/jt6295_rom.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt6295/hdl/jt6295_serial.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt6295/hdl/jt6295_sh_rst.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt6295/hdl/jt6295_timing.v
+
+# The board: Z80 glue, the three chips, the mix; and the OKI's sample cache.
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/sample_cache.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/fg2_sound.sv
 
 # The core proper, then the framework glue.
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/fuuki_core.sv

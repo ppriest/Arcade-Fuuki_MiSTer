@@ -26,13 +26,25 @@ if command -v powershell.exe >/dev/null 2>&1; then
   [ "${n:-0}" != "0" ] && echo "WARNING: $n vsim/vsimk process(es) already running."
 fi
 
-[ -d work ] || "$MS/vlib.exe" work
+# A FRESH library every run. Everything is recompiled anyway, and a run that
+# dies mid-compile (a tool timeout, a crash) leaves work/_lock behind, on
+# which every later vlog/vcom waits silently and forever -- which looked
+# exactly like a bench that printed nothing.
+#
+# The corollary: ONE RUN AT A TIME. Two concurrent invocations delete and
+# rebuild the same library underneath each other, and the loser prints
+# nothing at all.
+rm -rf work
+"$MS/vlib.exe" work
 
-echo "--- vcom: TG68K ---"
+echo "--- vcom: TG68K, T80 ---"
 "$MS/vcom.exe" -quiet -2008 -work work \
     rtl/cpu/tg68k/TG68K_Pack.vhd \
     rtl/cpu/tg68k/TG68K_ALU.vhd \
     rtl/cpu/tg68k/TG68KdotC_Kernel.vhd
+"$MS/vcom.exe" -quiet -93 -work work \
+    rtl/cpu/t80/T80_Pack.vhd rtl/cpu/t80/T80_MCode.vhd rtl/cpu/t80/T80_ALU.vhd \
+    rtl/cpu/t80/T80_Reg.vhd rtl/cpu/t80/T80.vhd rtl/cpu/t80/T80se.vhd
 
 echo "--- vlog: RTL + testbench ---"
 # Compile the whole core RTL every time rather than a per-bench file list.
@@ -54,7 +66,18 @@ echo "--- vlog: RTL + testbench ---"
 #                           modules purely so the local changes can be diffed.
 #                           They are not part of any design.
 RTL=$(find rtl -name '*.sv'         -not -path '*/synth_check/*'         -not -name 'screen_rotate_two.sv'         -not -name '*_upstream_reference.sv' | sort)
+# The jotego sound cores are plain Verilog. Their trees carry alternates and
+# retired versions of the same module names (jt12's alt/ and deprecated/),
+# and jt6295 ships its own jt12_comb.v -- one copy of each is compiled.
+JT=$(find rtl/sound -name '*.v' -not -path '*/alt/*' -not -path '*/deprecated/*' \
+     -not -name 'jt2413.v' -not -path 'rtl/sound/jt6295/hdl/jt12_comb.v' -not -path 'rtl/sound/jt6295/hdl/jt12_interpol.v' | sort)
 # shellcheck disable=SC2086
+# The jotego cores initialise their free-running dividers only under
+# SIMULATION, and their envelope pipelines not at all: hardware powers both
+# up at zero, a four-state simulator leaves them X and the chips never make
+# a sound. +initreg/+initmem =r+0 give every un-reset variable and array
+# the power-up zero.
+"$MS/vlog.exe" -quiet -sv -work work +define+SIMULATION +initreg=r+0 +initmem=r+0 $JT
 "$MS/vlog.exe" -quiet -sv -work work $RTL "sim/$TB"/*.sv
 
 echo "--- vsim: tb_${TB%_tb} ---"
