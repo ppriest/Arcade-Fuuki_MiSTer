@@ -32,9 +32,9 @@ from tracer_readout import read_buffer, issp   # noqa: E402
 
 OUT = REPO / "debug" / "hw" / "dump"
 REGION = {"sdram": 0, "vram": 1, "palette": 2, "spriteram": 3, "vregs": 4, "workram": 5,
-          "linecap": 6}
+          "linecap": 6, "shared": 7}
 PAGES = {"sdram": 1 << 17, "vram": 64, "palette": 32, "spriteram": 16, "vregs": 1, "workram": 256,
-         "linecap": 8}
+         "linecap": 8, "shared": 1}
 
 
 def dump_page(region, page, tag, low=0):

@@ -118,7 +118,7 @@ module fuuki_core (
 	output logic        dbg_iack,        // interrupt-acknowledge access in progress
 	output logic [2:0]  dbg_iack_level,  // level on A3..A1 during it
 	output logic        dbg_irq1_trig,   // the line-248 interrupt source, one clk per frame
-	output logic [15:0] dbg_smp,         // sample-ROM fetch health, see SAMPLE FETCH WATCH
+	output logic [15:0] dbg_smp,         // sound health: fetch watch + last OPL4 register
 	output logic        dbg_z80_m1,      // one pulse per Z80 opcode fetch, either board
 	output logic        dbg_ym_wr,       // one pulse per write to a sound chip, either board
 	output logic        dbg_pcm_keyon,   // FG-3: OPL4 PCM voice keyed on
@@ -648,24 +648,33 @@ module fuuki_core (
 	// taken, and has any ever exceeded a threshold no healthy fetch should.
 	//   [15]     stalled: a fetch has been outstanding > 4096 clk (sticky)
 	//   [14]     a fetch is outstanding at this instant
-	//   [13:8]   worst latency seen, in units of 64 clk, saturating
-	//   [7:0]    fetches completed, saturating
+	//   [13:6]   the register selector the Z80 last wrote to an OPL4 address
+	//            port -- a sound CPU writing hard with no key-ons is in a
+	//            loop, and this names the register it is on
+	//   [5:3]    which OPL4 port that write went to
+	//   [2:0]    worst fetch latency, in units of 512 clk, saturating
+	//
+	// The fetch counter and the finer latency field are gone: the count only
+	// ever read 255 and the latency field was scaled wrong -- it saturated
+	// once a fetch passed 63 CLOCKS, which every healthy SDRAM round trip
+	// does, so it read 63 on a working machine and measured nothing.
 	// =====================================================================
+	logic [7:0]  dbg_opl4_sel;
+	logic [2:0]  dbg_opl4_port;
+	logic [7:0]  shared_dump;
 	logic        smp_out = 1'b0, smp_stall = 1'b0;
 	logic [15:0] smp_age = 16'd0;
-	logic [5:0]  smp_maxlat = 6'd0;
-	logic [7:0]  smp_done = 8'd0;
+	logic [2:0]  smp_maxlat = 3'd0;
 	always_ff @(posedge clk) begin
 		if (core_reset) begin
 			smp_out <= 1'b0; smp_stall <= 1'b0; smp_age <= 16'd0;
-			smp_maxlat <= 6'd0; smp_done <= 8'd0;
+			smp_maxlat <= 3'd0;
 		end else begin
 			if (smp_valid) begin
 				smp_out <= 1'b0;
 				smp_age <= 16'd0;
-				if (smp_done != 8'hFF) smp_done <= smp_done + 8'd1;
-				if (smp_age[15:6] != 10'd0)          smp_maxlat <= 6'h3F;
-				else if (smp_age[5:0] > smp_maxlat)  smp_maxlat <= smp_age[5:0];
+				if (smp_age[15:12] != 4'd0)               smp_maxlat <= 3'd7;
+				else if (smp_age[11:9] > smp_maxlat)      smp_maxlat <= smp_age[11:9];
 			end else if (smp_out) begin
 				if (smp_age != 16'hFFFF) smp_age <= smp_age + 16'd1;
 				if (smp_age > 16'd4096)  smp_stall <= 1'b1;
@@ -677,7 +686,7 @@ module fuuki_core (
 	end
 	// smp_age counts in clk; >>6 puts the reported worst latency in units of
 	// 64 clk, so 1 unit is about 0.75 us at 85.909 MHz.
-	assign dbg_smp = {smp_stall, smp_out, smp_maxlat, smp_done};
+	assign dbg_smp = {smp_stall, smp_out, dbg_opl4_sel, dbg_opl4_port, smp_maxlat};
 
 	// =====================================================================
 	// The compositor's resolved layer-priority value. Declared HERE, above
@@ -832,6 +841,7 @@ module fuuki_core (
 	//   region 3  sprite RAM (live) (16 pages)               18 priority, 19-20 tile bank)
 	//   region 5  work RAM          (256 pages)
 	//   region 6  per-line display record (8 pages) -- see PER-LINE DISPLAY RECORD
+	//   region 7  FG-3's 16 shared bytes with the Z80 (1 page, words 0-15)
 	// Non-SDRAM regions read the CPU-side port of each memory, which is why
 	// the CPU is paused while the walker runs. Each entry is {index, word}.
 	logic        walk_active_d = 1'b0, walk_rearm_d = 1'b0, dl_done_d = 1'b0;
@@ -855,6 +865,7 @@ module fuuki_core (
 			                    (walk_idx == 8'd20) ? tilebank_render[15:0]  : vregs_rdata;
 			4'd5:    mem_word = workram_rdata;
 			4'd6:    mem_word = linecap_rdata;
+			4'd7:    mem_word = {8'd0, shared_dump};
 			default: mem_word = 16'hDEAD;
 		endcase
 	end
@@ -1137,7 +1148,9 @@ module fuuki_core (
 		.wave_valid(smp_valid && snd_fg3), .wave_data(smp_data),
 		.audio_l(fg3_audio_l), .audio_r(fg3_audio_r),
 		.dbg_m1(fg3_m1), .dbg_opl4_wr(fg3_opl4_wr),
-		.dbg_fm_keyon(dbg_fm_keyon), .dbg_pcm_keyon(dbg_pcm_keyon)
+		.dbg_fm_keyon(dbg_fm_keyon), .dbg_pcm_keyon(dbg_pcm_keyon),
+		.dbg_opl4_sel(dbg_opl4_sel), .dbg_opl4_port(dbg_opl4_port),
+		.dbg_shared_addr(walk_idx[3:0]), .dbg_shared_data(shared_dump)
 	);
 
 	assign z80_rom_req  = snd_fg3 ? fg3_rom_req : fg2_rom_req;

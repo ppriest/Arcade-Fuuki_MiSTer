@@ -31,8 +31,9 @@ set fields {
     {ring_frozen     83  83 bit}
     {z80_fetches     84  99 dec}
     {fm_keyons      100 104 dec}
-    {smp_done        105 112 dec}
-    {smp_maxlat      113 118 dec}
+    {smp_maxlat      105 107 dec}
+    {opl4_port       108 110 dec}
+    {opl4_reg        111 118 hex}
     {smp_outstanding 119 119 bit}
     {smp_stalled     120 120 bit}
     {pll_unlock      121 121 bit}
@@ -48,8 +49,12 @@ set fields {
 #   smp_stalled      a fetch has been outstanding > 4096 clk (sticky). This
 #                    being set is the fault; nothing healthy comes close.
 #   smp_outstanding  one is outstanding at this instant
-#   smp_maxlat       worst latency seen, in units of 64 clk (~0.75 us)
-#   smp_done         fetches completed, saturating at 255
+#   smp_maxlat       worst latency seen, in units of 512 clk (~6 us)
+#
+# opl4_reg / opl4_port name what the Z80 last told the OPL4: the register
+# selector it wrote to an address port (0, 2 or 4) and which port the last
+# write went to. A sound CPU writing hard while starting no voices is stuck
+# in a loop, and this says which register the loop is on.
 #
 # max_dl_addr512 is the HIGHEST download address written, in 512-byte units:
 # multiply by 0x200 for the byte address. Unlike the trace buffer it has no

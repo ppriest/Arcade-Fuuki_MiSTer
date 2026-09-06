@@ -11,19 +11,12 @@
 # to say so. The .qsf sources this file, and nothing rewrites this file.
 set_global_assignment -name VERILOG_MACRO "MISTER_FB=1"
 
-# FITTER SEED, pinned so a build from HEAD reproduces one that closes.
-#
-# With the OPL3 in, this design closes marginally: the default seed misses
-# by -0.036 ns (TNS -0.481, about a dozen paths each short by hundredths)
-# and seed 3 makes +0.019 ns. Same RTL, 0.155 ns apart -- placement noise,
-# not a regression. Pinning it means HEAD builds the bitstream that was
-# tested rather than a coin toss.
-#
-# This is a STOPGAP and should be read as one. A design that needs a
-# particular seed has no margin, and the fix is structural: see
-# docs/ROADMAP.md's open items. Here rather than in Fuuki.qsf for the same
-# reason as the macro above -- Quartus rewrites the .qsf.
-set_global_assignment -name SEED 3
+# NO FITTER SEED PINNED. One was, at seed 3, when this design closed at
+# +0.019 ns with the OPL3 in and the default seed missed by -0.036. That was
+# recorded as a stopgap, and the stopgap is spent: pipelining the FG-2 mix --
+# the actual critical path the seed hunt was papering over -- took the same
+# design to +0.438 ns. A pinned seed whose reason has gone is a stale fact in
+# a build file, so it goes with the reason.
 
 # PLL: 85.909091 MHz (14.318181 x 6) plus the 180-degree phase-shifted
 # companion that drives SDRAM_CLK. Taken unchanged from the Psikyo core,

@@ -80,7 +80,16 @@ module fg3_sound (
 	output logic        dbg_m1,          // one pulse per Z80 opcode fetch
 	output logic        dbg_opl4_wr,     // one pulse per write to the OPL4
 	output logic        dbg_fm_keyon,    // FM key-on -- nothing plays it yet
-	output logic        dbg_pcm_keyon
+	output logic        dbg_pcm_keyon,
+	// What the Z80 last told the OPL4: the register selector it wrote to an
+	// address port (0, 2 or 4), and which port the last write went to. A
+	// sound CPU writing hard while starting no voices is in a loop, and this
+	// names the register the loop is on.
+	output logic [7:0]  dbg_opl4_sel,
+	output logic [2:0]  dbg_opl4_port,
+	// The 16 bytes the 68020 and this Z80 talk through, for dump region 7.
+	input  logic [3:0]  dbg_shared_addr,
+	output logic [7:0]  dbg_shared_data
 );
 
 	// =====================================================================
@@ -263,5 +272,18 @@ module fg3_sound (
 	end
 	assign dbg_m1      = m1_active && !m1_d;
 	assign dbg_opl4_wr = opl4_wr_now && !oplwr_d;
+
+	assign dbg_shared_data = shared[dbg_shared_addr];
+	always_ff @(posedge clk or posedge reset) begin
+		if (reset) begin
+			dbg_opl4_sel  <= 8'd0;
+			dbg_opl4_port <= 3'd0;
+		end else if (dbg_opl4_wr) begin
+			dbg_opl4_port <= a[2:0];
+			// ports 0 and 2 select an FM register, 4 a PCM one
+			if (a[2:0] == 3'd0 || a[2:0] == 3'd2 || a[2:0] == 3'd4)
+				dbg_opl4_sel <= d_out;
+		end
+	end
 
 endmodule
