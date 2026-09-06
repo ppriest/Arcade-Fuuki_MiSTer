@@ -42,7 +42,7 @@ module tb_video;
 
 	video_timing u_vt (
 		.clk(clk), .ce_pix(ce_pix), .reset(reset),
-		.raster_line(9'h1fe),
+		.raster_line(9'h1fe), .raster_lead(2'd0),
 		.hcnt(hcnt), .vcnt(vcnt), .vcnt_next(vcnt_next), .vcnt_next2(vcnt_next2),
 		.h_active(h_active), .v_active(v_active),
 		.hblank(hblank), .vblank(vblank), .hsync(hsync), .vsync(vsync),

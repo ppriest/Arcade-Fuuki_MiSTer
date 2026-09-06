@@ -111,6 +111,7 @@ module fuuki_core (
 	output logic        dbg_iack,        // interrupt-acknowledge access in progress
 	output logic [2:0]  dbg_iack_level,  // level on A3..A1 during it
 	output logic        dbg_irq1_trig,   // the line-248 interrupt source, one clk per frame
+	output logic [15:0] dbg_lb_check,    // line-buffer row tags vs display line, see LINE-BUFFER CHECK
 
 	// ---- trace-to-screen controls (see the debug_tracer instance) ----
 	input  logic        dbg_overlay,
@@ -121,6 +122,8 @@ module fuuki_core (
 	input  logic [2:0]  dbg_page,     // which 40-entry page of the buffer to show
 	input  logic [23:0] dbg_dump,     // memory dump: {region[3:0], page[19:0]} (JTAG source [31:8])
 	input  logic        dbg_trig,     // ring mode: freeze on the first exception-vector read
+	input  logic        dbg_marker,   // white pixels at x 0..7 on lines 0 and 239: is the framing exact?
+	input  logic [1:0]  raster_lead,  // lines early for level 5: 0, 1 or 2 (video_timing.sv)
 	output logic        dbg_frozen
 );
 
@@ -137,7 +140,7 @@ module fuuki_core (
 
 	video_timing u_vt (
 		.clk(clk), .ce_pix(ce_pix), .reset(core_reset),
-		.raster_line(raster_line),
+		.raster_line(raster_line), .raster_lead(raster_lead),
 		.hcnt(hcnt), .vcnt(vcnt), .vcnt_next(vcnt_next), .vcnt_next2(vcnt_next2),
 		.h_active(h_active), .v_active(v_active),
 		.hblank(hblank), .vblank(vblank), .hsync(hsync), .vsync(vsync),
@@ -463,6 +466,8 @@ module fuuki_core (
 	logic [13:0] tm_rd    [0:2];
 	logic        tm_ready [0:2];
 	logic        tm_ready_d [0:2], tm_ready_rise [0:2];
+	logic        tm_bank [0:2];       // each layer's line-buffer render bank (probe)
+	logic        spr_lb_bank;         // the sprite line buffer's (probe)
 
 	always_ff @(posedge clk) begin
 		for (int i = 0; i < 3; i++) begin
@@ -523,7 +528,7 @@ module fuuki_core (
 
 			line_buffer #(.WIDTH(14)) u_lb (
 				.clk(clk), .reset(core_reset),
-				.line_start(line_start), .ready(tm_ready[g]),
+				.line_start(line_start), .ready(tm_ready[g]), .render_bank_o(tm_bank[g]),
 				.we(tm_we[g]), .wx(tm_wx[g]), .wdata(tm_wd[g]),
 				.rx(hcnt), .rdata(tm_rd[g])
 			);
@@ -603,10 +608,92 @@ module fuuki_core (
 
 	line_buffer #(.WIDTH(16)) u_spr_lb (
 		.clk(clk), .reset(core_reset),
-		.line_start(line_start), .ready(spr_ready),
+		.line_start(line_start), .ready(spr_ready), .render_bank_o(spr_lb_bank),
 		.we(spr_we), .wx(spr_wx), .wdata(spr_wd),
 		.rx(hcnt), .rdata(spr_rd)
 	);
+
+	// =====================================================================
+	// LINE-BUFFER CHECK (probe): does display line V show the row rendered
+	// FOR line V?
+	//
+	// Each engine renders vcnt_next2 into the bank that line_start just made
+	// the render bank, and that bank is displayed after the NEXT line_start.
+	// Simulation agrees the arithmetic lands row V on line V; hardware shows
+	// sprites a line below where MAME puts them. This tags each bank with the
+	// row its engine set out to render and, on every displayed line, holds
+	// (vcnt - tag of the bank being displayed). 0 means the row is on its
+	// line; +1 means the picture is one line LOW (row V displayed on V+1).
+	// The bad counters saturate at 15 and count lines where the delta was not
+	// zero, so a one-off glitch and a systematic offset read differently.
+	// =====================================================================
+	logic [8:0] tm1_tag [0:1];
+	logic [8:0] spr_tag [0:1];
+	logic [3:0] tm1_delta = 4'd0, spr_delta = 4'd0, tm1_bad = 4'd0, spr_bad = 4'd0;
+	wire  [8:0] tm1_disp_tag = tm1_tag[~tm_bank[1]];
+	wire  [8:0] spr_disp_tag = spr_tag[~spr_lb_bank];
+	always_ff @(posedge clk) begin
+		if (tm_ready_rise[1])               tm1_tag[tm_bank[1]] <= vcnt_next2;
+		if (spr_ready_rise && !build_busy)  spr_tag[spr_lb_bank] <= vcnt_next2;
+		if (core_reset) begin
+			tm1_bad <= 4'd0; spr_bad <= 4'd0;
+		end else if (ce_pix && h_active && v_active && hcnt == 9'd100) begin
+			tm1_delta <= 4'(vcnt - tm1_disp_tag);
+			spr_delta <= 4'(vcnt - spr_disp_tag);
+			if (vcnt != tm1_disp_tag && tm1_bad != 4'd15) tm1_bad <= tm1_bad + 4'd1;
+			if (vcnt != spr_disp_tag && spr_bad != 4'd15) spr_bad <= spr_bad + 4'd1;
+		end
+	end
+	assign dbg_lb_check = {spr_delta, tm1_delta, spr_bad, tm1_bad};
+
+	// =====================================================================
+	// PER-LINE DISPLAY RECORD (dump region 6). Four words per display line,
+	// 240 lines, written from the compositor's inputs as the line is shown:
+	//   word 0..2  layer 0..2 at x = 160: { opaque, 2'b0, palette index }
+	//   word 3     sprites: { any opaque on the line, 6'b0, first opaque x }
+	// What the screen shows, line by line, readable over JTAG -- so a
+	// vertical offset against the same scene rendered in simulation is a
+	// number, not an impression.
+	// =====================================================================
+	logic [15:0] linecap [0:1023];
+	logic [13:0] lc_l0, lc_l1, lc_l2;
+	logic [8:0]  lc_spr_x = 9'd0;
+	logic        lc_spr_seen = 1'b0, lc_writing = 1'b0;
+	logic [1:0]  lc_wcnt = 2'd0;
+	logic [7:0]  lc_line = 8'd0;
+	logic [15:0] lc_wdata, linecap_rdata;
+	always_comb begin
+		case (lc_wcnt)
+			2'd0:    lc_wdata = {lc_l0[13], 2'b0, lc_l0[12:0]};
+			2'd1:    lc_wdata = {lc_l1[13], 2'b0, lc_l1[12:0]};
+			2'd2:    lc_wdata = {lc_l2[13], 2'b0, lc_l2[12:0]};
+			default: lc_wdata = {lc_spr_seen, 6'b0, lc_spr_x};
+		endcase
+	end
+	always_ff @(posedge clk) begin
+		if (ce_pix && h_active && v_active) begin
+			if (hcnt == 9'd160) begin
+				lc_l0 <= tm_rd[0]; lc_l1 <= tm_rd[1]; lc_l2 <= tm_rd[2];
+			end
+			if (spr_rd[15] && !lc_spr_seen) begin
+				lc_spr_seen <= 1'b1;
+				lc_spr_x    <= hcnt;
+			end
+		end
+		if (line_start && v_active) begin
+			lc_writing <= 1'b1;
+			lc_wcnt    <= 2'd0;
+			lc_line    <= vcnt[7:0];
+		end else if (lc_writing) begin
+			linecap[{lc_line, lc_wcnt}] <= lc_wdata;
+			lc_wcnt <= lc_wcnt + 2'd1;
+			if (lc_wcnt == 2'd3) begin
+				lc_writing  <= 1'b0;
+				lc_spr_seen <= 1'b0;
+			end
+		end
+		linecap_rdata <= linecap[{dump_page[1:0], walk_idx}];
+	end
 
 	// =====================================================================
 	// Compositor and palette lookup
@@ -683,6 +770,7 @@ module fuuki_core (
 	//   region 2  palette           (32 pages)               (0-15 regs, 16-17 unknown,
 	//   region 3  sprite RAM (live) (16 pages)               18 priority, 19-20 tile bank)
 	//   region 5  work RAM          (256 pages)
+	//   region 6  per-line display record (4 pages) -- see PER-LINE DISPLAY RECORD
 	// Non-SDRAM regions read the CPU-side port of each memory, which is why
 	// the CPU is paused while the walker runs. Each entry is {index, word}.
 	logic        walk_active_d = 1'b0, walk_rearm_d = 1'b0, dl_done_d = 1'b0;
@@ -705,6 +793,7 @@ module fuuki_core (
 			4'd4:    mem_word = (walk_idx == 8'd19) ? tilebank_render[31:16] :
 			                    (walk_idx == 8'd20) ? tilebank_render[15:0]  : vregs_rdata;
 			4'd5:    mem_word = workram_rdata;
+			4'd6:    mem_word = linecap_rdata;
 			default: mem_word = 16'hDEAD;
 		endcase
 	end
@@ -851,8 +940,14 @@ module fuuki_core (
 		pal5bit = {v, v[4:2]};
 	endfunction
 
+	// Line markers: the first and last active lines, at the left edge, so a
+	// screen or a screenshot shows whether the framing keeps both. Delayed
+	// with the blanking so they sit on the pixels they name.
+	wire marker_px = dbg_marker && (hcnt < 9'd8) && (vcnt == 9'd0 || vcnt == 9'd239);
+	logic [1:0] q_mk;
 	logic [1:0] q_hs, q_vs, q_hb, q_vb, q_ce;
 	always_ff @(posedge clk) begin
+		q_mk <= {q_mk[0], marker_px};
 		q_hs <= {q_hs[0], hsync};
 		q_vs <= {q_vs[0], vsync};
 		q_hb <= {q_hb[0], hblank};
@@ -863,9 +958,9 @@ module fuuki_core (
 	// The overlay REPLACES the picture rather than blending: the decoder reads
 	// exact 24-bit values back out of the PNG, so blending would corrupt them.
 	wire [23:0] trace_px = trace_inv ? ~trace_rd : trace_rd;
-	assign video_r  = dbg_overlay ? trace_px[23:16] : pal5bit(pal_rd_data[14:10]);
-	assign video_g  = dbg_overlay ? trace_px[15:8]  : pal5bit(pal_rd_data[9:5]);
-	assign video_b  = dbg_overlay ? trace_px[7:0]   : pal5bit(pal_rd_data[4:0]);
+	assign video_r  = q_mk[1] ? 8'hFF : dbg_overlay ? trace_px[23:16] : pal5bit(pal_rd_data[14:10]);
+	assign video_g  = q_mk[1] ? 8'hFF : dbg_overlay ? trace_px[15:8]  : pal5bit(pal_rd_data[9:5]);
+	assign video_b  = q_mk[1] ? 8'hFF : dbg_overlay ? trace_px[7:0]   : pal5bit(pal_rd_data[4:0]);
 	assign video_hs = q_hs[1];
 	assign video_vs = q_vs[1];
 	assign video_hb = q_hb[1];

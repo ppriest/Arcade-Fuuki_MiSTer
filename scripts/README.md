@@ -27,7 +27,7 @@ by anyone else with a MAME install and the ROM sets.
 | `build_mra.py` | generate every `.mra`, both boards, and prove each one byte-for-byte: each region is built from the driver's ROM_START semantics, the map digits are found by TESTING against that rather than derived, and the finished file is re-read and compared. Offsets come from `fuuki_sdram_top.sv`, never duplicated here. Parents land in `releases/`, clones in `releases/_alternatives/_<parent>/`, named from the MAME description |
 | `mra.py` | build the SDRAM image an `.mra` describes, the way mra-tools-c would, so an `.mra`'s output can be checked byte-for-byte against an image built directly from the driver's `ROM_START` |
 | `hw.py` | launch a game via MiSTer Remote's API (bouncing through `menu.rbf` so the FPGA is really reprogrammed) and pull screenshots; the screenshot folder is named from the MRA setname, which it reads from the device |
-| `cfg.py` | set OSD status bits in a per-core `.CFG` by read-modify-write, so untouched bits survive; the CFG is only read when the core loads |
+| `cfg.py` | set OSD status bits in a per-core `.CFG` by read-modify-write, so untouched bits survive; the CFG is only read when the core loads. Debug bits include `marker` (lines 0 and 239 drawn white at the left edge) and `lead` (raster IRQ 0/1/2 lines early) |
 | `sweep.py` | launch every deployed set in turn and tabulate the JTAG probe side by side, because one black screen is consistent with several different faults and comparing sets separates them |
 | `sdram_dump_check.py` | diff an SDRAM read-back dump (trace source 3, the walker in `fuuki_core.sv`) against the program ROM, keyed by the index each row carries so dropped or duplicated scanlines cannot mis-attribute a word |
 | `sdram_pattern_test.py` | known-pattern SDRAM write/read test through the real download path -- inline-hex `.mra` files, no ROM -- so address-dependent, data-dependent and timing faults can be told apart; every result is guarded by checking the device actually loaded the test |
@@ -38,7 +38,7 @@ by anyone else with a MAME install and the ROM sets.
 | `read_issp.tcl` | read the core's debug counters over JTAG via In-System Sources and Probes (`quartus_stp -t`), since SignalTap acquisition is GUI-only in Quartus Prime Lite 17.0 |
 | `report_worst_paths.tcl` | `quartus_sta -t scripts/report_worst_paths.tcl Fuuki` -- the 15 worst clk_sys setup paths from the compiled database, to `output_files/worst_paths_Fuuki.rpt`. |
 | `soak.py` | `python scripts/soak.py gogomile --seconds 120` -- run a game and sample the probe (irq pulses, pending flags, PC) and a screenshot every 10 s; flags a hang. |
-| `memdump.py` | `python scripts/memdump.py vram 0 64` -- read SDRAM / VRAM / palette / sprite RAM / vregs / work RAM back from the running core over JTAG (CPU paused per page), optionally `--compare` against an expected image. Needs `cfg.py <game> --set overlay=1 src=3 ring=0`. |
+| `memdump.py` | `python scripts/memdump.py vram 0 64` -- read SDRAM / VRAM / palette / sprite RAM / vregs / work RAM / the per-line display record (`linecap`) back from the running core over JTAG (CPU paused per page), optionally `--compare` against an expected image. Needs `cfg.py <game> --set overlay=1 src=3 ring=0`. |
 | `boot_trace.py` | `capture` the first 256 CPU accesses, `--trig` the 255 before the first exception, `hang` the last 256 before a JTAG pause, `compare` against MAME. |
 
 MAME lives wherever `MAME_DIR` points (default `C:\Emulation\Emulators\MAME`).

@@ -48,10 +48,12 @@ BITS = {
     "ring":     (57, 1),   # 0 = first N, 1 = ring (latest N)
     "rearm":    (58, 1),   # any CHANGE re-arms
     "trig":     (59, 1),   # ring mode: freeze on the first exception-vector read
+    "marker":   (60, 1),   # white pixels x 0..7 on lines 0 and 239
+    "lead":     (61, 2),   # raster IRQ fires this many lines early: 0, 1, 2
     "aspect":   (121, 2),
 }
 DEBUG_BITS = ("overlay", "src", "window", "ring", "rearm", "trig",
-              "no_l0", "no_l1", "no_l2", "no_spr")
+              "no_l0", "no_l1", "no_l2", "no_spr", "marker", "lead")
 
 
 def env():

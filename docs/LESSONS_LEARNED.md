@@ -828,6 +828,16 @@ hierarchical access to the core's own `MCycle`/`TState`, not by "the test passes
 - **[Fuuki] Read dumps through the CPU's own address space**, not out of MAME's internal
   structures: `devices[":maincpu"].spaces["program"]:read_u16(addr)` returns what the CPU would
   read, device handlers included, which is the thing the RTL has to match.
+- **[Fuuki] Reduce by the driver's screen height, not the RTL's.** MAME's `time_until_pos()` wraps
+  a raster line modulo the *driver's* declared height, 256 for both Fuuki boards; the RTL's own
+  frame is 262 lines. Reducing by 262 put gogomile's parked `0xFFFE` on line 34, in the picture,
+  where MAME puts it on 254, in vblank — the title-cloud jitter. The value the game was written
+  against is whatever the driver declares.
+- **[Fuuki] When reading finds nothing, tag the data and let the hardware say where it went.**
+  A one-line offset was argued over three pipeline stages without a conclusion. Tagging each line
+  buffer with the row its engine set out to render and subtracting the display line, on the probe,
+  answered the stage question in one read (delta 0); two white marker lines answered the framing
+  question by eye. Both cost a few lines of RTL and one build.
 
 ## Hardware bring-up (MiSTer / DE10-nano)
 

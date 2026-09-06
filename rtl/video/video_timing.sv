@@ -35,6 +35,12 @@ module video_timing (
 
 	// Programmable raster interrupt line, from video register 0x1c.
 	input  logic [8:0] raster_line,
+	// How many lines EARLY level 5 fires: 0 = at the hblank of the programmed
+	// line, as MAME's timer; 1 or 2 = that many lines before it. A runtime
+	// switch, because the band a raster ISR's write lands on is two lines
+	// below MAME's (the write is caught at the next hblank and rendered two
+	// lines ahead) and which lead is right is a question for the screen.
+	input  logic [1:0] raster_lead,
 
 	output logic [8:0] hcnt,          // 0-455
 	output logic [8:0] vcnt,          // 0-261
@@ -163,7 +169,9 @@ module video_timing (
 	// once per frame. The first version let out-of-range values (gogomile's
 	// parked 0xFFFE) fire nothing, and the game hung waiting for the IRQ5
 	// that MAME still delivers -- see the note in vregs.sv.
+	wire [8:0] irq5_cmp = (raster_lead == 2'd2) ? vcnt_next2 :
+	                      (raster_lead == 2'd1) ? vcnt_next  : vcnt;
 	assign irq5_trig = ce_pix && (hcnt == 9'(H_ACTIVE)) &&
-	                   (vcnt[RASTER_CMP_BITS-1:0] == raster_line[RASTER_CMP_BITS-1:0]);
+	                   (irq5_cmp[RASTER_CMP_BITS-1:0] == raster_line[RASTER_CMP_BITS-1:0]);
 
 endmodule

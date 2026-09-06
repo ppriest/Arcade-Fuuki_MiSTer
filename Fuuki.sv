@@ -108,6 +108,8 @@ localparam CONF_STR = {
 	"P1O[57],Trace mode,First N,Ring (latest);",
 	"P1O[58],Re-arm capture,A,B;",
 	"P1O[59],Ring trigger,Off,Vector 2-4 read;",
+	"P1O[60],Line markers,Off,On;",
+	"P1O[62:61],Raster IRQ lead,0 lines,1 line,2 lines;",
 	"-;",
 	"R[0],Reset;",
 	// This list MUST agree with the .mra <buttons> positions, because the
@@ -569,8 +571,9 @@ fuuki_core u_core (
 	.dbg_window(status[56:53]), .dbg_ring(status[57]),
 	.dbg_rearm(status[58] ^ probe_src[6]), .dbg_page({probe_src[7], probe_src[4:3]}),
 	.dbg_trig(status[59]), .dbg_dump(probe_src[31:8]),
+	.dbg_marker(status[60]), .raster_lead(status[62:61]),
 	.dbg_irq_pending(dbg_irq_pending), .dbg_iack(dbg_iack), .dbg_iack_level(dbg_iack_level),
-	.dbg_irq1_trig(dbg_irq1_trig),
+	.dbg_irq1_trig(dbg_irq1_trig), .dbg_lb_check(dbg_lb_check),
 	.dbg_frozen(dbg_frozen)
 );
 
@@ -626,6 +629,7 @@ wire       ctr_clear = probe_src[0];
 // acknowledges advance) and the handler simply never sets the flag.
 wire [2:0] dbg_irq_pending, dbg_iack_level;
 wire       dbg_iack, dbg_irq1_trig;
+wire [15:0] dbg_lb_check;   // {spr_delta, tm1_delta, spr_bad, tm1_bad}, see fuuki_core.sv
 reg  [7:0] c_irq1  = 8'd0;   // irq1_trig pulses (one per frame when healthy)
 reg  [4:0] c_iack1 = 5'd0;   // level-1 acknowledge cycles
 reg        iack_d  = 1'b0;
@@ -668,12 +672,6 @@ end
 debug_counter #(.W(16)) u_c_ovr    (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_spr_ovr),     .count(c_ovr));
 debug_counter #(.W(16)) u_c_cpu    (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_cpu_req),     .count(c_cpu));
 debug_counter #(.W(16)) u_c_gfx    (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_gfx_req),     .count(c_gfx));
-// Download writes the arbiter ACCEPTED, which is a different claim from
-// "ioctl bytes arrived" (dl_seen below) -- the two disagreeing is exactly the
-// signature of a memory path held in reset across the download.
-wire [15:0] c_dlwr;
-debug_counter #(.W(16)) u_c_dlwr   (.clk(clk_sys), .clear(ctr_clear), .ev(dl_tick),         .count(c_dlwr));
-
 wire dl_seen;
 debug_sticky u_dl_seen (.clk(clk_sys), .clear(ctr_clear), .ev(ioctl_wr && ioctl_index == 16'd0), .seen(dl_seen));
 
@@ -697,18 +695,6 @@ always @(posedge clk_sys) begin
 	end
 end
 
-// Download writes, PRESCALED BY 256. The plain count saturated a 16-bit
-// counter at 65,535 while the full gogomile image needs 9,175,040 word
-// writes -- so "saturated" could not tell a complete load from a 0.7% one,
-// which is the exact question being asked. 9,175,040 / 256 = 35,840, which
-// fits. Expect ~35,840 for a complete FG-2 load.
-reg [7:0] dl_pre = 8'd0;
-always @(posedge clk_sys) begin
-	if (ctr_clear)      dl_pre <= 8'd0;
-	else if (dbg_dl_wr) dl_pre <= dl_pre + 8'd1;
-end
-wire dl_tick = dbg_dl_wr && (dl_pre == 8'd255);
-
 // HIGHEST download address written, in 512-byte units. The trace buffer can
 // freeze on a pause between .mra parts and look like the end of the transfer;
 // a high-water mark cannot. A complete gogomile load must reach 0x1180000,
@@ -725,7 +711,7 @@ issp_probe #(.INSTANCE_ID("F"), .PROBE_W(128), .SOURCE_W(32)) u_probe (
 	.probe({
 		c_dl_edges,          // 127..122  ioctl_download rising edges, any index
 		pll_unlock,          // 121
-		c_dlwr,              // 120..105  download writes accepted
+		dbg_lb_check,        // 120..105  line-buffer check: {spr_delta, tm1_delta, spr_bad, tm1_bad}
 		last_rom_addr,       // 104..84
 		dbg_frozen,          //  83  ring mode: has the buffer stopped moving
 		pause_latched,       //  82

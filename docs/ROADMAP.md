@@ -53,29 +53,51 @@ the real Z80 lands.
 
 ### Open video faults, and where the investigation stands
 
-Two remain, both on the current bitstream:
+**gogomile's title-cloud jitter is fixed.** The register at `0x1c` is effectively 8 bits: MAME's
+`time_until_pos()` reduces it modulo the driver's 256-line screen (`set_size(320, 256)` /
+`set_size(512, 256)`), so the game's parked `0xFFFE` fires on line 254, in vblank. The RTL was
+reducing modulo its own 262-line frame, which put that interrupt on line 34, in the picture; the
+captured register log shows the clouds are a five-band layer-1 scroll chain whose `0xFFFE` step
+writes the top band's scroll and restarts the chain, so it ran mid-frame and only every other
+frame's chain started from line 29. `vregs.sv` now takes the low byte. Confirmed on hardware.
 
-- **gogomile's title clouds jitter back and forth between frames**, and **pbancho's bottom strip
-  shows layer fragments where MAME draws black.**
+Two hypotheses were tried and dropped on the way: rendering the tilemaps one line ahead instead of
+two (broke both games — the render window is too short, see the note in `rtl/fuuki_core.sv`), and
+a one-shot interrupt armed per write — dropped on reading `fuukitmap.cpp`, not on hardware:
+`vregs_w` schedules the raster timer with a frame-length period and the callback re-arms it, so
+MAME fires it every frame the value stands, as the comparator does.
 
-  Latching every renderer-visible register once per line at hblank did not fix either, so neither
-  is a sampling race. Two hypotheses have been tried and dropped: rendering the tilemaps one line
-  ahead instead of two (broke both games — the render window is too short, see the note in
-  `rtl/fuuki_core.sv`), and making the interrupt a one-shot armed per write. The second was
-  dropped on reading `fuukitmap.cpp`, not on hardware: `vregs_w` schedules the raster timer with a
-  frame-length period and the callback re-arms it, so MAME fires it every frame the value stands,
-  exactly as the comparator does.
+**Still open, both on the current bitstream:**
 
-  **What that reading did turn up: the register is effectively 8 bits.** `time_until_pos()`
-  reduces the line modulo the screen *height*, and both drivers declare a 256-line screen
-  (`set_size(320, 256)` / `set_size(512, 256)`), so gogomile's parked `0xFFFE` fires on line 254,
-  in vblank. The RTL was reducing modulo its own 262-line frame, which put that interrupt on line
-  34, in the picture, so the handler ran mid-frame. `vregs.sv` now takes the low 8 bits. Whether
-  that is the jitter is a hardware question.
+- **One line of gogomile's title cloud moves with the wrong band**, and **pbancho's bottom strip
+  shows layer fragments where MAME draws black.** By analysis the band a raster ISR's write lands
+  on is two lines below MAME's: IRQ5 fires at the hblank of line N, the write is caught by the
+  per-line latch at the next hblank and rendered two lines ahead, so it first shows on N+3 where
+  MAME's partial update applies it from N+1. The `Raster IRQ lead` OSD switch (page 1;
+  `cfg.py --set lead=N`) fires IRQ5 one or two lines early to move that band without a rebuild.
+  With the lead at 0 the cloud is still one line off; the other settings have not been reported.
+- **The credits text sits one line lower than in MAME**, its bottom row lost off the picture.
+  Reported on hardware, unexplained. What has been measured against it:
+  - the framing is exact — the `Line markers` switch draws lines 0 and 239 and both sit on the
+    first and last visible rows, so the visible window is not shifted;
+  - each line buffer is displayed on the line it was rendered for — the probe's `lb_*_delta`
+    fields (fuuki_core.sv, "LINE-BUFFER CHECK") read 0 for layer 1 and for the sprite buffer over
+    hundreds of frames;
+  - the sprite engine puts record row `sy` on display line `sy` in `sim/sprite_tb`, which captures
+    by display `vcnt`, as `fuukispr.cpp` does.
+  What has not been measured is the sprite rows on hardware against the sprite RAM at the same
+  instant; the `linecap` dump region (below) plus a sprite RAM dump is the check.
 
-- **Raster bands land about three lines low.** The engines render two lines ahead, so a write from
-  a raster ISR reaches the display later than MAME's partial update puts it. A constant offset,
-  not a flicker.
+**Instruments added for this**, all in the current bitstream: the line-buffer row-tag check on the
+probe (`read_issp.tcl`: `lb_tm1_delta`, `lb_spr_delta`, and saturating `lb_*_bad` counters); dump
+region 6 `linecap`, the compositor's inputs on every displayed line (layers 0-2 at x=160, first
+opaque sprite x), 4 pages via `memdump.py linecap 0 4`; and the two OSD switches above.
+
+**Do not run `memdump.py` while Quartus is compiling.** Two `KERNEL_SECURITY_CHECK_FAILURE`
+bugchecks (0x139, corrupted kernel list entry) at 12:20 and 12:27 on 2026-09-06, both while the
+dump loop was cycling the USB-Blaster with a compile running on the same machine; the
+combination had not been used before and the dumps had run clean without it. Unproven as the
+cause, but the two are not to be overlapped again until it is.
 
 Sprite faults found and fixed on hardware are recorded in
 [`LESSONS_LEARNED.md`](LESSONS_LEARNED.md) rather than here; the short version is that a signed
@@ -720,8 +742,10 @@ reading of `fuukispr.cpp`. See "Sprites" above; the discrepancy is unexplained.
 
 1. **The two open video faults** — gogomile's title-cloud jitter and pbancho's bottom strip. See
    "Progress" above for what has been tried and what the driver reading changed.
-2. **Raster bands land about three lines low**, because the engines render two lines ahead of the
-   display. Fixing it means either reducing that lead or firing IRQ5 correspondingly early.
+2. **Raster bands land two lines later than MAME's**, because the engines render two lines ahead
+   of the display and the ISR's write is caught a line after the interrupt. Reducing the lead is
+   ruled out (the render window); firing IRQ5 early is the `Raster IRQ lead` switch, to be settled
+   on the screen.
 3. **Layer-order values 6-15** — MAME indexes a 6-entry table with `priority & 0x0f`, so those read
    out of bounds. The RTL picks a defined behaviour; check whether any game writes them.
 4. **Flip screen** — both drivers state scroll values are wrong when flipped, so the reference

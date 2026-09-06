@@ -29,15 +29,20 @@ set fields {
     {pause_latched   82  82 bit}
     {ring_frozen     83  83 bit}
     {last_rom_addr   84 104 hex}
-    {dl_writes_256   105 120 dec}
+    {lb_tm1_bad      105 108 dec}
+    {lb_spr_bad      109 112 dec}
+    {lb_tm1_delta    113 116 hex}
+    {lb_spr_delta    117 120 hex}
     {pll_unlock      121 121 bit}
     {ioctl_dl_edges  122 127 dec}
 }
 
-# dl_writes vs download_seen is the pair that matters: download_seen says ioctl
-# bytes REACHED the core, dl_writes says the arbiter ACCEPTED them into SDRAM.
-# The first bitstream had download_seen=yes and would have had dl_writes=0,
-# because the memory path was held in reset for the whole transfer.
+# lb_* is the line-buffer check (fuuki_core.sv, LINE-BUFFER CHECK): delta is
+# (display line - the row the displayed bank was rendered for), 4-bit two's
+# complement, sampled every displayed line; 0 means row V is shown on line V,
+# 1 means the picture is one line low. bad counts lines with a non-zero
+# delta, saturating at 15, since the core reset. tm1 is tilemap layer 1,
+# spr the sprite buffer.
 #
 # max_dl_addr512 is the HIGHEST download address written, in 512-byte units:
 # multiply by 0x200 for the byte address. Unlike the trace buffer it has no
@@ -47,10 +52,6 @@ set fields {
 # ring_frozen was labelled board_fg3 after the probe layout changed and the
 # label did not. It decoded an FG-2 game as an FG-3 board -- exactly the
 # "silently shifted field reads as plausible nonsense" this file warns about.
-#
-# dl_writes_256 counts download writes in units of 256. A COMPLETE gogomile
-# load is 9,175,040 word writes = 35,840 here; anything much lower means the
-# transfer is being dropped, not merely slow.
 #
 # last_rom_addr / last_rom_data are captured as a PAIR, so they can be checked
 # against the ROM image directly. gogomile word 0 must read 0x0040.

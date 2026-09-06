@@ -73,8 +73,11 @@ What is built and running:
 
 Known issues:
 
-* Raster effects: **gogomile's title clouds jitter between frames, and pbancho's bottom strip shows layer
-* **Flip screen is not implemented.** 
+* Raster effects: **one line of gogomile's title cloud moves with the wrong band, and pbancho's bottom
+  strip shows layer fragments where MAME draws black** — the band a raster write lands on is two lines
+  later than MAME's; an OSD switch (`Raster IRQ lead`) fires the interrupt early to test the fix.
+* **The credits text sits one line lower than in MAME.** Unexplained; the framing and the line buffers
+  have been measured exact, see `docs/ROADMAP.md`.
 
 ### Todo
 

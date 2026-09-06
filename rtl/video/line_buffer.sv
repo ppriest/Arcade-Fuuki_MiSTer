@@ -40,6 +40,7 @@ module line_buffer #(
 	// One pulse per scanline, in hblank.
 	input  logic        line_start,
 	output logic        ready,        // render bank cleared, safe to write
+	output logic        render_bank_o, // which bank the engine writes into (probe)
 
 	// ---- write port: the sprite engine, rendering the NEXT line ----
 	input  logic        we,
@@ -87,6 +88,7 @@ module line_buffer #(
 	end
 
 	assign rdata = render_bank ? b0_q : b1_q;
+	assign render_bank_o = render_bank;
 
 	always_ff @(posedge clk or posedge reset) begin
 		if (reset) begin
