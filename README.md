@@ -1,7 +1,7 @@
 # Fuuki core for MiSTer
 
-MiSTer FPGA core for Fuuki's FG-2 and FG-3 arcade platforms, built with Quartus Prime 17.0.2 Lite
-for the DE10-nano.
+MiSTer FPGA core for [Fuuki](https://en.wikipedia.org/wiki/Fuuki)'s FG-2 and FG-3 arcade
+platforms, built with Quartus Prime 17.0.2 Lite for the DE10-nano.
 
 ## Contents
 
@@ -28,115 +28,81 @@ Supports the following games
 | Asura Blade - Sword of Dynasty | 1998 | FG-3 | M68EC020 @ 20 MHz | Z80 @ 6 MHz | YMF278B (OPL4) | Japan. Uses the OPL4's PCM+FM synthesis |
 | Asura Buster - Eternal Warriors | 2000 | FG-3 | M68EC020 @ 20 MHz | Z80 @ 6 MHz | YMF278B (OPL4) | JP 2000, US 2001. PCM only |
 
-Both boards share the same video hardware — the FI-002K sprite chip and FI-003K tilemap chip, with
-Mitsubishi's M60067-0901FP alongside. Reproducing those two custom video chips is the
-substance of the project. FG-3 keeps FG-2's video architecture but substitutes: a 32-bit CPU, an OPL4for sound, sprite tile banking, deeper tile depth, and a second work RAM.
+Both boards share the same video hardware — the FI-002K sprite chip and FI-003K tilemap chip, with a 
+Mitsubishi's M60067-0901FP. Reproducing those two custom video chips is the substance of
+the project. FG-3 keeps FG-2's video architecture but substitutes a 32-bit CPU, an OPL4 for sound,
+sprite tile banking, deeper tiles and a second work RAM.
+
+Some links discussing the games and hardware:
+* https://www.hardcoregaming101.net/series/asura-buster-blade/
+* https://nicole.express/2025/a-very-fuuki-circuit-board.html
 
 ## History
 
-Nothing released yet — no `.rbf` has been built. See Status.
+* Arcade-Fuuki_20260905.rbf
+  * **Alpha release**
+  * Games all run fine
+  * No sound
+  * Raster effects are rough in places
+  * Includes fast DDR loading
+  * No HDMI rotate/flip yet
 
 ## Screenshots
 
 ## Installation
 
 * Take the latest `*.rbf` from `releases/` and put it in `_Arcade/cores`
-* Take the `*.mra` files from `releases/` and put them in `_Arcade/_Fuuki`, **keeping the
-  `_alternatives/` folder alongside them**. Parent sets sit at
-  the top level and clones live in `_alternatives/_<game>/`, per the
-  [MRA documentation](https://mister-devel.github.io/MkDocs_MiSTer/developer/mra/), so the menu
-  lists one entry per game rather than one per ROM revision
+* Take the `*.mra` files from `releases/` and put them in `_Arcade/_Fuuki`
 * Put the MAME merged or split ROMs in `games/mame`
 
-FG-3 (Asura Blade / Asura Buster) needs **more than the stock 32 MB SDRAM module** — its ROM image
-is 56.5 MB. FG-2 (Mile Smile / Puzzle Bancho) runs on a stock board.
+FG-3 (Asura Blade / Asura Buster) needs **64MB or more SDRAM module**
 
 ## Status
 
-**Pre-hardware.** The CPU and the whole video pipeline are built and verified in simulation
-against MAME as the reference; nothing has been synthesized as a whole core, and no game has yet
-run on a DE10-nano. Do not read the sections below as "working" — read them as "verified this far".
+**Runs on hardware, without sound.** All four parent sets boot and play on a DE10-nano
+with 0.482 ns of setup slack on `clk_sys`.
 
-What is built and measured:
+What is built and running:
 
-* **68000 and 68EC020 from one TG68K.C instance** (`rtl/cpu/maincpu.sv`). The kernel's `CPU` port
-  picks the mode at runtime from the mod byte, so FG-2 and FG-3 share a CPU. Both clock enables
-  are exact Bresenham ratios on `clk_sys` (176/945 = 16 MHz, 220/945 = 20 MHz), not rounded
-  divides. gogomile's boot diffs **84 of 84 fetch addresses** against a real MAME trace.
-* **All three interrupts** — level 1 at scanline 248, level 3 vblank, level 5 on a programmable
-  raster line — held until acknowledged, and nesting correctly. The games *spin-wait* on flags
-  their ISRs set, so a missing interrupt hangs rather than degrades.
-* **FI-003K tilemaps** (`rtl/video/tilemap_line_engine.sv`): three layers, 16×16×4, 16×16×8 and
-  8×8×4, per-scanline with live register sampling. Worst line 13–20% of the scanline budget per
-  layer.
-* **FI-002K sprites**: buffered sprite RAM (a real copy, not a bank swap), a once-per-frame
-  candidate list built in vblank, then a per-scanline engine into a double-buffered 320-pixel line
-  buffer. No whole-frame pixel buffer anywhere — that is the shape the hardware used and it is
-  where the block RAM would otherwise go.
-* **Compositor** with the bit-indexed pdrawgfx priority rule, and the backdrop as the last palette
-  pen rather than pen 0.
-* **SDRAM backend** (`rtl/memory/fuuki_sdram_top.sv`): every runtime ROM on the one physical chip,
-  proved by a real HPS download and read-back through every client port against a
-  command-decoding chip model.
-* **The whole pipeline diffed against MAME.** `sim/video_tb/` composes a captured frame through
-  the real RTL and compares it to MAME's screenshot of that same state.
+* **68000 and 68EC020 from one TG68K.C instance**
+* **All three interrupts** — level 1 at scanline 248, level 3 vblank, level 5 on a programmable raster line — held until acknowledged, and nesting correctly.
+* **FI-003K tilemaps** (`rtl/video/tilemap_line_engine.sv`): three layers, 16×16×4, 16×16×8 and 8×8×4, rendered per scanline. Every register the renderer reads is latched once per line, so a   raster interrupt can still move a layer mid-frame.
+* **FI-002K sprites**: sprite RAM snapshotted once per frame (a real copy, not a bank swap), a candidate list built in vblank, then a per-scanline engine into a double-buffered 320-pixel line buffer. No whole-frame pixel buffer anywhere.
+* **Compositor** with the bit-indexed pdrawgfx-style priority rule, and the backdrop as the last palette pen.
+* **Fast ROM loading.**
 
-Two findings worth stating because they shape the design:
+Known issues:
 
-* **Per-scanline rendering with live register sampling is mandatory, not stylistic.** gogomile
-  raster-scrolls layer 2 into five parallax bands on its *title screen*, rewriting the scroll
-  register four times a frame from the level-5 ISR. Each band's empirically best scroll matches a
-  written value exactly. A renderer that samples scroll once per frame cannot draw that screen.
-* **Asura Blade uses the OPL4's FM synthesis; Asura Buster does not.** Measured, not assumed:
-  299 key-ons across three channels in five minutes of attract, with all six channel pairs in
-  4-operator mode and audible Total Levels, versus zero key-ons for Buster. Because 4-op is an
-  OPL3 feature, an OPL2 core cannot substitute.
-
-Sound is deliberately deferred until the renderer is complete; none of it is wired yet.
+* Raster effects: **gogomile's title clouds jitter between frames, and pbancho's bottom strip shows layer
+* **Flip screen is not implemented.** 
 
 ### Todo
 
+- [ ] Raster interrupt as a one-shot armed per write, and close the remaining raster faults above
 - [ ] Sound: Z80, and the FG-2 chip set (YM2203, YM3812, OKI M6295)
 - [ ] Sound: OPL4 — vendor [gtaylormb/opl3_fpga](https://github.com/gtaylormb/opl3_fpga) for the FM
       half and put Psikyo's PCM wavetable engine on top
-- [ ] Flip screen in the renderer (the port exists; MAME substitutes different offset constants
-      when flipped, so it cannot be done as an output rotation)
-- [ ] `.mra` files for every set, including the clones
-- [ ] First whole-core synthesis, timing closure, and a bitstream
-- [ ] Hardware bring-up on a DE10-nano
-- [ ] Hiscore support (`hiscore.v`); all four parent sets have `hiscore.dat` entries in work RAM
-- [ ] CRT offset, and wire `video_freak` for crop/integer scaling
-- [ ] **SDRAM: widen the controller past 32 MB for FG-3.** asurabus needs 56.5 MB. The target is
-      the **128 MB** module — the data fits 64 MB naturally, but 128 MB is the module people
-      actually have. FG-2's largest set is 16.1 MB and runs on a stock 32 MB module
-- [ ] Replay the captured video-register write log per scanline in `sim/video_tb/`, so
-      raster-scrolled layers can be diffed properly
+- [ ] Flip screen
+- [ ] Hiscore support
+- [ ] HDMI rotation
+- [ ] CRT offset
 
 ### Resource usage
 
-**No whole-core build exists yet, so there are no core-wide numbers.** The one measured data point
-is the CPU standalone (`rtl/cpu/synth_check/`), on the DE10-nano's Cyclone V 5CSEBA6, speed grade 7:
+Whole core, on the DE10-nano's Cyclone V 5CSEBA6, speed grade 7, for the bitstream in `releases/`:
 
-| resource | `maincpu` + TG68K.C | available |
+| resource | used | available |
 | --- | --- | --- |
-| Logic (ALMs) | 2,828 (7%) | 41,910 |
-| Registers | 1,463 | -- |
-| Block memory bits | 1,024 (<1%) | 5,662,720 |
-| DSP blocks | 6 (5%) | 112 |
+| Logic (ALMs) | 12,761 (30%) | 41,910 |
+| Registers | 17,947 | -- |
+| Block memory bits | 2,748,161 (49%) | 5,662,720 |
+| RAM blocks | 356 (64%) | 553 |
+| DSP blocks | 43 (38%) | 112 |
+| PLLs | 3 | 6 |
 
-Raw Fmax for that block is **44.25 MHz** against an 85.909091 MHz clock — the 68k is the
-Fmax-limiting block, as expected. It closes at **+0.927 ns** with three audited constraints in
-`Fuuki.sdc`, each carrying its justification: a kernel-internal multicycle bounded by the clock
-enable, a false path on the static board select, and a multicycle stating what `maincpu.sv`'s
-phase counter already assumes.
-
-Block RAM is the resource to watch rather than logic. FG-3 needs ~280 KB of on-chip RAM for work
-RAM, VRAM, palette, sprite RAM and its snapshots, against 691 KB on the device — before line
-buffers and caches.
+**+0.482 ns** of setup slack on `clk_sys` (85.909091 MHz).
 
 ## AI Attestation
-
-*Draft — to be replaced with the author's own account.*
 
 This core is being developed with heavy use of a frontier coding assistant, in the same manner as
 [Arcade-Psikyo_MiSTer](https://github.com/ppriest/Arcade-Psikyo_MiSTer). The MAME drivers being
@@ -145,7 +111,8 @@ the reference and the port share an author.
 
 What the assistant is held to, and what shows in the repository:
 
-* Hardware facts come from the MAME driver, not from recall. Every ROM interleave, graphics
+* Authentic screenshots and narrative from PCB here: https://nicole.express/2025/a-very-fuuki-circuit-board.html
+* Hardware facts come from the MAME driver. Every ROM interleave, graphics
   layout, register map and timing constant is traced to a line of source or a measurement.
 * Claims are checked before they are written down. The graphics layouts were rendered to PNG from
   real ROM data before any RTL used them; the CPU is diffed against a real MAME trace; the video
@@ -153,8 +120,7 @@ What the assistant is held to, and what shows in the repository:
 * Where the reference and the hardware disagree, or where MAME's own comments disclaim accuracy,
   that is recorded as an open question rather than silently resolved.
 
-`docs/LESSONS_LEARNED.md` carries the accumulated rules from the Psikyo project, and this core has
-already added entries of its own.
+`docs/LESSONS_LEARNED.md` carries the accumulated rules from the Psikyo project, and this core.
 
 ## Verification
 
@@ -173,6 +139,10 @@ where they matter (both Fuuki drivers flag raster effects and flipped-screen scr
   That makes "compare against MAME" a single command rather than a hand-driven debugger session.
 * **Offline proofs before building.** ROM interleaves are scored against MAME's disassembly, and
   graphics layouts rendered to PNG, before any RTL depends on them.
+* **On-hardware instruments, driven over JTAG.** A trace ring readable through the video output,
+  and `scripts/memdump.py`, which reads SDRAM, VRAM, palette, sprite RAM, video registers or work
+  RAM back out of a running core with the CPU paused, so a fault can be read off the real machine
+  rather than inferred.
 * Regression tests are written for every bug found, including the ones that turned out to be
   testbench faults.
 
@@ -220,7 +190,7 @@ Standard [Template_MiSTer](https://github.com/MiSTer-devel/Template_MiSTer) stru
 | - | - |
 | `sys` | MiSTer framework, vendored from the template |
 | `rtl` | core source |
-| `releases` | `.mra` files, and `.rbf` builds once any are published |
+| `releases` | `.mra` files, and the current `.rbf` |
 | `docs` | design notes and hard-won debugging lessons |
 | `sim` | ModelSim testbenches |
 | `scripts` | capture/verification tooling (see [`scripts/README.md`](scripts/README.md)) |
