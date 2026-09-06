@@ -16,4 +16,7 @@ report_timing -setup -npaths 15 -detail full_path -from_clock $clk -to_clock $cl
     -panel_name "Worst 15 setup paths (clk_sys)" -file "output_files/worst_paths_$rev.rpt"
 
 delete_timing_netlist
-project_close
+# -dont_export_assignments: project_close otherwise RE-SAVES Fuuki.qsf,
+# reordering it and reverting hand edits -- which is how MISTER_FB=1 was
+# silently lost between a build and the next.
+project_close -dont_export_assignments

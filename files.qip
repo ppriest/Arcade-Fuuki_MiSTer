@@ -1,6 +1,16 @@
 # Source list for the Fuuki core. Sourced by Fuuki.qsf; do NOT add files
 # through the Quartus IDE, which rewrites the .qsf instead.
 
+# HDMI FRAMEBUFFER, for screen_rotate_two. This lives HERE, not in Fuuki.qsf
+# where the MiSTer template puts it commented out, because Quartus REWRITES
+# the .qsf: uncommenting it there survived until the next flow re-saved the
+# project, and the build that followed compiled with MISTER_FB undefined.
+# Every FB_* port then vanished from sys/emu_ports.vh and Fuuki.sv's
+# connections became implicit 1-bit nets -- a rotator writing into a frame
+# buffer the HPS never displays, with nothing worse than a Warning (10236)
+# to say so. The .qsf sources this file, and nothing rewrites this file.
+set_global_assignment -name VERILOG_MACRO "MISTER_FB=1"
+
 # PLL: 85.909091 MHz (14.318181 x 6) plus the 180-degree phase-shifted
 # companion that drives SDRAM_CLK. Taken unchanged from the Psikyo core,
 # where this exact phase is proven on hardware -- see Fuuki.sv's CLOCKS note.

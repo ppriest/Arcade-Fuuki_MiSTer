@@ -8,6 +8,7 @@ by anyone else with a MAME install and the ROM sets.
 
 | script | purpose |
 | - | - |
+| `build_staged.py` | compile HEAD in a git worktree at `build/`, so the tree is free during the ~13-minute run and every scrap of Quartus scratch stays out of the repo root. Refuses a dirty tree, records the built commit, gates on negative slack on any clock. **Use this**; `build.sh` builds in-tree and needs the tree left alone |
 | `run_sim.sh` | compile the RTL and run one testbench, from the repository root. Rebuilds the `work` library every run, and compiles the jotego cores with `+define+SIMULATION +initreg=r+0 +initmem=r+0`: their un-reset pipelines are X in a four-state simulator and zero in hardware |
 | `build.sh` | run the full Quartus flow and fail on negative slack rather than on the Fitter's opinion |
 | `deploy.py` | copy the `.rbf` and the `.mra` files to a MiSTer; prints every clock's slack first, and refuses a bitstream the build did not actually produce. The core lands as `Arcade-Fuuki_NNNNNNNN.rbf`, numbered from 10000001 and incrementing per deploy, read back from the device; MiSTer launches the highest-numbered one, so renaming the newest to `.held` falls back to the one before |

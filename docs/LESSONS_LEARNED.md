@@ -833,6 +833,11 @@ hierarchical access to the core's own `MCycle`/`TState`, not by "the test passes
   frame is 262 lines. Reducing by 262 put gogomile's parked `0xFFFE` on line 34, in the picture,
   where MAME puts it on 254, in vblank — the title-cloud jitter. The value the game was written
   against is whatever the driver declares.
+- **[Fuuki] Build from a snapshot, not from the tree you are editing.** Psikyo's
+  `build_staged.py` was looked at, judged optional, and left unported. The bill arrived as a whole
+  session of serialised work: every source edit waited on a thirteen-minute compile, a build died
+  mid-Fitter with an edit in flight, and a `.qsf` hand-edit (`MISTER_FB=1`) was silently reverted
+  by Quartus re-saving the project between builds. A worktree at `build/` costs one script.
 - **[Fuuki] A vendored core that is silent in simulation may only be uninitialised.** jotego's
   jtopl and jt12 leave their envelope and operator pipelines without reset; hardware powers them up
   at zero, ModelSim leaves them X, and X through an envelope generator is a chip that takes every

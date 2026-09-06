@@ -687,13 +687,20 @@ the detail lives. Never switch branches while a Quartus process is reading the s
 silently kills the run and leaves a truncated log that reads like a tool crash
 (LESSONS_LEARNED, "Tooling and workflow").
 
-**Builds run in-tree**, with `scripts/build.sh` driving the Quartus flow and `scripts/deploy.py`
-copying the result to the MiSTer. Psikyo's staged build — snapshotting HEAD into a worktree so the
-tree stays editable during a compile — was not ported; the protection that mattered was, and lives
-in `deploy.py`, which refuses to copy a `.rbf` unless the build log says the compile succeeded, the
-`.rbf` is not older than that log, and the timing summary has no negative slack. A Psikyo build
-once died mid-Fitter and its deploy then verified the *previous* build's stale `.rbf` as green.
-`deploy.py` also prints every clock's slack before it copies anything, and names each core
+**Builds are staged.** `scripts/build_staged.py` (ported from Psikyo) snapshots HEAD into a git
+worktree at `build/` and runs the Quartus flow there, so the main tree is free for the whole
+~13-minute compile and all of Quartus's scratch stays out of the repo root. A dirty tree is refused
+by default: the build is exactly HEAD, and the commit is recorded in `build/BUILT_COMMIT` beside
+the log. It was originally left unported, and the cost was paid in full on 2026-09-06 — every
+edit that session had to wait for a build, and one build died mid-Fitter with a source edit in
+flight. `scripts/build.sh` still builds in-tree for the case where the compile must see
+uncommitted work.
+
+`scripts/deploy.py` carries the other half of the protection: it refuses to copy a `.rbf` unless
+the build log says the compile succeeded, the `.rbf` is not older than that log, and the timing
+summary has no negative slack. A Psikyo build once died mid-Fitter and its deploy then verified the
+*previous* build's stale `.rbf` as green. `deploy.py` also prints every clock's slack before it
+copies anything, and names each core
 `Arcade-Fuuki_NNNNNNNN.rbf` with an incrementing number so earlier builds stay on the device as
 fallbacks (rename the newest to `.held` to drop back one).
 
