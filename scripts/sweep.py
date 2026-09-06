@@ -131,8 +131,8 @@ def main():
 
     # ---- side by side ----
     if len(rows) > 1:
-        keys = ["frames", "lines", "cpu_reads", "z80_fetches",
-                "ym_writes", "download_seen"]
+        keys = ["frames", "z80_fetches", "ym_writes", "pcm_keyons",
+                "fm_keyons", "snd_peak"]
         print("\n" + "=" * 78)
         print(f"{'set':11s}" + "".join(f"{k:>16s}" for k in keys if k in rows[0][1]))
         for name, p, _ in rows:

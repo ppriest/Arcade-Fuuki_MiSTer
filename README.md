@@ -59,7 +59,7 @@ FG-3 (Asura Blade / Asura Buster) needs **64MB or more SDRAM module**
 
 ## Status
 
-**Runs on hardware; FG-2 sound is built and not yet heard.** All four parent sets boot and play on a DE10-nano
+**Runs on hardware, with sound.** All four parent sets boot and play on a DE10-nano
 with 0.482 ns of setup slack on `clk_sys`.
 
 What is built and running:
@@ -73,18 +73,18 @@ What is built and running:
 
 Known issues:
 
-* Raster effects: **one line of gogomile's title cloud moves with the wrong band, and pbancho's bottom
-  strip shows layer fragments where MAME draws black** — the band a raster write lands on is two lines
-  later than MAME's; an OSD switch (`Raster IRQ lead`) fires the interrupt early to test the fix.
-* **The credits text sits one line lower than in MAME.** Unexplained; the framing and the line buffers
-  have been measured exact, see `docs/ROADMAP.md`.
+* Raster effects, both on tilemaps: **one line of gogomile's title cloud scrolls when it should not**,
+  and **pbancho's attract-mode black bands do not cover the sprites correctly**. Firing the raster
+  interrupt one or two lines early (an OSD switch) changes neither, so neither is the band landing
+  late. There is no sprite offset — see `docs/ROADMAP.md` for what has been ruled out.
 
 ### Todo
 
 - [ ] Close the remaining raster faults above
 - [x] Sound: Z80, and the FG-2 chip set (YM2203, YM3812, OKI M6295) — built, simulated, awaiting the ear
-- [ ] Sound: OPL4 — vendor [gtaylormb/opl3_fpga](https://github.com/gtaylormb/opl3_fpga) for the FM
-      half and put Psikyo's PCM wavetable engine on top
+- [x] Sound: OPL4 PCM and the FG-3 Z80 — built, and measured playing on hardware
+- [ ] Sound: the OPL4's FM half — [gtaylormb/opl3_fpga](https://github.com/gtaylormb/opl3_fpga) is
+      vendored; Asura Blade drives FM, Asura Buster does not
 - [x] HDMI rotation and Flip 180, vertical crop, integer scaling, CRT offset — wired, untested
 - [ ] Hiscore support
 - [ ] The DIP Flip Screen in the renderer (both MAME drivers are marked inaccurate. Hidden in MRAs)

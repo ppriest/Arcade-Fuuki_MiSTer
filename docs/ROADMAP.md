@@ -43,7 +43,7 @@ every clock, `clk_sys` setup slack +0.482 ns, 30% of the ALMs and 64% of the RAM
 
 ### Not built
 
-FG-3 sound (the OPL4 work below), the DIP flip screen in the renderer, and hiscore support.
+The OPL4's FM half (the OPL3 below), the DIP flip screen in the renderer, and hiscore support.
 
 **FG-2 sound is built** (`rtl/sound/fg2_sound.sv`): T80 at 6 MHz behind Psikyo's stretched
 req/valid ROM handshake, jt03 (YM2203) and jtopl2 (YM3812) at 3.58 MHz with the OPL2's timer IRQ
@@ -55,6 +55,24 @@ through an 8-entry prefetching granule cache, both as extra clients on SDRAM por
 latencies: the firmware initialises the chips, takes the two commands the captured main-CPU trace
 sends at boot, sequences on the timer interrupt and both FM chips produce output. Whether it
 sounds right is a hardware question.
+
+**FG-3 sound is built and measured on hardware** (`rtl/sound/fg3_sound.sv`): T80 at 6 MHz, the 16
+bytes shared with the 68020 at `0x903FE0` — which replaces the bring-up stub, and which Asura
+Blade proves by booting at all, since its 68020 spins at `0x200F6` until the Z80 writes `0xCD` —
+and Psikyo's OPL4 with its 24-channel PCM engine. Measured over attract with the probe's sound
+chain, counters cleared first:
+
+| | Blade | Buster | gogomile (FG-2) |
+|---|---|---|---|
+| `z80_fetches` | saturated | saturated | saturated |
+| `ym_writes` | 1863 | 9526 → 16423 | 2814 → 8290 |
+| `pcm_keyons` | 46 | 5 → 92 | — (FG-3 field) |
+| `fm_keyons` | 0 | 0 | — (FG-3 field) |
+| `snd_peak` | 110 | 7 → 69 | 31 → 32 |
+
+`snd_peak` is the largest `|audio_l|` since the clear, bits 14:7, so Blade's 110 is about 14,080 of
+32,767. Buster's zero FM key-ons match the `fm_probe.lua` measurement exactly. What is NOT covered:
+the FM half is not built, so whatever Blade drives through FM produces silence.
 
 **The output chain is wired**: CRT offset (`crt_adjust`, from Psikyo) -> `arcade_video` ->
 `video_freak` (vertical crop 216p/224p, integer scale modes, aspect) -> the framework, with
@@ -82,29 +100,26 @@ a one-shot interrupt armed per write — dropped on reading `fuukitmap.cpp`, not
 `vregs_w` schedules the raster timer with a frame-length period and the callback re-arms it, so
 MAME fires it every frame the value stands, as the comparator does.
 
-**Still open, both on the current bitstream:**
+**Still open, both tilemap raster effects:**
 
-- **One line of gogomile's title cloud moves with the wrong band**, and **pbancho's bottom strip
-  shows layer fragments where MAME draws black.** By analysis the band a raster ISR's write lands
-  on is two lines below MAME's: IRQ5 fires at the hblank of line N, the write is caught by the
-  per-line latch at the next hblank and rendered two lines ahead, so it first shows on N+3 where
-  MAME's partial update applies it from N+1. The `Raster IRQ lead` OSD switch (page 1;
-  `cfg.py --set lead=N`) fires IRQ5 one or two lines early to move that band without a rebuild.
-  **Leads 1 and 2 changed nothing on the screen** — the stray line is in the same place at all
-  three settings — so it is not the band boundary landing late. Whatever it is happens at the
-  boundary wherever the boundary falls: the first line after a scroll change. Not pursued further
-  yet.
-- **The credits text sits one line lower than in MAME**, its bottom row lost off the picture.
-  Reported on hardware, unexplained. What has been measured against it:
-  - the framing is exact — the `Line markers` switch draws lines 0 and 239 and both sit on the
-    first and last visible rows, so the visible window is not shifted;
-  - each line buffer is displayed on the line it was rendered for — the probe's `lb_*_delta`
-    fields (fuuki_core.sv, "LINE-BUFFER CHECK") read 0 for layer 1 and for the sprite buffer over
-    hundreds of frames;
-  - the sprite engine puts record row `sy` on display line `sy` in `sim/sprite_tb`, which captures
-    by display `vcnt`, as `fuukispr.cpp` does.
-  What has not been measured is the sprite rows on hardware against the sprite RAM at the same
-  instant; the `linecap` dump region (below) plus a sprite RAM dump is the check.
+- **One line of gogomile's title cloud scrolls when it should not.** The clouds are a five-band
+  layer-2 X-scroll chain driven from the raster interrupt; one line inside it moves with the wrong
+  band. Firing IRQ5 one or two lines early (the `Raster IRQ lead` OSD switch, page 1, or
+  `cfg.py --set lead=N`) moved nothing at all, so it is not the band boundary landing late — it
+  happens at the boundary wherever the boundary falls, on the first line after a scroll change.
+- **pbancho's attract mode draws black bands across the bottom of the screen, and they do not
+  cover the sprites correctly.** The bands are a raster effect on a tilemap; MAME covers the
+  sprites with them and this core does not, so the question is what that layer is putting down on
+  those lines and how the compositor's priority resolves it against a sprite — not where the lines
+  are.
+
+There is **no sprite offset**: an earlier report of the credits text sitting a line low turned out
+to be the scaler, and disappears with scaling off. Everything measured against that hypothesis
+still holds and is worth keeping as ruled-out ground: the framing is exact (the `Line markers`
+switch draws lines 0 and 239 and both land on the first and last visible rows), every line buffer
+is displayed on the line it was rendered for (the probe's `lb_*_delta` fields read 0 for layer 1
+and for the sprite buffer over hundreds of frames), and `sim/sprite_tb` puts record row `sy` on
+display line `sy`, as `fuukispr.cpp` does.
 
 **Instruments added for this**, all in the current bitstream: the line-buffer row-tag check on the
 probe (`read_issp.tcl`: `lb_tm1_delta`, `lb_spr_delta`, and saturating `lb_*_bad` counters); dump
@@ -509,8 +524,10 @@ position, so the flipped image is not a rotation of the unflipped one.
 ones Psikyo's bring-up asked -- does every fetch meet its deadline behind the priority chain, does
 the mix balance match the board.
 
-**FG-3 sound.** The OPL4, built as described below, and the real Z80 in place of the shared-RAM
-handshake stub in `rtl/fuuki_core.sv`.
+**FG-3's FM half.** The PCM half and the Z80 are done and measured; what remains is the OPL3
+(`rtl/sound/opl3/`, vendored from gtaylormb/opl3_fpga and checked free of vendor primitives)
+driven from the OPL4's ports `0x40-0x43`, with its output added to the DO2 mix under the F8
+attenuator. Status, timers and IRQ stay with the proven `opl4_regs`, so the PCM path is untouched.
 
 **Polish.** Hiscores, then the remaining clone sets and region variants, and savestates (Psikyo's
 `docs/savestates.md` is the feasibility study; the same TG68K/RAM/audio arguments apply).
@@ -765,10 +782,10 @@ reading of `fuukispr.cpp`. See "Sprites" above; the discrepancy is unexplained.
 
 1. **The two open video faults** — gogomile's title-cloud jitter and pbancho's bottom strip. See
    "Progress" above for what has been tried and what the driver reading changed.
-2. **Raster bands land two lines later than MAME's**, because the engines render two lines ahead
-   of the display and the ISR's write is caught a line after the interrupt. Reducing the lead is
-   ruled out (the render window); firing IRQ5 early is the `Raster IRQ lead` switch, to be settled
-   on the screen.
+2. **Raster bands land two lines later than MAME's** by analysis — the engines render two lines
+   ahead and the ISR's write is caught a line after the interrupt. Reducing the lead is ruled out
+   (the render window); firing IRQ5 early is the `Raster IRQ lead` switch, and on hardware it
+   changed neither open fault, so this offset may not be what either of them is.
 3. **Layer-order values 6-15** — MAME indexes a 6-entry table with `priority & 0x0f`, so those read
    out of bounds. The RTL picks a defined behaviour; check whether any game writes them.
 4. **Flip screen** — both drivers state scroll values are wrong when flipped, so the reference

@@ -29,8 +29,9 @@ from tracer_readout import issp     # noqa: E402
 
 HW = REPO / "scripts" / "hw.py"
 OUT = REPO / "debug" / "hw" / "soak"
-FIELDS = ("frames", "cpu_reads", "irq1_pulses", "iack_level1",
-          "irq1_pending", "irq3_pending", "irq5_pending", "z80_fetches", "pause_latched")
+FIELDS = ("frames", "irq1_pulses", "iack_level1",
+          "irq1_pending", "irq3_pending", "irq5_pending", "z80_fetches", "pause_latched",
+          "ym_writes", "pcm_keyons", "fm_keyons", "snd_peak")
 
 
 def probe(clear=False):
@@ -66,7 +67,8 @@ def main():
             sys.exit(f"launch failed: {r.stdout[-200:]}")
         # ROM download: ~12 s for an FG-2 set, ~45 s for FG-3's 59 MB
         time.sleep(45 if a.game.startswith("asura") else 12)
-    print(f"{'t':>5s} {'frames':>6s} {'reads':>6s} {'irq1':>5s} {'iack1':>5s} pend(5,3,1) {'pc(word)':>9s} frame")
+    print(f"{'t':>5s} {'frames':>6s} {'irq1':>5s} {'iack1':>5s} pend(5,3,1) "
+          f"{'z80':>9s} {'ymwr':>8s} {'pcm':>5s} {'fm':>4s} {'peak':>5s} frame")
     prev = None
     same = 0
     t0 = time.time()
@@ -81,8 +83,10 @@ def main():
         same = same + 1 if h == prev else 0
         prev = h
         pend = f"{v['irq5_pending'][0]}{v['irq3_pending'][0]}{v['irq1_pending'][0]}"
-        print(f"{int(time.time()-t0):5d} {v['frames']:>6s} {v['cpu_reads']:>6s} {v['irq1_pulses']:>5s} "
-              f"{v['iack_level1']:>5s} {pend:^11s} {v['z80_fetches']:>9s} {changed}"
+        print(f"{int(time.time()-t0):5d} {v['frames']:>6s} {v['irq1_pulses']:>5s} "
+              f"{v['iack_level1']:>5s} {pend:^11s} {v['z80_fetches']:>9s} "
+              f"{v['ym_writes']:>8s} {v['pcm_keyons']:>5s} {v['fm_keyons']:>4s} "
+              f"{v['snd_peak']:>5s} {changed}"
               + ("  pause" if v["pause_latched"] == "yes" else ""))
         if same >= 3:
             print(f"  frame unchanged for {same} samples -- hung? (z80 fetches {v['z80_fetches']})")

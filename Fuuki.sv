@@ -64,11 +64,12 @@ assign HDMI_FREEZE = 0;
 assign HDMI_BLACKOUT = 0;
 assign HDMI_BOB_DEINT = 0;
 
-// FG-2's mono mix on both channels, signed. FG-3 is silent until the OPL4.
-wire signed [15:0] core_audio;
+// Signed. FG-2's mix is mono and goes to both channels; FG-3's OPL4 is
+// stereo. rtl/fuuki_core.sv picks between the two boards' sound.
+wire signed [15:0] core_audio_l, core_audio_r;
 assign AUDIO_S   = 1;
-assign AUDIO_L   = core_audio;
-assign AUDIO_R   = core_audio;
+assign AUDIO_L   = core_audio_l;
+assign AUDIO_R   = core_audio_r;
 assign AUDIO_MIX = 0;
 
 assign LED_DISK  = 0;
@@ -581,7 +582,7 @@ fuuki_core u_core (
 	.video_hs(core_hs), .video_vs(core_vs),
 	.video_hb(core_hb), .video_vb(core_vb),
 	.video_ce(core_ce),
-	.audio(core_audio),
+	.audio_l(core_audio_l), .audio_r(core_audio_r),
 
 	.dbg_frame_start(dbg_frame_start), .dbg_line_start(dbg_line_start),
 	.dbg_spr_ovr(dbg_spr_ovr), .dbg_cpu_req(dbg_cpu_req),
@@ -601,6 +602,7 @@ fuuki_core u_core (
 	.dbg_irq_pending(dbg_irq_pending), .dbg_iack(dbg_iack), .dbg_iack_level(dbg_iack_level),
 	.dbg_irq1_trig(dbg_irq1_trig), .dbg_lb_check(dbg_lb_check),
 	.dbg_z80_m1(dbg_z80_m1), .dbg_ym_wr(dbg_ym_wr),
+	.dbg_pcm_keyon(dbg_pcm_keyon), .dbg_fm_keyon(dbg_fm_keyon),
 	.dbg_frozen(dbg_frozen)
 );
 
@@ -776,7 +778,7 @@ wire       ctr_clear = probe_src[0];
 wire [2:0] dbg_irq_pending, dbg_iack_level;
 wire       dbg_iack, dbg_irq1_trig;
 wire [15:0] dbg_lb_check;   // {spr_delta, tm1_delta, spr_bad, tm1_bad}, see fuuki_core.sv
-wire        dbg_z80_m1, dbg_ym_wr;
+wire        dbg_z80_m1, dbg_ym_wr, dbg_pcm_keyon, dbg_fm_keyon;
 reg  [7:0] c_irq1  = 8'd0;   // irq1_trig pulses (one per frame when healthy)
 reg  [4:0] c_iack1 = 5'd0;   // level-1 acknowledge cycles
 reg        iack_d  = 1'b0;
@@ -790,7 +792,7 @@ always @(posedge clk_sys) begin
 	end
 end
 
-wire [15:0] c_frames, c_ovr, c_cpu, c_gfx;
+wire [15:0] c_frames, c_ovr, c_gfx;
 debug_counter #(.W(16)) u_c_frames (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_frame_start), .count(c_frames));
 // core_reset RISING EDGES. A CPU that keeps re-reading its reset vector is
 // either taking exceptions or being reset; this tells the two apart. Counted
@@ -817,19 +819,42 @@ always @(posedge clk_sys) begin
 	else if (pll_seen_lock && !pll_locked) pll_unlock <= 1'b1;
 end
 debug_counter #(.W(16)) u_c_ovr    (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_spr_ovr),     .count(c_ovr));
-debug_counter #(.W(16)) u_c_cpu    (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_cpu_req),     .count(c_cpu));
 debug_counter #(.W(16)) u_c_gfx    (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_gfx_req),     .count(c_gfx));
 wire dl_seen;
 debug_sticky u_dl_seen (.clk(clk_sys), .clear(ctr_clear), .ev(ioctl_wr && ioctl_index == 16'd0), .seen(dl_seen));
 
-// SOUND: the Z80 running (opcode fetches) and driving the FM chips (writes)
-// are the two facts a silent core needs told apart. Both saturate at 65535;
-// clear and read again for a rate. They replace the main-CPU fetch pair
-// (last_rom_addr / last_rom_data), which answered a boot question both
-// games have since passed.
+// SOUND, as a chain that says WHERE a silence begins. The Z80 running
+// (opcode fetches), the Z80 reaching the chips (writes), voices actually
+// being asked for (key-ons, FG-3's OPL4), and the mix moving at all
+// (snd_peak). Each is meaningless alone and decisive in sequence: fetches
+// with no writes is an I/O or latch fault, writes with no key-ons is a
+// driver that never starts a voice, key-ons with no peak is a synthesis or
+// sample-path fault. The counters saturate; clear and read again for a rate.
+//
+// FM key-ons are counted deliberately even though nothing plays them yet:
+// the OPL4's FM half is not built, so this is the measure of what Asura
+// Blade is asking for and Asura Buster is not.
 wire [15:0] c_z80_m1, c_ym_wr;
+wire [7:0]  c_pcm_kon;
+wire [4:0]  c_fm_kon;
 debug_counter #(.W(16)) u_c_z80m1 (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_z80_m1), .count(c_z80_m1));
 debug_counter #(.W(16)) u_c_ymwr  (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_ym_wr),  .count(c_ym_wr));
+debug_counter #(.W(8))  u_c_pcmkon(.clk(clk_sys), .clear(ctr_clear), .ev(dbg_pcm_keyon), .count(c_pcm_kon));
+debug_counter #(.W(5))  u_c_fmkon (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_fm_keyon),  .count(c_fm_kon));
+
+// PEAK of |audio_l| since the last clear, top 8 bits. "Is anything coming
+// out" is otherwise unanswerable over a probe: the mix is a moving signal
+// and any single sample of it may legitimately be zero. A peak that stays
+// at 0 with key-ons counting is the sharpest evidence of a silent chip
+// there is. Absolute value, saturating the negative extreme rather than
+// wrapping it to itself.
+wire signed [15:0] aud_abs = core_audio_l[15] ? (core_audio_l == 16'sh8000 ? 16'sh7FFF : -core_audio_l)
+                                              : core_audio_l;
+reg [7:0] snd_peak = 8'd0;
+always @(posedge clk_sys) begin
+	if (ctr_clear)                      snd_peak <= 8'd0;
+	else if (aud_abs[14:7] > snd_peak) snd_peak <= aud_abs[14:7];
+end
 
 // HIGHEST download address written, in 512-byte units. The trace buffer can
 // freeze on a pause between .mra parts and look like the end of the transfer;
@@ -848,13 +873,14 @@ issp_probe #(.INSTANCE_ID("F"), .PROBE_W(128), .SOURCE_W(32)) u_probe (
 		c_dl_edges,          // 127..122  ioctl_download rising edges, any index
 		pll_unlock,          // 121
 		dbg_lb_check,        // 120..105  line-buffer check: {spr_delta, tm1_delta, spr_bad, tm1_bad}
-		5'd0, c_z80_m1,      // 104..84  [99:84] Z80 opcode fetches
+		c_fm_kon, c_z80_m1,  // 104..84  [104:100] OPL4 FM key-ons, [99:84] Z80 fetches
 		dbg_frozen,          //  83  ring mode: has the buffer stopped moving
 		pause_latched,       //  82
 		ioctl_download,      //  81
 		dl_seen,             //  80
 		c_ym_wr,             //  79..64  writes to the FM chips
-		c_cpu,               //  63..48
+		c_pcm_kon,           //  63..56  OPL4 PCM key-ons
+		snd_peak,            //  55..48  peak |audio_l| since clear, bits 14:7
 		dbg_irq_pending,     //  47..45  {irq5, irq3, irq1} pending
 		c_iack1,             //  44..40  level-1 acknowledges (wraps)
 		c_irq1,              //  39..32  irq1 (line 248) pulses (wraps)

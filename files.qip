@@ -192,9 +192,18 @@ set_global_assignment -name VERILOG_FILE rtl/sound/jt6295/hdl/jt6295_serial.v
 set_global_assignment -name VERILOG_FILE rtl/sound/jt6295/hdl/jt6295_sh_rst.v
 set_global_assignment -name VERILOG_FILE rtl/sound/jt6295/hdl/jt6295_timing.v
 
-# The board: Z80 glue, the three chips, the mix; and the OKI's sample cache.
+# ---- FG-3 sound ----
+# The OPL4 (YMF278B): full bus protocol, timers with IRQ, and the 24-channel
+# PCM wavetable engine, taken from the Psikyo core where it runs on hardware.
+# Its FM half is not built there; the OPL3 that fills that gap is separate.
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl4/opl4.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl4/opl4_regs.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl4/opl4_pcm.sv
+
+# The boards: Z80 glue, the chips, the mix; and the shared sample cache.
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/sample_cache.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/fg2_sound.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/fg3_sound.sv
 
 # The core proper, then the framework glue.
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/fuuki_core.sv

@@ -116,16 +116,18 @@ module fuuki_sdram_top (
 	output logic        cpu_valid,
 	output logic [15:0] cpu_data,
 
-	// ---- FG-2 sound: Z80 program bytes and OKI sample bytes ----
-	// Both are offsets within their region; the bases are added here.
+	// ---- sound: Z80 program bytes and sample bytes, either board ----
+	// Both are offsets within their region; the bases are added here, so the
+	// same two ports serve FG-2's Z80 + OKI samples (128 KB + 1 MB) and
+	// FG-3's Z80 + OPL4 wave ROM (512 KB + 4 MB).
 	input  logic        z80_req,
-	input  logic [16:0] z80_addr,
+	input  logic [18:0] z80_addr,
 	output logic        z80_valid,
 	output logic [7:0]  z80_data,
-	input  logic        oki_req,       // held until valid
-	input  logic [19:0] oki_addr,
-	output logic        oki_valid,
-	output logic [7:0]  oki_data,
+	input  logic        smp_req,       // held until valid
+	input  logic [21:0] smp_addr,
+	output logic        smp_valid,
+	output logic [7:0]  smp_data,
 
 	// One pulse per download write the arbiter actually ACCEPTS. Counted into
 	// the JTAG probe, because "the ROM stream reached the core" and "the ROM
@@ -379,30 +381,32 @@ module fuuki_sdram_top (
 		.g_valid(z80_g_valid), .g_data(z80_g_data)
 	);
 
-	// The OKI's four channels interleave on one bus, so it gets the
-	// multi-entry prefetching cache (rtl/sound/sample_cache.sv).
-	logic        oki_g_req, oki_g_valid;
-	logic [25:0] oki_g_addr;
-	logic [63:0] oki_g_data;
-	sample_cache #(.ENTRIES(8)) u_oki_cache (
+	// Sample streams interleave many channels on one bus -- the OKI's four,
+	// the OPL4's twenty-four -- so consecutive fetches belong to different
+	// streams and a single cached granule would evict on every one. Hence
+	// the multi-entry prefetching cache (rtl/sound/sample_cache.sv).
+	logic        smp_g_req, smp_g_valid;
+	logic [25:0] smp_g_addr;
+	logic [63:0] smp_g_data;
+	sample_cache #(.ENTRIES(16)) u_smp_cache (
 		.clk(clk), .reset(reset), .inval(ioctl_download),
-		.req(oki_req), .addr(26'(oki_addr) + base_oki),
-		.valid(oki_valid), .data(oki_data),
-		.g_req(oki_g_req), .g_addr(oki_g_addr),
-		.g_valid(oki_g_valid), .g_data(oki_g_data)
+		.req(smp_req), .addr(26'(smp_addr) + base_oki),
+		.valid(smp_valid), .data(smp_data),
+		.g_req(smp_g_req), .g_addr(smp_g_addr),
+		.g_valid(smp_g_valid), .g_data(smp_g_data)
 	);
 
-	// Three clients on port 2: main CPU, Z80, OKI. Packed 26 bits each, the
-	// width sdram_arbiter unpacks with -- see the note above port 0.
+	// Three clients on port 2: main CPU, Z80, samples. Packed 26 bits each,
+	// the width sdram_arbiter unpacks with -- see the note above port 0.
 	logic [2:0] p2_req_v, p2_valid_v;
 	logic [63:0] p2_rdata;
-	assign p2_req_v    = {oki_g_req, z80_g_req, cpu_g_req};
+	assign p2_req_v    = {smp_g_req, z80_g_req, cpu_g_req};
 	assign cpu_g_valid = p2_valid_v[0];
 	assign z80_g_valid = p2_valid_v[1];
-	assign oki_g_valid = p2_valid_v[2];
+	assign smp_g_valid = p2_valid_v[2];
 	assign cpu_g_data  = p2_rdata;
 	assign z80_g_data  = p2_rdata;
-	assign oki_g_data  = p2_rdata;
+	assign smp_g_data  = p2_rdata;
 
 	// One download port on the arbiter, driven by whichever loader is live.
 	// dbg_dl_wr counts the arbiter's accepted writes either way, so the probe
@@ -422,7 +426,7 @@ module fuuki_sdram_top (
 		.phy_req(phy_req[2]), .phy_we(phy_we[2]), .phy_we16(phy_we16[2]),
 		.phy_addr(phy_addr[2]), .phy_wdata(phy_wdata[2]),
 		.phy_busy(phy_busy[2]), .phy_valid(phy_valid[2]), .phy_rdata(phy_rdata[2]),
-		.c_req(p2_req_v), .c_addr({oki_g_addr, z80_g_addr, cpu_g_addr}),
+		.c_req(p2_req_v), .c_addr({smp_g_addr, z80_g_addr, cpu_g_addr}),
 		.c_valid(p2_valid_v), .c_rdata(p2_rdata),
 		.dl_req(arb_dl_req), .dl_addr(arb_dl_addr), .dl_data(arb_dl_data),
 		.dl_we16(arb_dl_we16), .dl_busy(arb_dl_busy)

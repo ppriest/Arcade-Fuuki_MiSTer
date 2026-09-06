@@ -140,6 +140,7 @@ set_multicycle_path -hold  -from $kernel_k -to $core_k 1
 # The first sound build failed on T80-internal F/IR ALU-flag paths alone:
 # -1.258 ns worst, all fifteen reported endpoints inside T80:u0. Psikyo hit
 # the same family and audited it before relaxing:
+# Both boards' Z80s are covered: they are the same core on the same enable.
 #   1. No half-cycle paths to sweep in: no falling_edge anywhere in
 #      rtl/cpu/t80/, and every clocked process in T80se.vhd / T80.vhd /
 #      T80_Reg.vhd is rising-edge gated by CEN/ClkEn. The one CEN-ungated
@@ -152,7 +153,7 @@ set_multicycle_path -hold  -from $kernel_k -to $core_k 1
 # margin). T80 -> anywhere gets 2: fg2_sound samples the T80's bus pins at
 # full clk rate, and seeing a value one cycle later costs 1 of the ~14 cycles
 # its handshakes actually have. Paths INTO the T80 stay single-cycle.
-set t80 [get_registers {*|fg2_sound:u_snd|T80se:u_cpu|*}]
+set t80 [get_registers {*|fg2_sound:u_snd2|T80se:u_cpu|* *|fg3_sound:u_snd3|T80se:u_cpu|*}]
 if {[get_collection_size $t80] > 0} {
     set_multicycle_path -setup -end 2 -from $t80 -to [all_registers]
     set_multicycle_path -hold  -end 1 -from $t80 -to [all_registers]
@@ -190,3 +191,97 @@ if {[get_collection_size $jtsrc] > 0 && [get_collection_size $jtdst] > 0} {
     post_message -type critical_warning \
         "Fuuki.sdc: jt12 phase-generator multicycle NOT applied (empty collection)"
 }
+
+# ===========================================================================
+# OPL4 (FG-3). Both exceptions below are the Psikyo core's, transferred with
+# their audits unchanged -- the module is the same file, the register names
+# are the same, and the enable cadence is the same, because that core's
+# clk_sys is 945/11 MHz exactly as this one's is (see E:\Arcade-Psikyo_MiSTer).
+# Without them this design closes at +0.078 ns with the OPL4 in it, margin
+# thin enough to be a fitter-seed lottery.
+# ===========================================================================
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# OPL4 PCM engine -- runs on a clock enable, so everything inside it is 2-cycle
+# ---------------------------------------------------------------------------
+# opl4_pcm's FSM used to advance on every clk_sys edge. That made every path
+# inside it a genuine single-cycle path, which is why the two entries below
+# had to be narrow and argued case by case, and why the envelope rate chain
+# (c_oct/c_rc -> p_eg_inc) kept coming back as the design's worst family with
+# nothing legitimate to constrain.
+#
+# The engine now advances only on opl4.sv's pcm_cen, which is high every
+# other clk_sys cycle. It has the cycles: measured in simulation against the
+# real opl4 with all 24 channels keyed on, a pass took 553 of the 1948
+# clk_sys cycles between sample ticks before the change and 962 after -- 49%
+# of budget, so it still finishes with room.
+#
+# Audit (rtl/sound/opl4/opl4_pcm.sv). The whole case statement sits inside
+# `if (cen)`, so every register written there launches and captures only on
+# cen edges: two clk_sys periods, unconditionally, with no dependence on
+# which state follows which. That is a stronger argument than the state-
+# distance ones below, and it subsumes them -- they are left in place because
+# they are the same setup value and cost nothing, not because they are still
+# load-bearing.
+#
+# EXCLUDED, and this is the part that matters. A handful of registers in that
+# module are deliberately written at FULL rate and would be over-constrained
+# by a blanket rule:
+#   * fr_mem_valid / fr_mem_data, tick_pending, load_pending / load_ch --
+#     latches for one-clk_sys-wide pulses (mem_rd_valid, sample_tick,
+#     wavesel_stb) that a cen-only engine would otherwise miss.
+#   * mem_rd_req, pcm_hdr_we, key_consume -- cleared on every edge so they
+#     stay one cycle wide for opl4.sv's arbiter and opl4_regs. Their data
+#     inputs are therefore evaluated every edge.
+#   * ch_key -- a separate always_ff that is not cen-gated at all.
+# They are removed from both ends of the exception, so a path from a
+# full-rate latch into the engine still gets one cycle, which is what the
+# hardware does.
+set opl4all [get_registers {*|opl4_pcm:u_pcm|*}]
+set opl4fr  [get_registers {*|opl4_pcm:u_pcm|fr_mem_valid *|opl4_pcm:u_pcm|fr_mem_data[*] *|opl4_pcm:u_pcm|tick_pending *|opl4_pcm:u_pcm|load_pending *|opl4_pcm:u_pcm|load_ch[*] *|opl4_pcm:u_pcm|mem_rd_req *|opl4_pcm:u_pcm|pcm_hdr_we *|opl4_pcm:u_pcm|key_consume *|opl4_pcm:u_pcm|ch_key[*]}]
+set opl4cen [remove_from_collection $opl4all $opl4fr]
+if {[get_collection_size $opl4cen] > 0} {
+    set_multicycle_path -setup -end 2 -from $opl4cen -to $opl4cen
+    set_multicycle_path -hold  -end 1 -from $opl4cen -to $opl4cen
+} else {
+    post_message -type critical_warning         "Fuuki.sdc: OPL4 PCM cen multicycle NOT applied (empty collection)"
+}
+
+# OPL4 PCM output accumulate -> acc_l / acc_r
+#
+# With the envelope family above constrained, every remaining violated
+# clk_sys path (all 400 sampled) converges on one destination family:
+# opl4_pcm's acc_l/acc_r. S_OUT does two multiplies and two table lookups in
+# a single cycle:
+#     c_amd -> am_depth_f -> (* lfo_tri) -> am_add ---+
+#     ch_env, ch_tl[16:8] ----------------------------+-> os_env_eff
+#     c_pan -> pan_att_l/r -> pan_l/r ----------------+-> os_lenv/os_renv
+#          -> att2vol -> os_lvol/os_rvol -> (* w_sample) -> acc_l/acc_r
+#
+# Audit (rtl/sound/opl4/opl4_pcm.sv). S_OUT is reachable only via
+# S_CALC -> S_ENV -> S_FETCH0 [-> S_FETCH1] -> S_OUT, one state per clk:
+#   * c_amd and w_lfo are latched at the edge ending S_CALC -> 3 edges to
+#     S_OUT. c_pan is latched back in S_RD1, so more still.
+#   * ch_env and ch_tl are written in S_ENV -> 2 edges to S_OUT. Their only
+#     earlier readers are the next channel's S_RD1/S_CALC, a whole slot
+#     later.
+#   * am_add, pan_l and pan_r are read ONLY in S_OUT -- nothing consumes
+#     them a cycle after their sources are latched.
+# So 2 is the tightest available window across the listed sources; setup 2
+# doubles the budget, which is enough for a path measured at ~19 ns.
+#
+# w_sample is deliberately EXCLUDED as a source: it is written in
+# S_FETCH0/S_FETCH1 and consumed in S_OUT on the very next edge, so the
+# final multiply stays a full-rate path. acc_l/acc_r as sources are likewise
+# excluded -- listing only the named registers keeps that single-cycle
+# feedback out of the exception.
+set accsrc [get_registers {*|opl4_pcm:u_pcm|c_amd[*] *|opl4_pcm:u_pcm|c_pan[*] *|opl4_pcm:u_pcm|w_lfo[*] *|opl4_pcm:u_pcm|ch_env[*] *|opl4_pcm:u_pcm|ch_tl[*]}]
+set accdst [get_registers {*|opl4_pcm:u_pcm|acc_l[*] *|opl4_pcm:u_pcm|acc_r[*]}]
+if {[get_collection_size $accsrc] > 0 && [get_collection_size $accdst] > 0} {
+    set_multicycle_path -setup -end 2 -from $accsrc -to $accdst
+    set_multicycle_path -hold  -end 1 -from $accsrc -to $accdst
+} else {
+    post_message -type critical_warning \
+        "Fuuki.sdc: OPL4 PCM accumulate multicycle NOT applied (empty collection)"
+}
+

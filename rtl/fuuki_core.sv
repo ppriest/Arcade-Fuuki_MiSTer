@@ -96,8 +96,10 @@ module fuuki_core (
 	output logic        video_vb,
 	output logic        video_ce,
 
-	// ---- audio: FG-2's mono mix, signed. Silent on FG-3 (no OPL4 yet). ----
-	output logic signed [15:0] audio,
+	// ---- audio, signed. FG-2's mono mix goes to both channels; FG-3's
+	// OPL4 is stereo. ----
+	output logic signed [15:0] audio_l,
+	output logic signed [15:0] audio_r,
 
 	// ---- for the JTAG probe ----
 	output logic        dbg_frame_start,
@@ -115,8 +117,10 @@ module fuuki_core (
 	output logic [2:0]  dbg_iack_level,  // level on A3..A1 during it
 	output logic        dbg_irq1_trig,   // the line-248 interrupt source, one clk per frame
 	output logic [15:0] dbg_lb_check,    // line-buffer row tags vs display line, see LINE-BUFFER CHECK
-	output logic        dbg_z80_m1,      // one pulse per Z80 opcode fetch
-	output logic        dbg_ym_wr,       // one pulse per write to either FM chip
+	output logic        dbg_z80_m1,      // one pulse per Z80 opcode fetch, either board
+	output logic        dbg_ym_wr,       // one pulse per write to a sound chip, either board
+	output logic        dbg_pcm_keyon,   // FG-3: OPL4 PCM voice keyed on
+	output logic        dbg_fm_keyon,    // FG-3: OPL4 FM voice keyed on (nothing plays it yet)
 
 	// ---- trace-to-screen controls (see the debug_tracer instance) ----
 	input  logic        dbg_overlay,
@@ -243,35 +247,10 @@ module fuuki_core (
 	assign dbg_rom_valid = rom_valid;
 	assign dbg_rom_data  = rom_data;
 
-	// FG-3 SHARED RAM, WITH A FAKE Z80 HANDSHAKE FOR BRING-UP. The 16 bytes
-	// at 0x903FE0 (odd bytes; MAME numbers the umask32 0x00ff00ff lanes
-	// consecutively) are the Z80's 0x7FF0-0x7FFF. srom.u7's protocol, read
-	// from the firmware: at boot the Z80 writes 0xCD to byte 0 and spins
-	// until the 68020 replaces it with 0xAE, then clears it; its main loop
-	// then watches bytes 0,2,4,6,8,A for a command whose high nibble is 0xA
-	// (the odd byte after it is the parameter) and clears the byte when the
-	// command is taken. asurabld's boot spins at 0x200F6 until byte 0 reads
-	// 0xCD, so with no Z80 the 68020 never leaves reset code.
-	//
-	// Until the sound CPU exists this block plays that role: byte 0 powers
-	// up as 0xCD, an 0xAE written there is cleared, and an 0xAx command in
-	// an even slot is cleared a few hundred clocks later. REMOVE when the Z80
-	// is wired; it must do all of this itself.
-	logic [7:0] sharedram [0:15] = '{8'hCD, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00,
-	                                 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00, 8'h00};
-	logic [7:0] sharedram_q;
-	logic [11:0] fake_z80_tick = '0;                 // one slot visited per 256 clocks
-	wire  [3:0]  fake_slot = {fake_z80_tick[10:8], 1'b0};   // 0,2,4,...,E
-	wire  [7:0]  fake_val  = sharedram[fake_slot];
-	wire         fake_clear = (fake_z80_tick[7:0] == 8'hFF) &&
-	                          ((fake_slot == 4'd0 && fake_val == 8'hAE) || (fake_val[7:4] == 4'hA));
-	always_ff @(posedge clk) begin
-		fake_z80_tick <= fake_z80_tick + 12'd1;
-		if (sharedram_we)      sharedram[sharedram_addr] <= sharedram_wdata;   // CPU wins
-		else if (fake_clear)   sharedram[fake_slot]      <= 8'h00;
-		sharedram_q <= sharedram[sharedram_addr];
-	end
-	assign sharedram_rdata = sharedram_q;
+	// FG-3's 16 shared bytes at 0x903FE0 are inside rtl/sound/fg3_sound.sv,
+	// which is where the Z80 that answers on them lives. The bring-up stub
+	// that used to play the Z80's side of srom.u7's handshake from here is
+	// gone with it.
 
 	// =====================================================================
 	// Work RAM -- 64K x 16, one array serves both boards
@@ -977,12 +956,12 @@ module fuuki_core (
 	// framework's RESET -- see this file's header and the port comment in
 	// fuuki_sdram_top.sv.
 	// =====================================================================
-	// FG-2 sound's two memory clients (declared before the backend that serves them)
-	logic        z80_rom_req, z80_rom_valid, oki_req, oki_valid;
-	logic [16:0] z80_rom_addr;
-	logic [19:0] oki_addr;
-	logic [7:0]  z80_rom_data, oki_data;
-	logic signed [15:0] snd_audio;
+	// The sound boards' two memory clients, declared before the backend that
+	// serves them. One pair of ports, whichever board is running.
+	logic        z80_rom_req, z80_rom_valid, smp_req, smp_valid;
+	logic [18:0] z80_rom_addr;
+	logic [21:0] smp_addr;
+	logic [7:0]  z80_rom_data, smp_data;
 
 	fuuki_sdram_top u_sdram (
 		.board(board),
@@ -1011,20 +990,23 @@ module fuuki_core (
 		.cpu_valid(rom_valid), .cpu_data(rom_data),
 		.z80_req(z80_rom_req), .z80_addr(z80_rom_addr),
 		.z80_valid(z80_rom_valid), .z80_data(z80_rom_data),
-		.oki_req(oki_req), .oki_addr(oki_addr),
-		.oki_valid(oki_valid), .oki_data(oki_data),
+		.smp_req(smp_req), .smp_addr(smp_addr),
+		.smp_valid(smp_valid), .smp_data(smp_data),
 		.dbg_dl_wr(dbg_dl_wr), .dbg_dl_addr(dl_addr_dbg)
 	);
 
 	// =====================================================================
-	// FG-2 SOUND (rtl/sound/fg2_sound.sv). Held in reset on FG-3, whose
-	// sound hardware is the OPL4 board and is not built.
+	// SOUND. One board runs, the other is held in reset: FG-2's Z80 with the
+	// YM2203 / YM3812 / OKI set (rtl/sound/fg2_sound.sv), FG-3's Z80 with the
+	// OPL4 (rtl/sound/fg3_sound.sv). Both are synthesized, because one .rbf
+	// serves both boards.
 	//
 	// Clock enables, all exact on the 85.909 MHz grid (14.318181 x 6):
-	//   Z80    6 MHz      66/945
-	//   YM     3.58 MHz   1/24      (28.640 / 8 = 85.909 / 24)
+	//   Z80    6 MHz      66/945   (both boards: 12 MHz / 2)
+	//   YM     3.58 MHz   1/24     (28.640 / 8 = 85.909 / 24)
 	//   OKI    1 MHz      11/945
-	// The fractional ones are Bresenham accumulators, as the main CPU's.
+	// The fractional ones are Bresenham accumulators, as the main CPU's. The
+	// OPL4 derives its own 33.8688 MHz enable internally.
 	// =====================================================================
 	logic [9:0] cen_z80_acc = 10'd0, cen_oki_acc = 10'd0;
 	logic [4:0] cen_ym_cnt  = 5'd0;
@@ -1038,18 +1020,54 @@ module fuuki_core (
 	assign cen_oki = (cen_oki_acc >= 10'd945 - 10'd11);
 	assign cen_ym  = (cen_ym_cnt == 5'd0);
 
+	wire snd_fg3 = (board == BOARD_FG3);
 
-	fg2_sound u_snd (
-		.clk(clk), .reset(core_reset || (board == BOARD_FG3)),
+	logic        fg2_rom_req, fg2_smp_req;
+	logic [16:0] fg2_rom_addr;
+	logic [19:0] fg2_smp_addr;
+	logic signed [15:0] fg2_audio;
+	logic        fg2_m1, fg2_ym_wr;
+
+	fg2_sound u_snd2 (
+		.clk(clk), .reset(core_reset || snd_fg3),
 		.cen_z80(cen_z80), .cen_ym(cen_ym), .cen_oki(cen_oki),
 		.latch_data(latch_data), .latch_write(latch_write),
-		.rom_req(z80_rom_req), .rom_addr(z80_rom_addr),
-		.rom_valid(z80_rom_valid), .rom_data(z80_rom_data),
-		.oki_req(oki_req), .oki_addr(oki_addr),
-		.oki_valid(oki_valid), .oki_data(oki_data),
-		.audio(snd_audio),
-		.dbg_m1(dbg_z80_m1), .dbg_ym_wr(dbg_ym_wr)
+		.rom_req(fg2_rom_req), .rom_addr(fg2_rom_addr),
+		.rom_valid(z80_rom_valid && !snd_fg3), .rom_data(z80_rom_data),
+		.oki_req(fg2_smp_req), .oki_addr(fg2_smp_addr),
+		.oki_valid(smp_valid && !snd_fg3), .oki_data(smp_data),
+		.audio(fg2_audio),
+		.dbg_m1(fg2_m1), .dbg_ym_wr(fg2_ym_wr)
 	);
-	assign audio = (board == BOARD_FG3) ? 16'sd0 : snd_audio;
+
+	logic        fg3_rom_req, fg3_smp_req;
+	logic [18:0] fg3_rom_addr;
+	logic [21:0] fg3_smp_addr;
+	logic signed [15:0] fg3_audio_l, fg3_audio_r;
+	logic        fg3_m1, fg3_opl4_wr;
+
+	fg3_sound u_snd3 (
+		.clk(clk), .reset(core_reset || !snd_fg3),
+		.cen_z80(cen_z80),
+		.host_addr(sharedram_addr), .host_we(sharedram_we),
+		.host_wdata(sharedram_wdata), .host_rdata(sharedram_rdata),
+		.rom_req(fg3_rom_req), .rom_addr(fg3_rom_addr),
+		.rom_valid(z80_rom_valid && snd_fg3), .rom_data(z80_rom_data),
+		.wave_req(fg3_smp_req), .wave_addr(fg3_smp_addr),
+		.wave_valid(smp_valid && snd_fg3), .wave_data(smp_data),
+		.audio_l(fg3_audio_l), .audio_r(fg3_audio_r),
+		.dbg_m1(fg3_m1), .dbg_opl4_wr(fg3_opl4_wr),
+		.dbg_fm_keyon(dbg_fm_keyon), .dbg_pcm_keyon(dbg_pcm_keyon)
+	);
+
+	assign z80_rom_req  = snd_fg3 ? fg3_rom_req : fg2_rom_req;
+	assign z80_rom_addr = snd_fg3 ? fg3_rom_addr : 19'(fg2_rom_addr);
+	assign smp_req      = snd_fg3 ? fg3_smp_req : fg2_smp_req;
+	assign smp_addr     = snd_fg3 ? fg3_smp_addr : 22'(fg2_smp_addr);
+
+	assign audio_l = snd_fg3 ? fg3_audio_l : fg2_audio;
+	assign audio_r = snd_fg3 ? fg3_audio_r : fg2_audio;
+	assign dbg_z80_m1 = snd_fg3 ? fg3_m1     : fg2_m1;
+	assign dbg_ym_wr  = snd_fg3 ? fg3_opl4_wr : fg2_ym_wr;
 
 endmodule

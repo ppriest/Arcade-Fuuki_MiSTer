@@ -22,13 +22,15 @@ set fields {
     {irq1_pending    45  45 bit}
     {irq3_pending    46  46 bit}
     {irq5_pending    47  47 bit}
-    {cpu_reads       48  63 dec}
+    {snd_peak        48  55 dec}
+    {pcm_keyons      56  63 dec}
     {ym_writes       64  79 dec}
     {download_seen   80  80 bit}
     {ioctl_download  81  81 bit}
     {pause_latched   82  82 bit}
     {ring_frozen     83  83 bit}
     {z80_fetches     84  99 dec}
+    {fm_keyons      100 104 dec}
     {lb_tm1_bad      105 108 dec}
     {lb_spr_bad      109 112 dec}
     {lb_tm1_delta    113 116 hex}
@@ -53,11 +55,18 @@ set fields {
 # label did not. It decoded an FG-2 game as an FG-3 board -- exactly the
 # "silently shifted field reads as plausible nonsense" this file warns about.
 #
-# z80_fetches / ym_writes: the sound CPU executing, and the sound CPU
-# programming the FM chips. A silent core with z80_fetches advancing and
-# ym_writes at zero is a Z80 that runs but never reaches the chips (latch,
-# NMI or I/O decode); both at zero is a Z80 that is not running (reset, ROM
-# path). Saturate at 65535; clear first for a rate.
+# The sound chain, read in this order, says where a silence begins:
+#   z80_fetches  the sound CPU is executing at all
+#   ym_writes    it is reaching the sound chips
+#   pcm_keyons   FG-3: the OPL4 is being asked to start PCM voices
+#   fm_keyons    FG-3: ... and FM voices, which NOTHING PLAYS YET -- the
+#                OPL4's FM half is not built, so a non-zero count here is
+#                the game asking for something this core cannot make.
+#                Asura Blade does; Asura Buster does not.
+#   snd_peak     the largest |audio_l| seen since the last clear, bits 14:7.
+#                Zero with key-ons counting is a silent chip; non-zero is
+#                audio genuinely leaving the mix.
+# All saturate; clear first and read again for a rate.
 #
 # NOTE the counters SATURATE at 65535 and several of them count per-cycle
 # events, so they pin almost immediately. Always `clear` first and read again
