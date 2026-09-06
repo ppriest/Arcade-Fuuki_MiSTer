@@ -55,11 +55,14 @@ BITS = {
     "vcrop":    (69, 2),   # 0 off, 1 216p, 2 224p
     "crop_off": (71, 5),   # crop window offset, two's complement
     "crt":      (76, 1),   # CRT offset on
+    "no_fm":    (90, 1),   # mute FM  (YM2203+YM3812 / OPL3)
+    "no_pcm":   (91, 1),   # mute PCM (OKI / OPL4 wavetable)
     "lead":     (61, 2),   # raster IRQ fires this many lines early: 0, 1, 2
     "aspect":   (121, 2),
 }
 DEBUG_BITS = ("overlay", "src", "window", "ring", "rearm", "trig",
-              "no_l0", "no_l1", "no_l2", "no_spr", "marker", "lead")
+              "no_l0", "no_l1", "no_l2", "no_spr", "marker", "lead",
+              "no_fm", "no_pcm")
 
 
 def env():

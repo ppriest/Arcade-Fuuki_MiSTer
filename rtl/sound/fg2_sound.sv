@@ -56,6 +56,12 @@ module fg2_sound (
 	input  logic        oki_valid,
 	input  logic [7:0]  oki_data,
 
+	// Mute either half at runtime. FM is the YM2203 + YM3812 pair, PCM the
+	// OKI -- the same split the FG-3 board's switches make, so one pair of
+	// OSD entries serves both.
+	input  logic        en_fm,
+	input  logic        en_pcm,
+
 	// mono, signed
 	output logic signed [15:0] audio,
 
@@ -284,7 +290,10 @@ module fg2_sound (
 	// sum saturates rather than wrapping.
 	// =====================================================================
 	wire signed [15:0] oki16 = {oki_snd, 2'b00};
-	wire signed [21:0] mix = (22'(ym1_snd) * 22'sd5) + (22'(ym2_snd) * 22'sd10) + (22'(oki16) * 22'sd27);
+	wire signed [15:0] ym1_g = en_fm  ? ym1_snd : 16'sd0;
+	wire signed [15:0] ym2_g = en_fm  ? ym2_snd : 16'sd0;
+	wire signed [15:0] oki_g = en_pcm ? oki16   : 16'sd0;
+	wire signed [21:0] mix = (22'(ym1_g) * 22'sd5) + (22'(ym2_g) * 22'sd10) + (22'(oki_g) * 22'sd27);
 	wire signed [16:0] mix32 = 17'(mix >>> 5);
 	always_ff @(posedge clk) begin
 		if      (mix32 >  17'sd32767) audio <= 16'sd32767;

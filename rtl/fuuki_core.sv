@@ -85,6 +85,8 @@ module fuuki_core (
 
 	// ---- per-layer enables, for bisecting a rendering fault live ----
 	input  logic        en_l0, en_l1, en_l2, en_spr,
+	// Sound halves, so a missing sound can be attributed without a rebuild.
+	input  logic        en_fm, en_pcm,
 
 	// ---- video out, 2 clocks behind hcnt (see the output stage) ----
 	output logic [7:0]  video_r,
@@ -1032,6 +1034,7 @@ module fuuki_core (
 		.clk(clk), .reset(core_reset || snd_fg3),
 		.cen_z80(cen_z80), .cen_ym(cen_ym), .cen_oki(cen_oki),
 		.latch_data(latch_data), .latch_write(latch_write),
+		.en_fm(en_fm), .en_pcm(en_pcm),
 		.rom_req(fg2_rom_req), .rom_addr(fg2_rom_addr),
 		.rom_valid(z80_rom_valid && !snd_fg3), .rom_data(z80_rom_data),
 		.oki_req(fg2_smp_req), .oki_addr(fg2_smp_addr),
@@ -1051,6 +1054,7 @@ module fuuki_core (
 		.cen_z80(cen_z80),
 		.host_addr(sharedram_addr), .host_we(sharedram_we),
 		.host_wdata(sharedram_wdata), .host_rdata(sharedram_rdata),
+		.en_fm(en_fm), .en_pcm(en_pcm),
 		.rom_req(fg3_rom_req), .rom_addr(fg3_rom_addr),
 		.rom_valid(z80_rom_valid && snd_fg3), .rom_data(z80_rom_data),
 		.wave_req(fg3_smp_req), .wave_addr(fg3_smp_addr),

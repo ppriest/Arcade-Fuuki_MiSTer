@@ -1,10 +1,13 @@
 // YMF278B (OPL4) top level -- docs/phase2_ymf278b.md.
 //
-// Milestone 1: full bus protocol, status/ID/BUSY/LD, both timers with IRQ
-// (the Z80 driver's sequencer heartbeat), and the 24-channel PCM
-// wavetable engine (opl4_pcm.sv). FM synthesis is milestone 2: FM
-// register writes are accepted (timers/NEW flags live in opl4_regs.sv)
-// but produce no audio yet, so the FM term of the DO2 mix is zero.
+// Full bus protocol, status/ID/BUSY/LD, both timers with IRQ (the Z80
+// driver's sequencer heartbeat), and the 24-channel PCM wavetable engine
+// (opl4_pcm.sv). FM register writes are accepted here (timers/NEW flags
+// live in opl4_regs.sv) and the synthesis itself is done OUTSIDE this
+// module: the Fuuki core drives an OPL3 core from the same ports 0-3 --
+// which are the YMF262 bus, exactly what the real part has inside it --
+// and hands the result back on fm_l/fm_r for the DO2 mix below. Leave
+// fm_l/fm_r at zero and this behaves as it did before, FM term and all.
 //
 // Clocking: one Bresenham enable reproduces the 33.8688 MHz chip clock
 // exactly from the 945/11 MHz clk_sys (33.8688M * 11 / 945M = 8624/21875,
@@ -34,6 +37,16 @@ module opl4 (
 	output logic [21:0] mem_rd_addr,
 	input  logic        mem_rd_valid,
 	input  logic [7:0] mem_rd_data,
+
+	// FM sample from the OPL3 core outside, already at PCM scale. Zero if
+	// no FM synthesis is attached.
+	input  logic signed [15:0] fm_l,
+	input  logic signed [15:0] fm_r,
+
+	// Mute either half at runtime, to hear what each contributes and what
+	// is missing without a rebuild per experiment.
+	input  logic        en_fm,
+	input  logic        en_pcm,
 
 	output logic signed [15:0] snd_l,
 	output logic signed [15:0] snd_r,
@@ -219,8 +232,9 @@ module opl4 (
 	assign pcm_mem_valid = busy_mem && !owner_rw && mem_rd_valid;
 	assign rw_mem_valid  = busy_mem &&  owner_rw && mem_rd_valid;
 
-	// ---- output mix (DO2 attenuators; FM term zero in milestone 1) ----
-	// s_mix_scale from the reference; F9 (PCM) resets to 0 -> full scale.
+	// ---- output mix (the reference's DO2 attenuators) ----
+	// s_mix_scale from the reference; F8 (FM) and F9 (PCM) both reset to 0,
+	// which is full scale.
 	function automatic [11:0] mix_scale(input [2:0] v);
 		case (v)
 			3'd0: mix_scale = 12'h7FA; 3'd1: mix_scale = 12'h5A4;
@@ -230,20 +244,38 @@ module opl4 (
 		endcase
 	endfunction
 
-	// PCM mix control (reg F9) snooped the same way as the bank bits
-	logic [5:0] mix_pcm;   // {r[2:0], l[2:0]}
+	// Mix control, snooped the same way as the bank bits: F8 is the FM
+	// attenuator pair, F9 the PCM one, each {r[2:0], l[2:0]}.
+	logic [5:0] mix_pcm, mix_fm;
 	wire regF9_sel = addr_shadow[9] && (addr_shadow[7:0] == 8'hF9);
+	wire regF8_sel = addr_shadow[9] && (addr_shadow[7:0] == 8'hF8);
 	always_ff @(posedge clk or posedge reset) begin
-		if (reset) mix_pcm <= 6'd0;
-		else if (wr_stb && addr == 3'd5 && new2 && regF9_sel) mix_pcm <= din[5:0];
+		if (reset) begin
+			mix_pcm <= 6'd0;
+			mix_fm  <= 6'd0;
+		end else if (wr_stb && addr == 3'd5 && new2) begin
+			if (regF9_sel) mix_pcm <= din[5:0];
+			if (regF8_sel) mix_fm  <= din[5:0];
+		end
 	end
 
-	logic signed [27:0] mix_l, mix_r;
+	// Two attenuated terms are summed, so the result can exceed 16 bits
+	// where one term alone could not. It saturates rather than wrapping: a
+	// wrap is a full-scale discontinuity, which is the loudest possible way
+	// to be wrong.
+	logic signed [27:0] pmix_l, pmix_r, fmix_l, fmix_r;
+	function automatic signed [15:0] sat16(input signed [28:0] v);
+		if      (v >  29'sd32767) sat16 =  16'sd32767;
+		else if (v < -29'sd32768) sat16 = -16'sd32768;
+		else                      sat16 = 16'(v);
+	endfunction
 	always_ff @(posedge clk) begin
-		mix_l <= pcm_l * $signed({1'b0, mix_scale(mix_pcm[2:0])});
-		mix_r <= pcm_r * $signed({1'b0, mix_scale(mix_pcm[5:3])});
-		snd_l <= 16'(mix_l >>> 11);
-		snd_r <= 16'(mix_r >>> 11);
+		pmix_l <= en_pcm ? pcm_l * $signed({1'b0, mix_scale(mix_pcm[2:0])}) : 28'sd0;
+		pmix_r <= en_pcm ? pcm_r * $signed({1'b0, mix_scale(mix_pcm[5:3])}) : 28'sd0;
+		fmix_l <= en_fm  ? fm_l  * $signed({1'b0, mix_scale(mix_fm[2:0])})  : 28'sd0;
+		fmix_r <= en_fm  ? fm_r  * $signed({1'b0, mix_scale(mix_fm[5:3])})  : 28'sd0;
+		snd_l  <= sat16((29'(pmix_l) + 29'(fmix_l)) >>> 11);
+		snd_r  <= sat16((29'(pmix_r) + 29'(fmix_r)) >>> 11);
 	end
 
 endmodule

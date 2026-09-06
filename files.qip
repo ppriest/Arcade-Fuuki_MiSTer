@@ -11,6 +11,20 @@
 # to say so. The .qsf sources this file, and nothing rewrites this file.
 set_global_assignment -name VERILOG_MACRO "MISTER_FB=1"
 
+# FITTER SEED, pinned so a build from HEAD reproduces one that closes.
+#
+# With the OPL3 in, this design closes marginally: the default seed misses
+# by -0.036 ns (TNS -0.481, about a dozen paths each short by hundredths)
+# and seed 3 makes +0.019 ns. Same RTL, 0.155 ns apart -- placement noise,
+# not a regression. Pinning it means HEAD builds the bitstream that was
+# tested rather than a coin toss.
+#
+# This is a STOPGAP and should be read as one. A design that needs a
+# particular seed has no margin, and the fix is structural: see
+# docs/ROADMAP.md's open items. Here rather than in Fuuki.qsf for the same
+# reason as the macro above -- Quartus rewrites the .qsf.
+set_global_assignment -name SEED 3
+
 # PLL: 85.909091 MHz (14.318181 x 6) plus the 180-degree phase-shifted
 # companion that drives SDRAM_CLK. Taken unchanged from the Psikyo core,
 # where this exact phase is proven on hardware -- see Fuuki.sv's CLOCKS note.
@@ -199,6 +213,42 @@ set_global_assignment -name VERILOG_FILE rtl/sound/jt6295/hdl/jt6295_timing.v
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl4/opl4.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl4/opl4_regs.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl4/opl4_pcm.sv
+
+# The OPL4's FM half: gtaylormb/opl3_fpga (LGPL-3.0), a YMF262. The package
+# must be compiled before anything that imports it. Its timers are not
+# instantiated (opl3_pkg.sv's INSTANTIATE_TIMERS = 0) because opl4_regs owns
+# them; timer.sv/timers.sv are listed so the tree stays whole.
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/opl3_pkg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/mem_simple_dual_port.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/mem_simple_dual_port_async_read.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/mem_multi_bank.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/mem_multi_bank_reset.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/pipeline_sr.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/edge_detector.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/synchronizer.sv
+set_global_assignment -name VERILOG_FILE rtl/sound/opl3/afifo.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/reset_sync.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/clk_div.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/leds.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/timer.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/timers.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/host_if.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/trick_sw_detection.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/opl3_log_sine_lut.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/opl3_exp_lut.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/ksl_add_rom.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/calc_envelope_shift.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/envelope_generator.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/calc_phase_inc.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/calc_rhythm_phase.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/phase_generator.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/tremolo.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/vibrato.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/operator.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/control_operators.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/dac_prep.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/channels.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/opl3.sv
 
 # The boards: Z80 glue, the chips, the mix; and the shared sample cache.
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/sample_cache.sv

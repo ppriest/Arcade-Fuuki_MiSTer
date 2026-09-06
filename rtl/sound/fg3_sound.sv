@@ -25,11 +25,20 @@
 // play the Z80's side from fuuki_core.sv.
 //
 // The OPL4 is Psikyo's (rtl/sound/opl4/, from E:\Arcade-Psikyo_MiSTer):
-// full bus protocol, status/ID/BUSY/LD, both timers with IRQ, and the
-// 24-channel PCM wavetable engine, running on hardware there. Its FM half
-// is not built: FM register writes are accepted and the FM term of the DO2
-// mix is zero, so Asura Buster (measured: no FM key-ons at all) is complete
-// and Asura Blade is missing its FM cues until the OPL3 lands.
+// bus protocol, status/ID/BUSY/LD, both timers with IRQ, and the 24-channel
+// PCM wavetable engine, running on hardware there.
+//
+// Its FM half is gtaylormb/opl3_fpga (rtl/sound/opl3/), and it attaches
+// where the real part joins them: ports 0x40-0x43 ARE the YMF262 bus --
+// address low / data / address high / data -- which is exactly the
+// interface that core presents. So the OPL3 is given the same cs/rd/wr the
+// OPL4 sees, restricted to those four ports, and hands its sample back for
+// the DO2 mix. Ports 0x44-0x45 (PCM) are deliberately withheld from it.
+//
+// What the OPL3 does NOT do here: status, timers and IRQ stay with
+// opl4_regs, which already implements them and is proven on hardware. The
+// vendored core's INSTANTIATE_TIMERS is 0 by default, so it does not fight
+// for them, and its dout and irq_n are left unconnected.
 //
 // The Z80 side -- T80se, the split WAIT_n, the stretched ROM handshake --
 // is fg2_sound.sv's, which is Psikyo's sound_cpu.sv; only the map differs.
@@ -59,6 +68,10 @@ module fg3_sound (
 	output logic [21:0] wave_addr,
 	input  logic        wave_valid,
 	input  logic [7:0]  wave_data,
+
+	// Mute either half at runtime, to hear what each contributes.
+	input  logic        en_fm,
+	input  logic        en_pcm,
 
 	output logic signed [15:0] audio_l,
 	output logic signed [15:0] audio_r,
@@ -121,12 +134,41 @@ module fg3_sound (
 	logic [7:0] opl4_dout;
 	logic signed [15:0] opl4_l, opl4_r;
 
+	// ---- FM: the OPL3 on ports 0x40-0x43 ----
+	// UNDOING ITS DAC SHIFT, NOT SCALING TO THE FIELD WIDTH. dac_prep.sv
+	// emits sample_l = channel_l <<< DAC_LEFT_SHIFT, where channel_l is a
+	// CLAMPED 16-bit sample and DAC_LEFT_SHIFT is DAC_OUTPUT_WIDTH -
+	// SAMPLE_WIDTH - 3 = 24 - 16 - 3 = 5. So >>> 5 recovers exactly the
+	// sample the core clamped, at the same scale opl4_pcm works in, which is
+	// what the DO2 attenuators then balance.
+	//
+	// It was >>> 8 first, reasoning from the field widths (24 -> 16) instead
+	// of from the shift. That is 8x -- 18 dB -- too quiet, and it measured
+	// as such: with PCM muted on Asura Blade and 31 FM key-ons, snd_peak
+	// read 1 where the correct shift predicts about 8.
+	wire io_opl4_fm = io_opl4 && (a[2:1] == 2'b00);   // 40-43 only
+	logic signed [23:0] opl3_l, opl3_r;
+
+	opl3 u_opl3 (
+		.clk(clk), .clk_host(clk), .clk_dac(clk),
+		.ic_n(~reset),
+		.cs_n(~(io_opl4_fm && !iorq_n)), .rd_n(rd_n), .wr_n(wr_n),
+		.address(a[1:0]), .din(d_out),
+		.dout(), .sample_valid(),
+		.sample_l(opl3_l), .sample_r(opl3_r),
+		.led(), .irq_n()
+	);
+
+	wire signed [15:0] fm_l = 16'(opl3_l >>> 5);
+	wire signed [15:0] fm_r = 16'(opl3_r >>> 5);
+
 	opl4 u_opl4 (
 		.clk(clk), .reset(reset),
 		.cs(io_opl4 && !iorq_n), .rd(!rd_n), .wr(!wr_n),
 		.addr(a[2:0]), .din(d_out), .dout(opl4_dout), .irq_n(opl4_irq_n),
 		.mem_rd_req(wave_req), .mem_rd_addr(wave_addr),
 		.mem_rd_valid(wave_valid), .mem_rd_data(wave_data),
+		.fm_l(fm_l), .fm_r(fm_r), .en_fm(en_fm), .en_pcm(en_pcm),
 		.snd_l(opl4_l), .snd_r(opl4_r),
 		.dbg_fm_wr(), .dbg_fm_keyon(dbg_fm_keyon), .dbg_pcm_keyon(dbg_pcm_keyon)
 	);

@@ -103,6 +103,9 @@ localparam CONF_STR = {
 	"O[64:63],Rotation,Off,CW,CCW;",
 	"O[65],Flip 180,Off,On;",
 	"O[46:44],Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
+	"-;",
+	"O[90],Sound: FM,On,Off;",
+	"O[91],Sound: PCM,On,Off;",
 	"O[68:66],Scale,Normal,V-Integer,Narrower HV-Integer,Wider HV-Integer,HV-Integer;",
 	"O[70:69],Vertical crop,Disabled,216p (5x),224p;",
 	"O[75:71],Crop offset,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
@@ -577,6 +580,9 @@ fuuki_core u_core (
 	// enable is the inverse of the status bit.
 	.en_l0(~status[40]), .en_l1(~status[41]),
 	.en_l2(~status[42]), .en_spr(~status[43]),
+	// FM is the YM2203+YM3812 pair on FG-2 and the OPL3 on FG-3; PCM is the
+	// OKI and the OPL4's wavetable engine. Menu sense is On,Off.
+	.en_fm(~status[90]), .en_pcm(~status[91]),
 
 	.video_r(core_r), .video_g(core_g), .video_b(core_b),
 	.video_hs(core_hs), .video_vs(core_vs),

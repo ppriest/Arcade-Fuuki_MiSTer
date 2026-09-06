@@ -83,8 +83,9 @@ Known issues:
 - [ ] Close the remaining raster faults above
 - [x] Sound: Z80, and the FG-2 chip set (YM2203, YM3812, OKI M6295) — built, simulated, awaiting the ear
 - [x] Sound: OPL4 PCM and the FG-3 Z80 — built, and measured playing on hardware
-- [ ] Sound: the OPL4's FM half — [gtaylormb/opl3_fpga](https://github.com/gtaylormb/opl3_fpga) is
-      vendored; Asura Blade drives FM, Asura Buster does not
+- [x] Sound: the OPL4's FM half — [gtaylormb/opl3_fpga](https://github.com/gtaylormb/opl3_fpga),
+      measured synthesising on Asura Blade
+- [ ] Close the timing margin: with the OPL3 in, the design needs a pinned fitter seed
 - [x] HDMI rotation and Flip 180, vertical crop, integer scaling, CRT offset — wired, untested
 - [ ] Hiscore support
 - [ ] The DIP Flip Screen in the renderer (both MAME drivers are marked inaccurate. Hidden in MRAs)

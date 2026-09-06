@@ -59,7 +59,21 @@ package opl3_pkg;
     localparam INSTANTIATE_SAMPLE_SYNC_TO_DAC_CLK = 0;
 
     localparam DESIRED_SAMPLE_FREQ = 49.7159e3;
-    localparam CLK_DIV_COUNT = int'($ceil(CLK_FREQ/DESIRED_SAMPLE_FREQ)); // unsupported by Quartus 17, set manually
+    // VENDOR EDIT (the only one; see PROVENANCE.md). Upstream's own comment
+    // on this line says the expression is "unsupported by Quartus 17, set
+    // manually", and Quartus 17.0 is what this project builds with.
+    //
+    // The value is also not upstream's, because the clock is not upstream's.
+    // This core drives the OPL3 from clk_sys at 85.909091 MHz (945/11), not
+    // from a dedicated 12.727 MHz, and it stands in for the FM half of a
+    // YMF278B whose FM sample rate is its 33.8688 MHz chip clock over 684 =
+    // 49.5158 kHz. 85909091 / 49515.8 = 1734.96, so:
+    localparam CLK_DIV_COUNT = 1735;   // -> 49.5153 kHz, 10 ppm low
+    //
+    // Running the pipeline far slower than upstream's 256-clock budget is
+    // safe by construction: control_operators.sv holds state 0 until
+    // sample_clk_en and returns to it after the 36 operator states, so a
+    // longer period is idle time, not overrun.
     localparam ACTUAL_SAMPLE_FREQ = CLK_FREQ/CLK_DIV_COUNT;
 
     localparam NUM_REG_PER_BANK = 'hF6;

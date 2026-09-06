@@ -70,6 +70,18 @@ chain, counters cleared first:
 | `fm_keyons` | 0 | 0 | — (FG-3 field) |
 | `snd_peak` | 110 | 7 → 69 | 31 → 32 |
 
+**The FM half is in and measured** (`rtl/sound/opl3/`, gtaylormb/opl3_fpga). It attaches where the
+real part joins its halves — ports `0x40-0x43` are the YMF262 bus — with status, timers and IRQ
+left to `opl4_regs`. Isolated with the new `Sound: PCM` mute on Asura Blade, at 31 FM key-ons:
+
+| FM output scale | `snd_peak` |
+|---|---|
+| `>>> 8` (wrong: reasoned from field widths) | 1 |
+| `>>> 5` (right: undoes `dac_prep`'s `<<< DAC_LEFT_SHIFT`) | 11 |
+
+`snd_peak` steps in units of 128, so 1 → 11 is the 8x the shift predicts. That is the FM half
+synthesising audibly, measured rather than assumed — and it is what the mute switches are for.
+
 `snd_peak` is the largest `|audio_l|` since the clear, bits 14:7, so Blade's 110 is about 14,080 of
 32,767. Buster's zero FM key-ons match the `fm_probe.lua` measurement exactly. What is NOT covered:
 the FM half is not built, so whatever Blade drives through FM produces silence.
@@ -524,10 +536,11 @@ position, so the flipped image is not a rotation of the unflipped one.
 ones Psikyo's bring-up asked -- does every fetch meet its deadline behind the priority chain, does
 the mix balance match the board.
 
-**FG-3's FM half.** The PCM half and the Z80 are done and measured; what remains is the OPL3
-(`rtl/sound/opl3/`, vendored from gtaylormb/opl3_fpga and checked free of vendor primitives)
-driven from the OPL4's ports `0x40-0x43`, with its output added to the DO2 mix under the F8
-attenuator. Status, timers and IRQ stay with the proven `opl4_regs`, so the PCM path is untouched.
+**Close the timing margin.** With the OPL3 in, this design no longer closes comfortably: the
+default fitter seed misses by -0.036 ns and seed 3 makes +0.019 ns, so `files.qip` pins seed 3 to
+keep HEAD reproducible. That is a stopgap, not a fix — a build that depends on a seed has no
+margin. Psikyo reached the same point and its answer was structural (moving a chain onto a clock
+enable, splitting a state), not more seeds.
 
 **Polish.** Hiscores, then the remaining clone sets and region variants, and savestates (Psikyo's
 `docs/savestates.md` is the feasibility study; the same TG68K/RAM/audio arguments apply).
