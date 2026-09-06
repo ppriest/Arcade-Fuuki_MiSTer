@@ -17,7 +17,8 @@
 set fields {
     {frames          0   15 dec}
     {core_resets     16  31 dec}
-    {irq1_pulses     32  39 dec}
+    {mix_pcm         32  37 hex}
+    {new2            38  38 bit}
     {iack_level1     40  44 dec}
     {irq1_pending    45  45 bit}
     {irq3_pending    46  46 bit}

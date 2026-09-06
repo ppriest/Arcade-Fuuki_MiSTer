@@ -115,6 +115,12 @@ def main():
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     stage = os.path.join(here, "build")
 
+    # The other half of the guard in scripts/hwlock.py: a compile must not
+    # start while a JTAG tool is reading the device.
+    sys.path.insert(0, os.path.join(here, "scripts"))
+    from hwlock import require_no_jtag
+    require_no_jtag("this build")
+
     dirty = run(["git", "-C", here, "status", "--porcelain"])
     # Untracked files are not part of HEAD either, but they are usually
     # scratch; only tracked modifications are treated as a divergence worth

@@ -316,7 +316,8 @@ module fg2_sound (
 		// 3: sum, then shift and saturate
 		s3_sum <= 23'(s2_ym1) + 23'(s2_ym2) + 23'(s2_oki);
 		if      ((s3_sum >>> 5) >  23'sd32767) audio <=  16'sd32767;
-		else if ((s3_sum >>> 5) < -23'sd32768) audio <= -16'sd32768;
+		// 16'sh8000, not -16'sd32768 -- see opl4.sv's sat16.
+		else if ((s3_sum >>> 5) < -23'sd32768) audio <= 16'sh8000;
 		else                                   audio <= 16'(s3_sum >>> 5);
 	end
 

@@ -607,6 +607,7 @@ fuuki_core u_core (
 	.dbg_marker(status[60]), .raster_lead(status[62:61]),
 	.dbg_irq_pending(dbg_irq_pending), .dbg_iack(dbg_iack), .dbg_iack_level(dbg_iack_level),
 	.dbg_irq1_trig(dbg_irq1_trig), .dbg_smp(dbg_smp),
+	.dbg_opl4_state(dbg_opl4_state),
 	.dbg_z80_m1(dbg_z80_m1), .dbg_ym_wr(dbg_ym_wr),
 	.dbg_pcm_keyon(dbg_pcm_keyon), .dbg_fm_keyon(dbg_fm_keyon),
 	.dbg_frozen(dbg_frozen)
@@ -784,6 +785,7 @@ wire       ctr_clear = probe_src[0];
 wire [2:0] dbg_irq_pending, dbg_iack_level;
 wire       dbg_iack, dbg_irq1_trig;
 wire [15:0] dbg_smp;   // sample-ROM fetch health, see fuuki_core.sv's SAMPLE FETCH WATCH
+wire [7:0]  dbg_opl4_state;  // {0, new2, mix_pcm} -- what can silence PCM
 wire        dbg_z80_m1, dbg_ym_wr, dbg_pcm_keyon, dbg_fm_keyon;
 reg  [7:0] c_irq1  = 8'd0;   // irq1_trig pulses (one per frame when healthy)
 reg  [4:0] c_iack1 = 5'd0;   // level-1 acknowledge cycles
@@ -889,7 +891,7 @@ issp_probe #(.INSTANCE_ID("F"), .PROBE_W(128), .SOURCE_W(32)) u_probe (
 		snd_peak,            //  55..48  peak |audio_l| since clear, bits 14:7
 		dbg_irq_pending,     //  47..45  {irq5, irq3, irq1} pending
 		c_iack1,             //  44..40  level-1 acknowledges (wraps)
-		c_irq1,              //  39..32  irq1 (line 248) pulses (wraps)
+		dbg_opl4_state,      //  39..32  {0, NEW2, F9 attenuator pair}
 		c_rst,               //  31..16  core_reset rising edges
 		c_frames             //  15..0
 	}),

@@ -87,6 +87,8 @@ module fg3_sound (
 	// names the register the loop is on.
 	output logic [7:0]  dbg_opl4_sel,
 	output logic [2:0]  dbg_opl4_port,
+	output logic        dbg_new2,        // OPL4 mode: gates every PCM key-on
+	output logic [5:0]  dbg_mix_pcm,     // F9 attenuator pair; 7 is silence
 	// The 16 bytes the 68020 and this Z80 talk through, for dump region 7.
 	input  logic [3:0]  dbg_shared_addr,
 	output logic [7:0]  dbg_shared_data
@@ -155,7 +157,20 @@ module fg3_sound (
 	// of from the shift. That is 8x -- 18 dB -- too quiet, and it measured
 	// as such: with PCM muted on Asura Blade and 31 FM key-ons, snd_peak
 	// read 1 where the correct shift predicts about 8.
-	wire io_opl4_fm = io_opl4 && (a[2:1] == 2'b00);   // 40-43 only
+	// Ports 0x40-0x43, the YMF262 bus: address low, data, address high, data.
+	// This was a[2:1] == 2'b00, which is 0x40-0x41 ONLY -- the OPL3 never saw
+	// bank 1 at all, including register 0x105, the NEW/NEW2 pair that turns
+	// OPL3 mode on. a[2] == 0 is the whole of 0x40-0x43.
+	//
+	// en_fm ALSO takes it off the bus, not just out of the mix. That is
+	// deliberate and it is why the switch exists: bisecting on hardware
+	// showed Asura Buster's sound driver wedges with the OPL3 present and
+	// runs with it absent (pcm_keyons 9 vs 0, snd_peak 59 vs 0 over the same
+	// window), and nothing in the OPL3's connections explains how -- its
+	// dout, irq_n and led are all unconnected and it touches no memory. So
+	// the switch has to separate "on the bus" from "in the design", or the
+	// next step is a build per guess.
+	wire io_opl4_fm = io_opl4 && !a[2] && en_fm;
 	logic signed [23:0] opl3_l, opl3_r;
 
 	opl3 u_opl3 (
@@ -179,7 +194,8 @@ module fg3_sound (
 		.mem_rd_valid(wave_valid), .mem_rd_data(wave_data),
 		.fm_l(fm_l), .fm_r(fm_r), .en_fm(en_fm), .en_pcm(en_pcm),
 		.snd_l(opl4_l), .snd_r(opl4_r),
-		.dbg_fm_wr(), .dbg_fm_keyon(dbg_fm_keyon), .dbg_pcm_keyon(dbg_pcm_keyon)
+		.dbg_fm_wr(), .dbg_fm_keyon(dbg_fm_keyon), .dbg_pcm_keyon(dbg_pcm_keyon),
+		.dbg_new2(dbg_new2), .dbg_mix_pcm(dbg_mix_pcm)
 	);
 
 	assign audio_l = opl4_l;

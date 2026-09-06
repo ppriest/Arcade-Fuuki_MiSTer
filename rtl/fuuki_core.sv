@@ -118,6 +118,7 @@ module fuuki_core (
 	output logic        dbg_iack,        // interrupt-acknowledge access in progress
 	output logic [2:0]  dbg_iack_level,  // level on A3..A1 during it
 	output logic        dbg_irq1_trig,   // the line-248 interrupt source, one clk per frame
+	output logic [7:0]  dbg_opl4_state,  // {busy_mem, new2, mix_pcm} -- what can silence PCM
 	output logic [15:0] dbg_smp,         // sound health: fetch watch + last OPL4 register
 	output logic        dbg_z80_m1,      // one pulse per Z80 opcode fetch, either board
 	output logic        dbg_ym_wr,       // one pulse per write to a sound chip, either board
@@ -660,6 +661,8 @@ module fuuki_core (
 	// does, so it read 63 on a working machine and measured nothing.
 	// =====================================================================
 	logic [7:0]  dbg_opl4_sel;
+	logic        dbg_new2;
+	logic [5:0]  dbg_mix_pcm;
 	logic [2:0]  dbg_opl4_port;
 	logic [7:0]  shared_dump;
 	logic        smp_out = 1'b0, smp_stall = 1'b0;
@@ -687,6 +690,13 @@ module fuuki_core (
 	// smp_age counts in clk; >>6 puts the reported worst latency in units of
 	// 64 clk, so 1 unit is about 0.75 us at 85.909 MHz.
 	assign dbg_smp = {smp_stall, smp_out, dbg_opl4_sel, dbg_opl4_port, smp_maxlat};
+	// A PCM engine can be given key-ons and still make no sound two ways that
+	// leave the driver looking healthy: NEW2 low, which gates every key-on
+	// inside opl4_regs, or the F9 attenuator at 7, which is mix_scale 0.
+	// Neither is visible from outside the chip, and both produce exactly the
+	// reported symptom -- what is already sounding continues, nothing new
+	// starts.
+	assign dbg_opl4_state = {1'b0, dbg_new2, dbg_mix_pcm};
 
 	// =====================================================================
 	// The compositor's resolved layer-priority value. Declared HERE, above
@@ -1150,6 +1160,7 @@ module fuuki_core (
 		.dbg_m1(fg3_m1), .dbg_opl4_wr(fg3_opl4_wr),
 		.dbg_fm_keyon(dbg_fm_keyon), .dbg_pcm_keyon(dbg_pcm_keyon),
 		.dbg_opl4_sel(dbg_opl4_sel), .dbg_opl4_port(dbg_opl4_port),
+		.dbg_new2(dbg_new2), .dbg_mix_pcm(dbg_mix_pcm),
 		.dbg_shared_addr(walk_idx[3:0]), .dbg_shared_data(shared_dump)
 	);
 

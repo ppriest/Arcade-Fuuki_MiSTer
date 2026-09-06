@@ -39,8 +39,14 @@ PAGE_BITS = {0: 0x00, 1: 0x08, 2: 0x10, 3: 0x18, 4: 0x80, 5: 0x88, 6: 0x90}   # 
 
 
 def issp(*args):
-    p = subprocess.run([str(QUARTUS_STP), "-t", str(ISSP), *map(str, args)],
-                       capture_output=True, text=True, timeout=180, cwd=str(REPO))
+    # Guarded: JTAG concurrent with a Quartus compile has bugchecked this PC
+    # three times (scripts/hwlock.py). memdump.py, sweep.py, soak.py,
+    # wait_scene.py and sdram_pattern_test.py all reach JTAG through here, so
+    # one guard covers them.
+    from hwlock import jtag_session
+    with jtag_session("tracer_readout.issp"):
+        p = subprocess.run([str(QUARTUS_STP), "-t", str(ISSP), *map(str, args)],
+                           capture_output=True, text=True, timeout=180, cwd=str(REPO))
     return p.stdout
 
 

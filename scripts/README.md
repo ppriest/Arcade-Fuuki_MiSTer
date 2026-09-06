@@ -37,6 +37,8 @@ by anyone else with a MAME install and the ROM sets.
 | `decode_debug_screenshot.py` | read exact 24-bit values back out of a trace-overlay screenshot, one per scanline (vendored from the Psikyo core) |
 | `tracer_readout.py` | read the core's 256-entry trace ring back through the screenshot path, as inverted bands whose pairs must XOR to all-ones — so a transform anywhere in the capture path is detected rather than read as data |
 | `wait_scene.py` | poll screenshots until the frame matches a reference crop, then hold the CPU paused there, so a dump is one instant of one chosen scene |
+| `hwlock.py` | refuses to run a JTAG tool while Quartus is compiling, and refuses to start a build while a JTAG tool is reading. That combination has bugchecked this PC three times (0x139, corrupted kernel list entry); it was written down as a caution after the first two and happened again, so it is enforced rather than remembered |
+| `probe.py` | `python scripts/probe.py [clear] [--fields ...]` -- read the JTAG probe through that guard, one line per sample instead of four screens of Quartus banner |
 | `read_issp.tcl` | read the core's debug counters over JTAG via In-System Sources and Probes (`quartus_stp -t`), since SignalTap acquisition is GUI-only in Quartus Prime Lite 17.0 |
 | `report_worst_paths.tcl` | `quartus_sta -t scripts/report_worst_paths.tcl Fuuki` -- the 15 worst clk_sys setup paths from the compiled database, to `output_files/worst_paths_Fuuki.rpt`. |
 | `soak.py` | `python scripts/soak.py gogomile --seconds 120` -- run a game and sample the probe (irq pulses, pending flags, PC) and a screenshot every 10 s; flags a hang. |
