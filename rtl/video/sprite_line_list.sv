@@ -32,9 +32,6 @@
 // the driver is NOT explained; do not "correct" this back to match a reading
 // of fuukispr.cpp without re-running that comparison on hardware.
 //
-// Fuuki.sv's OSD bit 60 (and JTAG source bit 2) still switches the two, so the
-// question can be re-opened in seconds on any build.
-//
 // Record format (docs/ROADMAP.md, "Sprites"):
 //   word0  15-12 xnum-1   11 flipX  10 DISABLE   9-0 X (signed)
 //   word1  15-12 ynum-1   11 flipY              9-0 Y (signed)

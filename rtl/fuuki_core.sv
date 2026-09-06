@@ -121,7 +121,6 @@ module fuuki_core (
 	input  logic [2:0]  dbg_page,     // which 40-entry page of the buffer to show
 	input  logic [23:0] dbg_dump,     // memory dump: {region[3:0], page[19:0]} (JTAG source [31:8])
 	input  logic        dbg_trig,     // ring mode: freeze on the first exception-vector read
-	input  logic        dbg_spr_rev,  // render the sprite candidate list back to front
 	output logic        dbg_frozen
 );
 
@@ -376,6 +375,50 @@ module fuuki_core (
 	);
 
 	// =====================================================================
+	// PER-LINE REGISTER SNAPSHOT
+	//
+	// Everything the renderer reads out of the video registers is latched
+	// once per scanline, at the START OF HBLANK, and the engines and the
+	// compositor see only the latched copy.
+	//
+	// The engines used to read the live registers and sample them on their
+	// line buffer's READY edge, which is not a fixed point in the line: a CPU
+	// write landing near it took effect on one line or the next depending on
+	// where the buffer's clear pass happened to be, so gogomile's title
+	// clouds jittered back and forth between frames. Hblank is a fixed point
+	// and is after the raster interrupt fires (video_timing drives irq5 at
+	// hcnt == H_ACTIVE), so an ISR's write cannot race the latch it belongs
+	// after.
+	//
+	// PER LINE, not per frame: pbancho rewrites the layer scroll from a
+	// level-5 handler on every line of a band, and latching once per frame
+	// would flatten exactly the effect the raster interrupt exists to produce.
+	// =====================================================================
+	wire vreg_latch = ce_pix && (hcnt == 9'd320);
+
+	logic [15:0] r_scrollx [0:2], r_scrolly [0:2];
+	logic        r_layer2_buffer;
+	logic [1:0]  r_front, r_middle, r_back;
+
+	always_ff @(posedge clk or posedge core_reset) begin
+		if (core_reset) begin
+			for (int i = 0; i < 3; i++) begin
+				r_scrollx[i] <= 16'd0;
+				r_scrolly[i] <= 16'd0;
+			end
+			r_layer2_buffer <= 1'b0;
+			r_front <= 2'd0; r_middle <= 2'd1; r_back <= 2'd2;
+		end else if (vreg_latch) begin
+			for (int i = 0; i < 3; i++) begin
+				r_scrollx[i] <= layer_scrollx[i];
+				r_scrolly[i] <= layer_scrolly[i];
+			end
+			r_layer2_buffer <= layer2_buffer;
+			r_front <= tmap_front; r_middle <= tmap_middle; r_back <= tmap_back;
+		end
+	end
+
+	// =====================================================================
 	// Per-layer configuration.
 	//
 	// Straight from each driver's GFXDECODE and video_start(), and the same
@@ -449,13 +492,13 @@ module fuuki_core (
 				.clk(clk), .reset(core_reset),
 				.line_start(tm_ready_rise[g]), .render_line(vcnt_next2),
 				.busy(tm_busy[g]), .done(tm_done[g]),
-				.vram_bank(g[1:0] == 2'd2 ? {1'b1, layer2_buffer} : g[1:0]),
+				.vram_bank(g[1:0] == 2'd2 ? {1'b1, r_layer2_buffer} : g[1:0]),
 				.tile16(cfg_tile16[g]), .bpp8(cfg_bpp8[g]),
 				.colour_shift4(cfg_shift4[g]), .gran256(cfg_gran256[g]),
 				.pal_base(PAL_BASE[g]),
 				.trans_pen(cfg_bpp8[g] ? 8'hFF : 8'h0F),
 				.gfx_base(26'd0),
-				.scroll_x(layer_scrollx[g]), .scroll_y(layer_scrolly[g]),
+				.scroll_x(r_scrollx[g]), .scroll_y(r_scrolly[g]),
 				.flip(flip),
 				.vram_addr(tm_vaddr[g]), .vram_data(tm_vdata[g]),
 				.gfx_req(tm_req[g]), .gfx_addr(tm_addr[g]),
@@ -534,7 +577,7 @@ module fuuki_core (
 		.line_start(spr_ready_rise && !build_busy),
 		.render_line(vcnt_next2),
 		.busy(spr_busy), .ovr_ev(spr_ovr),
-		.board(board), .tilebank(tilebank_render), .gfx_base(26'd0), .spr_reverse(dbg_spr_rev),
+		.board(board), .tilebank(tilebank_render), .gfx_base(26'd0),
 		.n_entries(n_entries),
 		.yt_addr(yt_addr), .yt_data(yt_data),
 		.rec_addr(rec_addr), .rec_data(rec_data),
@@ -769,7 +812,7 @@ module fuuki_core (
 	compositor u_comp (
 		.l0(tm_rd[0]), .l1(tm_rd[1]), .l2(tm_rd[2]),
 		.spr(spr_rd),
-		.tmap_front(tmap_front), .tmap_middle(tmap_middle), .tmap_back(tmap_back),
+		.tmap_front(r_front), .tmap_middle(r_middle), .tmap_back(r_back),
 		.en_l0(en_l0), .en_l1(en_l1), .en_l2(en_l2), .en_spr(en_spr),
 		.pal_addr(pal_rd_addr), .dbg_pri(dbg_pri)
 	);

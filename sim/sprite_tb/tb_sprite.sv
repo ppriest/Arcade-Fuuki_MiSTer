@@ -96,7 +96,7 @@ module tb_sprite;
 		.clk(clk), .reset(reset),
 		.line_tick(line_tick), .line_start(eng_start), .render_line(vcnt_next2),
 		.busy(eng_busy), .ovr_ev(ovr_ev),
-		.board(BOARD_FG2), .tilebank(32'd0), .gfx_base(26'd0), .spr_reverse(1'b0),
+		.board(BOARD_FG2), .tilebank(32'd0), .gfx_base(26'd0),
 		.n_entries(n_entries),
 		.yt_addr(yt_addr), .yt_data(yt_data),
 		.rec_addr(rec_addr), .rec_data(rec_data),

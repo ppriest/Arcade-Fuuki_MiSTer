@@ -44,17 +44,6 @@ module sprite_line_engine (
 
 	input  logic        board,   // BOARD_FG2 / BOARD_FG3
 	input  logic [31:0] tilebank,     // FG-3 sprite tile bank, already buffered
-	// SPRITE DEPTH ORDER, SWITCHABLE AT RUNTIME.
-	// sprite_line_list stores record 1023 first and record 0 last, and
-	// rendering the list forwards with later writes overwriting earlier
-	// ones puts record 0 on top -- which is what MAME does, drawing from
-	// the last record to the first (fuukispr.cpp: `start = size-4;
-	// inc = -4`, "Draw them backwards, for pdrawgfx"). Scanning the list
-	// backwards instead inverts sprite-vs-sprite depth. It is a switch
-	// rather than a rewrite because the two orders differ only where
-	// sprites overlap, and one screenshot each settles it without the
-	// ~13-minute rebuild a code change would cost.
-	input  logic        spr_reverse,
 	input  logic [25:0] gfx_base,     // byte address of the sprite tile ROM
 
 	// ---- candidate list ----
@@ -101,7 +90,14 @@ module sprite_line_engine (
 	logic [7:0]  dst_w;       // drawn width of one sub-tile
 	logic signed [11:0] tile_x0;
 	logic [7:0]  dx;          // destination pixel within the sub-tile
-	logic [17:0] xacc;        // 16.16 source accumulator
+	// 16.16 source accumulator, with FOUR integer bits. At 18 bits it had
+	// two, so (xacc >> 16) could only ever be 0..3: a zoomed sprite sampled
+	// source columns 0,1,2,3 and then wrapped instead of walking 0..15, and
+	// Asura Blade's zoomed character shadows came out ragged rather than
+	// clean ovals. The vertical path escaped it by multiplying row_delta by
+	// the step instead of accumulating. Worst case is (dst_w-1) * step =
+	// 16 * 61680 = 986,880, which needs 20 bits.
+	logic [19:0] xacc;
 	logic [63:0] gfx_row;
 
 	// ---- zoom lookups ----
@@ -193,7 +189,7 @@ module sprite_line_engine (
 	wire [25:0] row_addr = gfx_base + {tile_no_r, 7'd0} + {row_f, 3'd0};
 
 	// ---- pixel extraction, 4bpp packed, MSB nibble first ----
-	wire [3:0] src_px = nonzoom ? dx[3:0] : 4'((xacc >> 16));
+	wire [3:0] src_px = nonzoom ? dx[3:0] : xacc[19:16];
 	wire [3:0] spx    = flipx ? (4'd15 - src_px) : src_px;
 	wire [7:0] pix_b  = gfx_row[8*(spx[3:1]) +: 8];
 	wire [3:0] pen    = spx[0] ? pix_b[3:0] : pix_b[7:4];
@@ -240,7 +236,7 @@ module sprite_line_engine (
 				case (st)
 				S_IDLE: begin
 					if (line_start) begin
-						scan_i   <= spr_reverse ? 10'(n_entries - 11'd1) : 10'd0;
+						scan_i   <= 10'd0;
 						cur_line <= render_line;
 						busy     <= 1'b1;
 						st       <= (n_entries == 11'd0) ? S_IDLE : S_SCAN;
@@ -335,7 +331,7 @@ module sprite_line_engine (
 					tile_x0   <= 12'(sx) + 12'(xoff >> 3);
 					tile_no_r <= tile_no;
 					dx        <= 8'd0;
-					xacc      <= 18'd0;
+					xacc      <= 20'd0;
 					st        <= S_REQ;
 				end
 
@@ -363,7 +359,7 @@ module sprite_line_engine (
 						st <= S_NEXT_TILE;
 					end else begin
 						dx   <= dx + 8'd1;
-						xacc <= xacc + stepx_r;
+						xacc <= xacc + {2'd0, stepx_r};
 					end
 				end
 
@@ -377,12 +373,11 @@ module sprite_line_engine (
 				end
 
 				S_NEXT: begin
-					if (spr_reverse ? (scan_i == 10'd0)
-					                : (scan_i == 10'(n_entries - 11'd1))) begin
+					if (scan_i == 10'(n_entries - 11'd1)) begin
 						busy <= 1'b0;
 						st   <= S_IDLE;
 					end else begin
-						scan_i <= spr_reverse ? scan_i - 10'd1 : scan_i + 10'd1;
+						scan_i <= scan_i + 10'd1;
 						st     <= S_SCAN;
 					end
 				end

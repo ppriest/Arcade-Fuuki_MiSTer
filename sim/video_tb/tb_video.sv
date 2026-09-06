@@ -182,7 +182,7 @@ module tb_video;
 		.line_start(spr_ready_rise && !build_busy),
 		.render_line(vcnt_next2),
 		.busy(spr_busy), .ovr_ev(spr_ovr),
-		.board(board), .tilebank(tilebank), .gfx_base(26'd0), .spr_reverse(1'b0),
+		.board(board), .tilebank(tilebank), .gfx_base(26'd0),
 		.n_entries(n_entries),
 		.yt_addr(yt_addr), .yt_data(yt_data),
 		.rec_addr(rec_addr), .rec_data(rec_data),

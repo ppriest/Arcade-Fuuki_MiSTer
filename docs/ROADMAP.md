@@ -283,17 +283,28 @@ lookup), to be read back with `scripts/memdump.py`. asurabus spends its first se
 `0x21 x 0x10000` delay loop before touching video.
 The handshake stub must go when the real Z80 lands.
 
-**Known FG-2 issues, parked to start FG-3** (all seen on the DE10-nano with
+**Known video issues, and where the investigation stands** (hardware, on
 `releases/Arcade-Fuuki_20260905.rbf`):
 
-- pbancho stops drawing on the wave screen of its attract (black box where the text/portrait
-  should be) and the CPU sits in `btst #5,$400010 / beq`, the flag only the level-1 handler
-  sets. Unknown whether it is a lost interrupt or a priority/visibility fault; a VRAM/sprite-RAM
-  readout through the trace ring (paged over JTAG, CPU paused) is the instrument to build.
-- gogomile: clouds flicker on the title screen.
-- pbancho: the CREDIT counter sits one pixel too low -- a candidate for a row-timing offset in
-  whichever layer draws it.
-- pbancho: a raster/IRQ effect at the bottom of one attract screen is wrong.
+- FIXED: tall sprites partly off the top repeated one sub-tile row down the screen (an unsigned
+  comparison in `row_hit`); pbancho's wave screen and its bottom band, and Asura Blade's repeated
+  crescents, were all this.
+- FIXED: zoomed sprites sampled only source columns 0-3 (an 18-bit 16.16 accumulator with two
+  integer bits). Asura Blade's scaled character shadows are correct now.
+- OPEN: gogomile's title clouds jitter back and forth between frames, and pbancho's bottom strip
+  shows layer fragments where MAME draws black. Latching every renderer-visible register once per
+  line at hblank did NOT fix either, so it is not a sampling race.
+
+  **Leading hypothesis: the raster interrupt should be a ONE-SHOT.** MAME's `vregs_w` hands the
+  value to `screen::time_until_pos()`, which schedules a timer -- so IRQ5 fires once per WRITE to
+  the register at `0x1c`. The RTL instead compares `vcnt` against the register every frame, so a
+  game that writes it once and leaves it gets one interrupt in MAME and one PER FRAME here. The
+  extra handler calls step the band chain further every frame, which is both a chain that drifts
+  down the screen and an image that alternates between two states. The fix is to arm on a write to
+  `0x1c` (after the modulo reduction settles) and disarm when it fires.
+
+  Second, independent of that: the engines render two lines ahead, so a raster write lands about
+  three lines below where MAME's partial update puts it. That is a constant offset, not a flicker.
 
 ## Hardware reality (from the drivers, not assumption)
 

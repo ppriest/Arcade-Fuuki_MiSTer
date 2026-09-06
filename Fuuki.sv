@@ -108,7 +108,6 @@ localparam CONF_STR = {
 	"P1O[57],Trace mode,First N,Ring (latest);",
 	"P1O[58],Re-arm capture,A,B;",
 	"P1O[59],Ring trigger,Off,Vector 2-4 read;",
-	"P1O[60],Sprite order,Record 1023 on top,Record 0 on top;",
 	"-;",
 	"R[0],Reset;",
 	// This list MUST agree with the .mra <buttons> positions, because the
@@ -241,8 +240,8 @@ always @(posedge CLK_50M) begin
 	psrc_s2 <= psrc_s1;
 	psrc_d  <= psrc_s2;
 end
-// The phase-step controls are retired: bit 1 is DUMP NOW and bit 2 flips
-// the sprite depth order (both above).
+// The phase-step controls are retired: bit 1 is DUMP NOW (above); bit 2 is
+// free now that the sprite depth order is settled.
 wire        dps_up   = 1'b0;
 wire        dps_dn   = 1'b0;
 wire [15:0] dps_n    = 16'd8;   // ~1 ns per command; bits 4:3 now select the readout page
@@ -570,9 +569,6 @@ fuuki_core u_core (
 	.dbg_window(status[56:53]), .dbg_ring(status[57]),
 	.dbg_rearm(status[58] ^ probe_src[6]), .dbg_page({probe_src[7], probe_src[4:3]}),
 	.dbg_trig(status[59]), .dbg_dump(probe_src[31:8]),
-	// Sprite depth order. probe_src[2] flips it over JTAG without a
-	// relaunch, so both orders can be photographed in one session.
-	.dbg_spr_rev(status[60] ^ probe_src[2]),
 	.dbg_irq_pending(dbg_irq_pending), .dbg_iack(dbg_iack), .dbg_iack_level(dbg_iack_level),
 	.dbg_irq1_trig(dbg_irq1_trig),
 	.dbg_frozen(dbg_frozen)
