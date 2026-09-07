@@ -1,7 +1,7 @@
 // video_timing checks. RUN FROM THE REPOSITORY ROOT (scripts/run_sim.sh).
 //
 // The interesting checks here are the ones that would otherwise only show up
-// as "the picture is one line off" on hardware weeks later: the wrap of
+// as "the picture is one line off" on MiSTer weeks later: the wrap of
 // vcnt_next/vcnt_next2 at the frame boundary, and each interrupt firing
 // EXACTLY once per frame at the right raster position.
 
@@ -80,7 +80,7 @@ module tb_video_timing;
 
 			// vcnt_next/vcnt_next2 must ALWAYS be vcnt+1 / vcnt+2 modulo
 			// V_TOTAL. This is the check that catches a raw truncation at the
-			// frame boundary, which on hardware looks like the top line of the
+			// frame boundary, which on MiSTer looks like the top line of the
 			// screen fetching the wrong row.
 			if (vcnt_next  != 9'((int'(vcnt) + 1) % V_TOTAL)) wrap_bad <= wrap_bad + 1;
 			if (vcnt_next2 != 9'((int'(vcnt) + 2) % V_TOTAL)) wrap_bad <= wrap_bad + 1;

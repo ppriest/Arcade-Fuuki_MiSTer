@@ -118,13 +118,16 @@ module opl4_pcm (
 	endfunction
 
 	// effective envelope rate: 0->0, 15->63, else raw*4+correction clamped
-	function automatic [5:0] eff_rate(input [3:0] raw, input [5:0] corr);
-		logic [7:0] r;
+	// to 0..63. The correction is SIGNED (see corr below), so the sum is
+	// signed too and clamps at both ends, as the reference's
+	// clamp(raw * 4 + correction, 0, 63) does.
+	function automatic [5:0] eff_rate(input [3:0] raw, input signed [7:0] corr);
+		logic signed [8:0] r;
 		if (raw == 4'd0)       eff_rate = 6'd0;
 		else if (raw == 4'd15) eff_rate = 6'd63;
 		else begin
-			r = {2'b00, raw, 2'b00} + {2'b00, corr};
-			eff_rate = (r > 8'd63) ? 6'd63 : r[5:0];
+			r = $signed({3'b000, raw, 2'b00}) + corr;
+			eff_rate = (r < 9'sd0) ? 6'd0 : (r > 9'sd63) ? 6'd63 : r[5:0];
 		end
 	endfunction
 
@@ -258,10 +261,26 @@ module opl4_pcm (
 	wire [3:0] shamt = 4'(c_oct + 4'sd8);                   // 0..15
 	wire [31:0] step_exact = ({21'd0, 1'b1, c_fnum} << shamt) >> 3;
 
-	// envelope rate correction: 15 -> none, else (oct+corr)*2 + fnum[9]
-	wire signed [5:0] rc_sum = {{2{c_oct[3]}}, c_oct} + {2'b00, c_rc};
-	wire [5:0] corr = (c_rc == 4'd15) ? 6'd0
-	                 : {rc_sum[4:0], c_fnum[9]};
+	// envelope rate correction: 15 -> none, else (oct+rc)*2 + fnum[9].
+	//
+	// SIGNED. oct is -8..7 and rc 0..14, so (oct+rc) is -8..21 and the
+	// correction -16..43; the reference computes it as int32_t and adds it
+	// to raw*4 before clamping to 0..63. This was built as an UNSIGNED
+	// {rc_sum[4:0], fnum[9]}, which is right for every non-negative sum and
+	// wrong for every negative one: oct=-1 with rc=0 gave 0b11111,0 = 62
+	// instead of -2, and eff_rate then clamped the rate to 63 -- INSTANT.
+	//
+	// That is what made Asura Buster's sound effects near-silent while its
+	// music was fine. The coin chime (wave 289, captured from MAME with
+	// scripts/opl4_log.py) plays at oct=-1 with the header's RC=0, DR=2 and
+	// SL=14: the reference decays it at rate 6, slowly, from full level; this
+	// core decayed it at rate 63, straight to SL=14 -- about -42 dB -- in the
+	// first envelope clock, and held it there. Music keys on at oct>=0 or
+	// with RC=15 and never took the negative branch. Psikyo's copy of this
+	// file has the same fault; its games evidently never exercise it.
+	wire signed [5:0] rc_sum = {{2{c_oct[3]}}, c_oct} + {2'b00, c_rc};     // -8..21
+	wire signed [7:0] corr = (c_rc == 4'd15) ? 8'sd0
+	                       : {{2{rc_sum[5]}}, rc_sum, c_fnum[9]};          // -16..43
 
 	// sustain level: 4 bits, 15 extends to 31, then <<5 (10-bit units)
 	wire [9:0] sl_val = {(c_sl == 4'd15) ? 5'd31 : {1'b0, c_sl}, 5'b00000};

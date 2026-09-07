@@ -39,19 +39,15 @@ Some links discussing the games and hardware:
 
 ## History
 
-* Arcade-Fuuki_20260906.rbf  (commit 5700b36)
-  * **Sound.** FG-2's Z80 with the YM2203 / YM3812 / OKI M6295 set, and FG-3's Z80 with the
-    YMF278B — Psikyo's OPL4 PCM engine plus gtaylormb/opl3_fpga for the FM half. All four
-    parent sets play with music and effects.
-  * FG-3's 68020 and Z80 now talk through the real 16 shared bytes; the bring-up stub is gone.
+* Arcade-Fuuki_20260907.rbf
+  * **Beta release**
+  * **FG-3 sound effects fixed.**
+
+* Arcade-Fuuki_20260906.rbf
+  * **Alpha release**
+  * **Sound.** FG-2's Z80 with the YM2203 / YM3812 / OKI M6295 set, and FG-3's Z80 with the YMF278B — Psikyo's OPL4 PCM engine plus gtaylormb/opl3_fpga for the FM half. Asura games are buggy and sounds are silent or cut out.
   * HDMI rotation and Flip 180, vertical crop, integer scaling, CRT offset.
-  * `Sound: FM` and `Sound: PCM` OSD switches mute either half, on either board.
   * gogomile's title-cloud jitter is fixed: the raster register is 8 bits, not 9.
-  * Known faults: **Asura Buster's audio can stop entirely a short way into a game** — the Z80
-    keeps running and keying on voices, so the suspect is the wave-ROM fetch path, and this
-    build carries the probe that will say. Sounds tied to character actions are missing. The
-    two tilemap raster faults below are unchanged.
-  * Timing: `clk_sys` setup +0.438 ns, 57% ALMs, 72% RAM blocks.
 
 * Arcade-Fuuki_20260905.rbf
   * **Alpha release**
@@ -60,8 +56,6 @@ Some links discussing the games and hardware:
   * Raster effects are rough in places
   * Includes fast DDR loading
   * No HDMI rotate/flip yet
-
-## Screenshots
 
 ## Installation
 
@@ -73,7 +67,7 @@ FG-3 (Asura Blade / Asura Buster) needs **64MB or more SDRAM module**
 
 ## Status
 
-**Runs on hardware, with sound.** All four parent sets boot and play on a DE10-nano
+**Runs on MiSTer, with sound.** All four parent sets boot and play on a DE10-nano
 with 0.482 ns of setup slack on `clk_sys`.
 
 What is built and running:
@@ -95,12 +89,11 @@ Known issues:
 ### Todo
 
 - [ ] Close the remaining raster faults above
-- [x] Sound: Z80, and the FG-2 chip set (YM2203, YM3812, OKI M6295) — built, simulated, awaiting the ear
-- [x] Sound: OPL4 PCM and the FG-3 Z80 — built, and measured playing on hardware
+- [x] Sound: Z80, and the FG-2 chip set (YM2203, YM3812, OKI M6295)
+- [x] Sound: OPL4 PCM and the FG-3 Z80 — built, and measured playing on MiSTer
 - [x] Sound: the OPL4's FM half — [gtaylormb/opl3_fpga](https://github.com/gtaylormb/opl3_fpga),
       measured synthesising on Asura Blade
-- [ ] Close the timing margin: with the OPL3 in, the design needs a pinned fitter seed
-- [x] HDMI rotation and Flip 180, vertical crop, integer scaling, CRT offset — wired, untested
+- [x] HDMI rotation and Flip 180, vertical crop, integer scaling, CRT offset
 - [ ] Hiscore support
 - [ ] The DIP Flip Screen in the renderer (both MAME drivers are marked inaccurate. Hidden in MRAs)
 
@@ -156,7 +149,7 @@ where they matter (both Fuuki drivers flag raster effects and flipped-screen scr
   That makes "compare against MAME" a single command rather than a hand-driven debugger session.
 * **Offline proofs before building.** ROM interleaves are scored against MAME's disassembly, and
   graphics layouts rendered to PNG, before any RTL depends on them.
-* **On-hardware instruments, driven over JTAG.** A trace ring readable through the video output,
+* **On-MiSTer instruments, driven over JTAG.** A trace ring readable through the video output,
   and `scripts/memdump.py`, which reads SDRAM, VRAM, palette, sprite RAM, video registers or work
   RAM back out of a running core with the CPU paused, so a fault can be read off the real machine
   rather than inferred.

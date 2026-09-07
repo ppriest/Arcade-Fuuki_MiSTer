@@ -7,7 +7,7 @@ through these, so an error here is an error everywhere.
 
 Doing this before writing the RTL is deliberate. A wrong graphics layout does
 not fail loudly — it produces plausible-looking garbage on screen, which is
-expensive to diagnose on hardware and trivial to diagnose here.
+expensive to diagnose on MiSTer and trivial to diagnose here.
 
 ## Which region uses which layout
 

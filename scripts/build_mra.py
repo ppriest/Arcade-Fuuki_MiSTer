@@ -23,7 +23,7 @@ here reasons about map digits. Instead:
 Step 3 is only meaningful because mra.py's map convention was checked against
 mra-tools-c itself rather than against this file -- see mra.py's
 `pattern_from_map()` and its selftest. Two implementations sharing one wrong
-assumption would agree with each other and still be wrong on hardware.
+assumption would agree with each other and still be wrong on MiSTer.
 
 THE ADDRESS MAP IS NOT DEFINED HERE
 -----------------------------------

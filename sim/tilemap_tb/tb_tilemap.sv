@@ -69,7 +69,7 @@ module tb_tilemap;
 
 	// ---- VRAM: 16384 words, REGISTERED read ----
 	// Registered, not combinational, so a consumer that fails to spend the
-	// read-latency wait state is caught here rather than on hardware.
+	// read-latency wait state is caught here rather than on MiSTer.
 	logic [15:0] vram [0:16383];
 	always_ff @(posedge clk) vram_data <= vram[vram_addr];
 

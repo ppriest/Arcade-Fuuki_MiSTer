@@ -104,7 +104,7 @@ module tb_maincpu;
 	// The latency is deliberately not 1-2 cycles. A short-latency
 	// behavioural model returns its response while an FSM is between
 	// states, which is exactly how Psikyo's duplicate-request bug passed
-	// every module-level simulation and failed on hardware
+	// every module-level simulation and failed on MiSTer
 	// (LESSONS_LEARNED, "Re-run the failing case with the production
 	// transport in place of behavioural models").
 	// ---------------------------------------------------------------

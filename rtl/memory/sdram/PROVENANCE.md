@@ -5,7 +5,7 @@
 | Stage | What |
 |---|---|
 | Upstream | Sorgelig's `sdram.v`, GPL-3.0-or-later, taken from `MiSTer-devel/Arcade-Jackal_MiSTer/rtl/ram_rom/sdram.sv`. Kept verbatim beside it as `sdram_upstream_reference.sv` for diffing. |
-| Then | `Arcade-Psikyo_MiSTer/rtl/memory/sdram/` — extended to burst-4 reads and proved on real DE10-nano hardware. |
+| Then | `Arcade-Psikyo_MiSTer/rtl/memory/sdram/` — extended to burst-4 reads and proved on a DE10-nano MiSTer. |
 | Here | Copied from that Psikyo tree **untouched**. Do not edit. |
 
 This controller, or a close variant, is vendored into dozens of MiSTer-devel arcade cores. It is a

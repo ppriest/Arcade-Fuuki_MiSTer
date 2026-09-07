@@ -216,7 +216,7 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 //
 // outclk_1 is SDRAM_CLK, phase-shifted 180 degrees (5820 ps of the 11641 ps
 // period), and drives the pin directly. The PLL is taken unchanged from the
-// Psikyo core, where this exact phase is proven on hardware: at 266 degrees
+// Psikyo core, where this exact phase is proven on MiSTer: at 266 degrees
 // (tuned for a different controller) that core came up as a frozen pattern
 // with the CPU never booting, because commands and read data were latched on
 // the wrong edge. Simulation cannot catch it -- the chip model has no notion

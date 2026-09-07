@@ -235,7 +235,7 @@ module tb_vregs;
 		// MAME hands the register to screen_device::time_until_pos(), which
 		// takes vpos modulo the screen height, and the driver declares a
 		// 256-line screen: 0xfffe fires at line 254, in vblank -- and
-		// gogomile depends on that IRQ5 every frame (it hung on hardware
+		// gogomile depends on that IRQ5 every frame (it hung on MiSTer
 		// when the RTL let the value fire nothing; see vregs.sv).
 		repeat (4) @(posedge clk);
 		check(raster_line == 9'd254, "capture: raster line 0xfffe -> 254 (low 8 bits), as MAME");

@@ -25,7 +25,7 @@
 //
 // The mask is INDEXED BY the priority value. It is not ANDed with it. Psikyo
 // shipped the value-AND version, which let priority-1 sprites beat a layer
-// unconditionally, and it took a live JTAG spriteram dump on real hardware to
+// unconditionally, and it took a live JTAG spriteram dump from the MiSTer to
 // find (LESSONS_LEARNED, "Copy a driver's register expression including its
 // operators"). Note its corrected table also ended in 0xFE -- the same value
 // that falls out of Fuuki's expression naturally.

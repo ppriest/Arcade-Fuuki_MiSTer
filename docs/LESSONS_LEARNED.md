@@ -201,7 +201,7 @@ The mod byte is sent in file order and `mod_board` powers up 0 on every FPGA rep
 `<rom index="0">`, any download-time consumer of it (here `needs_adpcma_swap`) sees 0 for the whole
 download and silently does nothing; a runtime-only consumer never exposes this. The swap logic,
 transform and address window were all verified correct while the feature did nothing at all -- the
-gate opened after the data had passed. Confirmed by ear on hardware, same bitstream, byte last vs
+gate opened after the data had passed. Confirmed by ear on MiSTer, same bitstream, byte last vs
 first.
 
 ### Gate every deploy on an XML well-formedness check
@@ -327,7 +327,7 @@ uniformly across `ddram_arbiter`, `sdram_arbiter5` and the HPS download path -- 
 cycle of margin because `c_valid` asserts one cycle before the arbiter's own state returns to idle;
 a single-client port wired straight to the phy ("no arbiter needed for one client") skips it. Sprite
 gfxrom's dedicated Port 1 did exactly that and silently returned the previous transaction's stale
-data under contention -- not a hang, just wrong data, read on hardware as sprite corruption. Fixed
+data under contention -- not a hang, just wrong data, read on MiSTer as sprite corruption. Fixed
 with a single-client pulse shim (`SP_IDLE`/`SP_ISSUE`/`SP_WAIT`) reproducing the arbiter's margin.
 Third occurrence of this defect class in one project.
 
@@ -417,7 +417,7 @@ real transport stack before blaming synthesis.
 `tb_maincpu.sv` pulsed `vblank` for one clock; hardware holds it for the whole 38-line blank
 (~205,000 clk_sys cycles). That hid a genuine `maincpu.sv` bug for the whole project: the IRQ logic
 was `if (vblank) set; else if (iack) clear;`, giving *set* priority, so an acknowledge arriving
-while vblank was still high -- always the case on hardware -- was discarded. `irq_pending` never
+while vblank was still high -- always the case on MiSTer -- was discarded. `irq_pending` never
 cleared, `ipl` stayed at 4, and the CPU re-entered the ISR after every `RTE`. With a one-clock pulse
 the acknowledge always landed after vblank fell, so the test passed every time.
 
@@ -498,7 +498,7 @@ appears only in `output_files/<rev>.sta.summary` / `<rev>.sta.rpt`, which nothin
 `emu|pll|...divclk : 48.74 MHz` against an 85.909091 MHz clock is instantly diagnostic and needs no
 path analysis. It is the highest-value number in the report.
 
-### Treat "correct in sim, wrong on hardware, reproducible, insensitive to interface tuning" as a timing violation until proven otherwise
+### Treat "correct in sim, wrong on MiSTer, reproducible, insensitive to interface tuning" as a timing violation until proven otherwise
 
 The symptom set was: boots but reads back wrong data; roughly half of golden-ROM comparisons
 mismatch; reproducible across power cycles; unaffected by SDRAM_CLK phase; 100% correct in ModelSim
@@ -740,7 +740,7 @@ hierarchical access to the core's own `MCycle`/`TState`, not by "the test passes
   treat that block as unverified.
 - **[Fuuki] "The game plainly means no interrupt" is a guess; what MAME actually does is the
   spec.** The raster register parked at `0xFFFE` was read as "disable", and the RTL fired
-  nothing. The game hung on hardware: its main loop waits on a flag only the level-5 handler
+  nothing. The game hung on MiSTer: its main loop waits on a flag only the level-5 handler
   sets, so it needs one IRQ5 per frame however the register is parked. MAME's `time_until_pos()`
   wraps the line modulo the screen height and fires it every frame, and the game is known to work
   there. Found in one JTAG probe read: `last_rom_addr` alternating over a 4-word loop, decoded
@@ -838,6 +838,27 @@ hierarchical access to the core's own `MCycle`/`TState`, not by "the test passes
   session of serialised work: every source edit waited on a thirteen-minute compile, a build died
   mid-Fitter with an edit in flight, and a `.qsf` hand-edit (`MISTER_FB=1`) was silently reverted
   by Quartus re-saving the project between builds. A worktree at `build/` costs one script.
+- **[Fuuki] Two clients that PULSE a request need a latch, not a priority mux.** The OPL4's
+  internal memory arbiter sampled its two clients only while the bus was idle, and both of them
+  pulse a request for one cycle and then wait for a valid. A pulse raised while the other side's
+  fetch was in flight was silently discarded, and on the register side that is permanent: its
+  `mem_pending` sticks at 1, and because the next request needs `!mem_pending`, every later
+  wavetable-header read dies with it. It fires exactly when a one-shot sound effect starts -- a
+  new wave selection loads its header at the moment the PCM engine is busiest -- so on Asura
+  Buster music played and single-shot effects never did. Latch both requests with their addresses;
+  serve the rare one first so starvation is impossible rather than unlikely.
+- **[Fuuki] "Bisected" is a claim about cause, and an intermittent fault cannot support it.** The
+  OPL3 was bisected onto this fault with the `.held` fallback -- build 10000008 healthy, 10000012
+  wedged, same window, clean numbers -- and committed as measured fact. It was wrong. The arbiter
+  bug above was present in both builds and shows up only when enough voices are streaming to
+  collide, so the two readings were sampling luck, not the OPL3. What should have been suspicious
+  at the time: no proposed mechanism. The OPL3's dout, irq_n and led were all unconnected and it
+  touched no memory, and that gap was written down and then bisected past anyway.
+- **[Fuuki] The user's framing was the measurement.** "Music works, single-shot effects have never
+  worked" located the fault in one sentence, after a lot of probe reads had not: it says the
+  failure is in the path that runs when a NEW voice starts while others already stream. Two
+  earlier hypotheses -- NEW2 gating and the F9 attenuator -- were killed by the probe in one read
+  each, and a third, timing margin, was being defended past the evidence until it was challenged.
 - **[Fuuki] A vendored core that is silent in simulation may only be uninitialised.** jotego's
   jtopl and jt12 leave their envelope and operator pipelines without reset; hardware powers them up
   at zero, ModelSim leaves them X, and X through an envelope generator is a chip that takes every

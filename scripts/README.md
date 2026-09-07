@@ -16,6 +16,8 @@ by anyone else with a MAME install and the ROM sets.
 | `mame/capture.lua` | the Lua half of the above, run inside MAME |
 | `mame/run.lua` | autoboot wrapper that catches Lua syntax and runtime errors and writes them to a file the Python runner reads back — otherwise a broken script fails as a modal dialog that is invisible headlessly |
 | `mame/probe.lua` | report which Lua API calls this MAME build actually provides, so the capture scripts are written against what exists rather than against the current online docs |
+| `opl4_log.py` | `python scripts/opl4_log.py asurabus --coin 2400` -- run MAME headlessly, insert a coin at a frame, log every OPL4 write with the channel state at each PCM key-on, decode the wavetable header each one points at in `opm.u6`, and summarise MAME's own audio around the coin. What the driver SENDS for a sound, when the engine reads right but sounds wrong |
+| `mame/opl4_log.lua` | the Lua half of the above |
 | `mame/fm_probe.lua` | decode OPL4 register traffic and count FM key-ons |
 | `mame/vregs_frames.lua` | log video-register writes with the raster line in force |
 | `parse_mame_trace.py` | turn a MAME debugger trace into an expected fetch list for `tb_maincpu` |

@@ -56,7 +56,7 @@ module video_timing (
 	// next line; sprite_line_buffer SWAPS banks at line_start, so a bank filled
 	// after one line_start is not displayed until after the NEXT one. Psikyo
 	// indexed its sprite render with vcnt+1 and its rows landed one scanline
-	// BELOW the tilemaps on hardware.
+	// BELOW the tilemaps on MiSTer.
 	//
 	// Both are wrapped on V_TOTAL before use: a raw vcnt+1 at the last raster
 	// line would fetch line 0 as row 262.

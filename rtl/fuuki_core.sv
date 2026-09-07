@@ -192,7 +192,7 @@ module fuuki_core (
 	logic [2:0]   cpu_fc;
 	// Declared here, ABOVE the maincpu instance that pauses on it, not at the
 	// walker where it is defined: vlog rejects use-before-declare (vlog-2388)
-	// and Quartus silently resolves it, which is how it reached hardware.
+	// and Quartus silently resolves it, which is how it reached the FPGA build.
 	wire          walk_active = (dbg_src == 2'd3);
 	// Memory-dump decode, declared here because the memories below index by it.
 	wire [3:0]    dump_region = dbg_dump[23:20];
@@ -604,7 +604,7 @@ module fuuki_core (
 	//
 	// Each engine renders vcnt_next2 into the bank that line_start just made
 	// the render bank, and that bank is displayed after the NEXT line_start.
-	// Simulation agrees the arithmetic lands row V on line V; hardware shows
+	// Simulation agrees the arithmetic lands row V on line V; MiSTer shows
 	// sprites a line below where MAME puts them. This tags each bank with the
 	// row its engine set out to render and, on every displayed line, holds
 	// (vcnt - tag of the bank being displayed). 0 means the row is on its
@@ -634,6 +634,14 @@ module fuuki_core (
 	// fault it was built for turned out to be the scaler. The counters stay
 	// so the check can be re-exported without rebuilding the logic.
 	wire [15:0] lb_check_unused = {spr_delta, tm1_delta, spr_bad, tm1_bad};
+
+	// The sample port's request and valid, declared HERE, above the watch
+	// that reads them, not beside the SDRAM instance 400 lines below: vlog
+	// rejects use-before-declare and Quartus quietly accepts it. The dbg_pri
+	// declaration above the per-line record exists for the same reason, and
+	// this one was missed when the watch went in -- every simulation in this
+	// tree failed to compile from that commit until this.
+	logic        smp_req, smp_valid;
 
 	// =====================================================================
 	// SAMPLE FETCH WATCH. The sample ROM port serves FG-2's OKI and FG-3's
@@ -702,7 +710,7 @@ module fuuki_core (
 	// The compositor's resolved layer-priority value. Declared HERE, above
 	// the record that samples it, not beside the compositor 240 lines below:
 	// vlog rejects use-before-declare and Quartus quietly accepts it, which
-	// is how a truncated bus once reached hardware (LESSONS_LEARNED).
+	// is how a truncated bus once reached the FPGA build (LESSONS_LEARNED).
 	logic [2:0] dbg_pri;
 
 	// PER-LINE DISPLAY RECORD (dump region 6). EIGHT words per display line,
@@ -801,7 +809,7 @@ module fuuki_core (
 
 	// CPU accesses are captured on the VALID that completes them, paired with
 	// the address that was requested, and tagged with the kernel's function
-	// code. Capturing on rom_req alone gave a scrambled order on hardware
+	// code. Capturing on rom_req alone gave a scrambled order on MiSTer
 	// (0, 3, 1, ...) that no 68000 sequence produces; the completed access
 	// is the one the CPU actually consumed. FC separates a vector/data read
 	// (5) from a program fetch (6) from an interrupt acknowledge (7), which is
@@ -1057,7 +1065,7 @@ module fuuki_core (
 	// =====================================================================
 	// The sound boards' two memory clients, declared before the backend that
 	// serves them. One pair of ports, whichever board is running.
-	logic        z80_rom_req, z80_rom_valid, smp_req, smp_valid;
+	logic        z80_rom_req, z80_rom_valid;   // smp_req/smp_valid: declared above the fetch watch
 	logic [18:0] z80_rom_addr;
 	logic [21:0] smp_addr;
 	logic [7:0]  z80_rom_data, smp_data;

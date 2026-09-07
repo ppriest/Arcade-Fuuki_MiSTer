@@ -26,7 +26,7 @@
 //
 // The OPL4 is Psikyo's (rtl/sound/opl4/, from E:\Arcade-Psikyo_MiSTer):
 // bus protocol, status/ID/BUSY/LD, both timers with IRQ, and the 24-channel
-// PCM wavetable engine, running on hardware there.
+// PCM wavetable engine, running on MiSTer there.
 //
 // Its FM half is gtaylormb/opl3_fpga (rtl/sound/opl3/), and it attaches
 // where the real part joins them: ports 0x40-0x43 ARE the YMF262 bus --
@@ -36,7 +36,7 @@
 // the DO2 mix. Ports 0x44-0x45 (PCM) are deliberately withheld from it.
 //
 // What the OPL3 does NOT do here: status, timers and IRQ stay with
-// opl4_regs, which already implements them and is proven on hardware. The
+// opl4_regs, which already implements them and is proven on MiSTer. The
 // vendored core's INSTANTIATE_TIMERS is 0 by default, so it does not fight
 // for them, and its dout and irq_n are left unconnected.
 //
@@ -163,7 +163,7 @@ module fg3_sound (
 	// OPL3 mode on. a[2] == 0 is the whole of 0x40-0x43.
 	//
 	// en_fm ALSO takes it off the bus, not just out of the mix. That is
-	// deliberate and it is why the switch exists: bisecting on hardware
+	// deliberate and it is why the switch exists: bisecting on MiSTer
 	// showed Asura Buster's sound driver wedges with the OPL3 present and
 	// runs with it absent (pcm_keyons 9 vs 0, snd_peak 59 vs 0 over the same
 	// window), and nothing in the OPL3's connections explains how -- its

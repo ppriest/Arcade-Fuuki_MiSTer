@@ -21,7 +21,7 @@
 //
 // PAUSE_BIT is a parameter rather than a literal precisely because it is a
 // consequence of the `.mra` rather than of this module, and because it has
-// NOT yet been confirmed on hardware. The way to confirm it, which is how the
+// NOT yet been confirmed on MiSTer. The way to confirm it, which is how the
 // Psikyo core settled the same question: build, press Pause, and read back
 // which joystick bit set. If the `<buttons>` list is ever edited, this must
 // move with it.

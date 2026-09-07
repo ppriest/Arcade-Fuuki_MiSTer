@@ -16,7 +16,7 @@
 //      handler reads the latch;
 //   4. after them the board makes sound: the mix leaves zero, and the OKI
 //      fetches sample bytes.
-// It does not judge what the sound IS. That is for the ear, on hardware.
+// It does not judge what the sound IS. That is for the ear, on MiSTer.
 `timescale 1ns/1ps
 module tb_fg2_sound;
 	localparam real HALF = 5.8207;      // 85.909 MHz

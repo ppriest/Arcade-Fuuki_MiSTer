@@ -317,7 +317,7 @@ module fuuki_sdram_top (
 	always_ff @(posedge clk) dl_busy_d <= dl_busy;
 	assign dbg_dl_wr   = dl_busy & ~dl_busy_d;
 	// dl_addr is declared ABOVE this use. vlog rejects use-before-declare;
-	// Quartus quietly accepts it, which is how it reached hardware.
+	// Quartus quietly accepts it, which is how it reached the FPGA build.
 	assign dbg_dl_addr = dl_addr;
 
 	sdram_download u_dl (

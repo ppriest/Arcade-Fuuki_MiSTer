@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch each game in turn and record what the hardware actually does.
+"""Launch each game in turn and record what the MiSTer build actually does.
 
     python scripts/sweep.py                    # all deployed FG-2 sets
     python scripts/sweep.py gogomile pbancho   # just these

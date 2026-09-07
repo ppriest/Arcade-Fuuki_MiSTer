@@ -21,7 +21,7 @@
 // in the list; the per-line engine renders the list in order with later writes
 // overwriting earlier ones, so the last one stored wins.
 //
-// THIS IS THE ORDER MEASURED ON HARDWARE, and it is the opposite of what
+// THIS IS THE ORDER MEASURED ON MISTER, and it is the opposite of what
 // reading fuukispr.cpp suggests. That file walks the list from the last record
 // to the first when a colpri callback is installed ("Draw them backwards, for
 // pdrawgfx"), which both Fuuki drivers do -- so record 0 is drawn last there
@@ -30,7 +30,7 @@
 // order fixed all three (Fuuki.sv's "Sprite order" switch was added to make
 // that an A/B on one frozen frame rather than a rebuild). The discrepancy with
 // the driver is NOT explained; do not "correct" this back to match a reading
-// of fuukispr.cpp without re-running that comparison on hardware.
+// of fuukispr.cpp without re-running that comparison on MiSTer.
 //
 // Record format (docs/ROADMAP.md, "Sprites"):
 //   word0  15-12 xnum-1   11 flipX  10 DISABLE   9-0 X (signed)

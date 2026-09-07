@@ -22,7 +22,7 @@ Several of its findings bind decisions in this document directly and are cited i
 
 ## Progress (kept current)
 
-**All four parent sets run on hardware, without sound.** Mile Smile and Puzzle Bancho (FG-2) and
+**All four parent sets run on MiSTer, without sound.** Mile Smile and Puzzle Bancho (FG-2) and
 Asura Blade and Asura Buster (FG-3) boot and play on a DE10-nano from one bitstream, the board
 selected by the `.mra` mod byte. `releases/Arcade-Fuuki_20260905.rbf` is that build: timing met on
 every clock, `clk_sys` setup slack +0.482 ns, 30% of the ALMs and 64% of the RAM blocks.
@@ -37,7 +37,7 @@ every clock, `clk_sys` setup slack +0.482 ns, 30% of the ALMs and 64% of the RAM
 | Sprites (`sprite_line_*.sv`) | Sprite RAM snapshotted once per frame, a candidate list built in vblank, a per-scanline engine into a double-buffered line buffer. Zoom, flip, multi-tile sprites, FG-3's tile bank. |
 | Compositor | Bit-indexed pdrawgfx priority, backdrop = last pen. |
 | Video registers | Latched once per scanline at hblank, so raster effects still work while nothing races the CPU's writes. |
-| SDRAM (`fuuki_sdram_top.sv`) | 26-bit addressing; FG-3's 56.5 MB map fits and FG-2 maps identically on a stock 32 MB module. Verified on hardware with known patterns, 256/256 exact. |
+| SDRAM (`fuuki_sdram_top.sv`) | 26-bit addressing; FG-3's 56.5 MB map fits and FG-2 maps identically on a stock 32 MB module. Verified on MiSTer with known patterns, 256/256 exact. |
 | Fast ROM load (`rom_loader.sv`) | `.mra` index 0 goes straight to DDR3 and is copied to SDRAM with the core in reset. Asura Blade is playable ~14 s after launch against ~75 s through the ioctl path. |
 | `.mra` files | All nine sets, parents and clones, each proved byte-for-byte against `ROM_START`. |
 
@@ -56,7 +56,7 @@ latencies: the firmware initialises the chips, takes the two commands the captur
 sends at boot, sequences on the timer interrupt and both FM chips produce output. Whether it
 sounds right is a hardware question.
 
-**FG-3 sound is built and measured on hardware** (`rtl/sound/fg3_sound.sv`): T80 at 6 MHz, the 16
+**FG-3 sound is built and measured on MiSTer** (`rtl/sound/fg3_sound.sv`): T80 at 6 MHz, the 16
 bytes shared with the 68020 at `0x903FE0` — which replaces the bring-up stub, and which Asura
 Blade proves by booting at all, since its 68020 spins at `0x200F6` until the Z80 writes `0xCD` —
 and Psikyo's OPL4 with its 24-channel PCM engine. Measured over attract with the probe's sound
@@ -89,7 +89,7 @@ the FM half is not built, so whatever Blade drives through FM produces silence.
 **The output chain is wired**: CRT offset (`crt_adjust`, from Psikyo) -> `arcade_video` ->
 `video_freak` (vertical crop 216p/224p, integer scale modes, aspect) -> the framework, with
 `screen_rotate_two` tapping the final output into a rotated (CW/CCW) or 180-flipped HDMI
-framebuffer in DDR3, muxed against the ROM loader on `ldr_active`. Untested on hardware at the
+framebuffer in DDR3, muxed against the ROM loader on `ldr_active`. Untested on MiSTer at the
 time of writing.
 
 FG-3's Z80 handshake is a **stub**: `rtl/fuuki_core.sv` plays the sound CPU's side of the shared-RAM
@@ -104,13 +104,28 @@ the real Z80 lands.
 reducing modulo its own 262-line frame, which put that interrupt on line 34, in the picture; the
 captured register log shows the clouds are a five-band layer-2 X-scroll chain whose `0xFFFE` step
 writes the top band's scroll and restarts the chain, so it ran mid-frame and only every other
-frame's chain started from line 29. `vregs.sv` now takes the low byte. Confirmed on hardware.
+frame's chain started from line 29. `vregs.sv` now takes the low byte. Confirmed on MiSTer.
 
 Two hypotheses were tried and dropped on the way: rendering the tilemaps one line ahead instead of
 two (broke both games — the render window is too short, see the note in `rtl/fuuki_core.sv`), and
-a one-shot interrupt armed per write — dropped on reading `fuukitmap.cpp`, not on hardware:
+a one-shot interrupt armed per write — dropped on reading `fuukitmap.cpp`, not on MiSTer:
 `vregs_w` schedules the raster timer with a frame-length period and the callback re-arms it, so
 MAME fires it every frame the value stands, as the comparator does.
+
+**FG-3 one-shot sound effects were broken by the OPL4's memory arbiter, and are fixed.** It
+sampled its two internal clients -- the PCM sample stream and the register/wavetable reader --
+only while the bus was idle, and both pulse a one-cycle request and then wait for a valid. A pulse
+raised during the other's fetch was discarded, and on the register side that is permanent, so
+every later header read died with it. A one-shot effect loads its header at the instant the PCM
+engine is busiest, which is why Asura Buster played music and never played the coin chime or any
+effect. Both requests are latched now, with the rare register side served first. Confirmed on
+MiSTer: the coin chime plays.
+
+**Effects were then far too quiet, and that is fixed too:** the envelope rate correction was an
+unsigned field, so a voice at octave −1 with RC = 0 (the coin chime, captured from MAME with
+`scripts/opl4_log.py`) got 62 instead of −2 and decayed instantly to SL = 14, about −42 dB.
+Signed now; `sim/opl4_chime_tb` replays the captured sequence and reads the envelope at 0x004
+after 100 ms. Confirmed by ear on MiSTer: sound effects at full level.
 
 **Still open, both tilemap raster effects:**
 
@@ -144,7 +159,7 @@ dump loop was cycling the USB-Blaster with a compile running on the same machine
 combination had not been used before and the dumps had run clean without it. Unproven as the
 cause, but the two are not to be overlapped again until it is.
 
-Sprite faults found and fixed on hardware are recorded in
+Sprite faults found and fixed on MiSTer are recorded in
 [`LESSONS_LEARNED.md`](LESSONS_LEARNED.md) rather than here; the short version is that a signed
 comparison written with one unsigned operand made tall sprites repeat a row down the screen, and a
 16.16 accumulator one bit too narrow made zoomed sprites sample only a quarter of each tile.
@@ -293,7 +308,7 @@ Zoom: `xzoom = 128 - 4 * zoomx`, giving 128 (full) down to 68 (about 53%). Tile 
 zoomed path deliberately scales by `512 * (xzoom + 8)` — the *next larger* integer step — "to avoid
 holes". Reproduce that rounding rather than an exact ratio, or zoomed sprites grow seams.
 
-**Draw order: the highest-numbered record is drawn on top, established on hardware.** Reading
+**Draw order: the highest-numbered record is drawn on top, established on MiSTer.** Reading
 `fuukispr.cpp` suggests the opposite — both boards install a `colpri_cb`, so MAME walks the list
 backwards (`start = size-4; inc = -4`) "for pdrawgfx", which would put record 0 on top. Built that
 way, asurabld drew its high-score table, its in-game sprites and its character-name flashes
@@ -509,7 +524,7 @@ commit, licence and any integration notes. That is Psikyo's convention, and the 
 | YM2203 (FG-2) | **jt03** (`jt12` repo, GPL-3.0) — vendored, `rtl/sound/jt12/` | Psikyo's copy of jotego/jt12 |
 | YM3812 / OPL2 (FG-2) | **jtopl2** (`jtopl` repo, GPL-3.0) — vendored, `rtl/sound/jtopl/`; its `irq_n` is the Z80's INT | github.com/jotego/jtopl `7ac0c81` |
 | OKI M6295 (FG-2) | **jt6295** (GPL-3.0) — vendored, `rtl/sound/jt6295/`; 18-bit `rom_addr` = 256 KB, the bank folded in above it | github.com/jotego/jt6295 `7d76b0b` |
-| YMF278B / OPL4 — PCM half (FG-3) | Psikyo's from-scratch core: full bus protocol, timers/IRQ and the 24-channel PCM wavetable engine, working on hardware. The **timers are load-bearing on their own** — both games hammer FM register `0x04` ~35,000 times per 5 minutes as the sound driver's sequencer heartbeat, whether or not they use FM voices. | `Arcade-Psikyo_MiSTer/rtl/sound/opl4/` |
+| YMF278B / OPL4 — PCM half (FG-3) | Psikyo's from-scratch core: full bus protocol, timers/IRQ and the 24-channel PCM wavetable engine, working on MiSTer. The **timers are load-bearing on their own** — both games hammer FM register `0x04` ~35,000 times per 5 minutes as the sound driver's sequencer heartbeat, whether or not they use FM voices. | `Arcade-Psikyo_MiSTer/rtl/sound/opl4/` |
 | YMF278B / OPL4 — FM half (FG-3) | **DECIDED: vendor `gtaylormb/opl3_fpga`** — a reverse-engineered SystemVerilog YMF262 (OPL3), LGPL-3.0. Required because Asura Blade drives three 4-operator voices (measured, open item 4), and 4-op is an OPL3 feature that jtopl2/OPL2 cannot provide. See "OPL4: an OPL3 core under Psikyo's PCM engine". | github.com/gtaylormb/opl3_fpga |
 | SDRAM controller | **Ported from Psikyo** — burst-4 `sdram.sv` (Sorgelig, extended), multi-port arbiters, `sdram_download.sv` HPS wrapper, granule cache. Widened to 26 bits here for FG-3. Done. | `Arcade-Psikyo_MiSTer/rtl/memory/` |
 | **Video mixer / scaling** | **`sys/arcade_video.v`** — the MiSTer-devel standard (`video_mixer` + `video_freak`), already present in the template's `sys/`. | Template_MiSTer `sys/` |
@@ -518,13 +533,13 @@ commit, licence and any integration notes. That is Psikyo's convention, and the 
 | Tilemap + sprite engines (FI-002K / FI-003K) | **Custom RTL, no shortcut.** This is the project. | `fuukispr.cpp`, `fuukitmap.cpp` |
 | Sprite pipeline *shape* | Psikyo's per-scanline path is the template: buffered sprite RAM, a once-per-frame candidate list, a per-scanline engine, a double-buffered line buffer, plus the reusable decode stages (record decode, position transform, zoom LUT, sub-tile step, zoom source index, tile row decode). Fuuki's record format, zoom curve and depth order are substituted; the `spritelut` stage is dropped entirely. | `Arcade-Psikyo_MiSTer/rtl/video/sprite_*.sv`, `spriteram_dbuf.sv`, `docs/sprite_buffering.md` |
 | DIPs / inputs | From each driver's `INPUT_PORTS_START`, per game. DIPs arrive as an **ioctl download, index 254**, not through the status word. | `fuukifg2.cpp`, `fuukifg3.cpp`; `Arcade-Psikyo_MiSTer/docs/mister_framework_notes.md` |
-| High scores | **`hiscore.v`** (Hiscores_MiSTer, GPLv3) -- vendored from the Psikyo tree, proven on hardware. All four parent sets have `hiscore.dat` entries, all in work RAM. See "High scores". | github.com/JimmyStones/Hiscores_MiSTer |
+| High scores | **`hiscore.v`** (Hiscores_MiSTer, GPLv3) -- vendored from the Psikyo tree, proven on MiSTer. All four parent sets have `hiscore.dat` entries, all in work RAM. See "High scores". | github.com/JimmyStones/Hiscores_MiSTer |
 | Crop / integer scaling | **`sys/video_freak.sv`** -- present but NOT wrapped by `arcade_video.v`; instantiate explicitly if those OSD options are wanted | Template_MiSTer `sys/` |
 
 ## Phased roadmap
 
 Phases 0 to 2 and 4 are done: the toolchain, the CPU, the whole renderer, the SDRAM backend, the
-`.mra` files and both boards running on hardware. What is left, in the order it makes sense to do
+`.mra` files and both boards running on MiSTer. What is left, in the order it makes sense to do
 it:
 
 **Finish the raster path.** The two open video faults above,
@@ -557,7 +572,7 @@ from scratch:
 | Half | Source | State |
 |---|---|---|
 | **FM (OPL3 / YMF262)** | vendor **`gtaylormb/opl3_fpga`**, LGPL-3.0, SystemVerilog | to do |
-| **PCM (24-channel wavetable), bus protocol, timers, status/ID** | Psikyo's `rtl/sound/opl4/`, working on hardware | port |
+| **PCM (24-channel wavetable), bus protocol, timers, status/ID** | Psikyo's `rtl/sound/opl4/`, working on MiSTer | port |
 
 Why this split rather than finishing Psikyo's core: its FM half was "milestone 2" and was never
 started, and writing an OPL3 is a serious piece of work — 18 channels, 4-operator mode, eight
@@ -635,7 +650,7 @@ tilemap and sprite engines must honour `flip` themselves.
 ## High scores
 
 `rtl/hiscore.v` -- Hiscores_MiSTer (Alan Steremberg / Jim Gregory, GPLv3), the standard module,
-vendored from the Psikyo tree where it is proven on hardware. It pauses the core and borrows a BRAM
+vendored from the Psikyo tree where it is proven on MiSTer. It pauses the core and borrows a BRAM
 port; `maincpu.sv` already has the `pause` input this needs.
 
 **Checked against MAME's `hiscore.dat`, and all four parent sets have entries** -- every one of them
@@ -788,7 +803,7 @@ key-ons for Buster. Because 4-op is an OPL3 feature, an OPL2 core cannot substit
 OPL4 section. Two bounds on the measurement: attract is not all of gameplay, and only the US
 `asurabus` set was tested. Neither changes the decision, which Blade forces on its own.
 
-**Sprite depth order: highest-numbered record on top**, established on hardware and contrary to a
+**Sprite depth order: highest-numbered record on top**, established on MiSTer and contrary to a
 reading of `fuukispr.cpp`. See "Sprites" above; the discrepancy is unexplained.
 
 ### Open
@@ -797,7 +812,7 @@ reading of `fuukispr.cpp`. See "Sprites" above; the discrepancy is unexplained.
    "Progress" above for what has been tried and what the driver reading changed.
 2. **Raster bands land two lines later than MAME's** by analysis — the engines render two lines
    ahead and the ISR's write is caught a line after the interrupt. Reducing the lead is ruled out
-   (the render window); firing IRQ5 early is the `Raster IRQ lead` switch, and on hardware it
+   (the render window); firing IRQ5 early is the `Raster IRQ lead` switch, and on MiSTer it
    changed neither open fault, so this offset may not be what either of them is.
 3. **Layer-order values 6-15** — MAME indexes a 6-entry table with `priority & 0x0f`, so those read
    out of bounds. The RTL picks a defined behaviour; check whether any game writes them.

@@ -104,7 +104,7 @@ module vregs (
 	// fires on line 254, in vblank, every frame. The game needs that IRQ5
 	// each frame even with its raster chain parked -- its main loop spins on
 	// `btst #1,$403446 / beq` and only the level-5 handler sets the bit -- so
-	// on hardware the first RTL, which let 0xFFFE fire nothing, hung within
+	// on MiSTer the first RTL, which let 0xFFFE fire nothing, hung within
 	// seconds of the attract.
 	//
 	// The intermediate version reduced modulo THIS core's 262-line frame,

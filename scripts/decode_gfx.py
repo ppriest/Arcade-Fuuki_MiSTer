@@ -2,7 +2,7 @@
 """Decode Fuuki graphics tiles from a real ROM set and render them as ASCII.
 
 Proving the bit layout OFFLINE, before writing the RTL that depends on it.
-A wrong gfx layout produces plausible-looking garbage on hardware and is
+A wrong gfx layout produces plausible-looking garbage on MiSTer and is
 expensive to diagnose there; here it takes seconds and the answer is visual.
 
 Layouts, transcribed from the drivers' gfx_layout structs:

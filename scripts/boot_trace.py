@@ -201,9 +201,9 @@ def compare(game, suffix="", tail=0):
         print(f"  first expected fetch NOT seen: 0x{expected[j]:06X} "
               f"(after matching up to 0x{expected[j-1]:06X})" if j else
               f"  the very first expected fetch 0x{expected[0]:06X} never appeared")
-        # show what the hardware did instead, around that point
+        # show what the MiSTer did instead, around that point
         seen = [f"{f:06X}" for f in fetches[:40]]
-        print(f"  hardware's first program fetches: {' '.join(seen)}")
+        print(f"  MiSTer's first program fetches: {' '.join(seen)}")
 
 
 def hang(game, wait, fc_only=False):

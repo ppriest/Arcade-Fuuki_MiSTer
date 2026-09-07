@@ -47,7 +47,7 @@ which is the interface this core presents, so it attaches where the real part jo
 halves. Ports `0x44-0x45` (PCM) are withheld from it.
 
 Status, timers and IRQ stay with `rtl/sound/opl4/opl4_regs.sv`, which implements them and is
-proven on hardware. `INSTANTIATE_TIMERS` is 0 in `opl3_pkg.sv` (upstream's default), so this core
+proven on MiSTer. `INSTANTIATE_TIMERS` is 0 in `opl3_pkg.sv` (upstream's default), so this core
 does not contend for them, and its `dout`, `irq_n` and `led` are left unconnected. Its 24-bit
 sample (a channel sum shifted left by 5) is brought to the PCM engine's 16-bit scale with `>>> 8`
 and handed to `opl4.sv` for the DO2 mix, where the F8 attenuator balances it against PCM exactly

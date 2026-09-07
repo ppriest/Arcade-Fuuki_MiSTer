@@ -1,9 +1,9 @@
-// Reusable on-hardware trace buffer for bring-up, read out through the video
+// Reusable on-MiSTer trace buffer for bring-up, read out through the video
 // output and controlled live from the OSD.
 //
 // WHY THIS EXISTS
 // ---------------
-// With no JTAG available, hardware visibility on this project has come from
+// With no JTAG available, visibility into the MiSTer build on this project has come from
 // driving internal state onto VGA_R/G/B and decoding the screenshot
 // (scripts/decode_debug_screenshot.py). Doing that ad-hoc cost a ~12-minute
 // build/deploy/decode cycle every time the probe changed, and -- worse --
@@ -19,7 +19,7 @@
 //      CPU latching corrupt data. The caller supplies an explicit one-cycle
 //      `cap_stb`, so the capture point is a deliberate decision -- and it
 //      must be proven in simulation against a known-good run before its
-//      hardware output is trusted.
+//      MiSTer output is trusted.
 //
 // See docs/LESSONS_LEARNED.md, "Debug instrumentation: how to not fool
 // yourself".
