@@ -607,6 +607,7 @@ fuuki_core u_core (
 	.dbg_marker(status[60]), .raster_lead(status[62:61]),
 	.dbg_irq_pending(dbg_irq_pending), .dbg_iack(dbg_iack), .dbg_iack_level(dbg_iack_level),
 	.dbg_irq1_trig(dbg_irq1_trig), .dbg_smp(dbg_smp),
+	.dbg_tm_ovr(dbg_tm_ovr), .dbg_tm_max(dbg_tm_max), .dbg_spr_max(dbg_spr_max),
 	.dbg_opl4_state(dbg_opl4_state),
 	.dbg_z80_m1(dbg_z80_m1), .dbg_ym_wr(dbg_ym_wr),
 	.dbg_pcm_keyon(dbg_pcm_keyon), .dbg_fm_keyon(dbg_fm_keyon),
@@ -785,6 +786,7 @@ wire       ctr_clear = probe_src[0];
 wire [2:0] dbg_irq_pending, dbg_iack_level;
 wire       dbg_iack, dbg_irq1_trig;
 wire [15:0] dbg_smp;   // sample-ROM fetch health, see fuuki_core.sv's SAMPLE FETCH WATCH
+wire [2:0]  dbg_tm_ovr;  wire [12:0] dbg_tm_max, dbg_spr_max;   // RENDER OVERRUN WATCH
 wire [7:0]  dbg_opl4_state;  // {0, new2, mix_pcm} -- what can silence PCM
 wire        dbg_z80_m1, dbg_ym_wr, dbg_pcm_keyon, dbg_fm_keyon;
 reg  [7:0] c_irq1  = 8'd0;   // irq1_trig pulses (one per frame when healthy)
@@ -827,6 +829,12 @@ always @(posedge clk_sys) begin
 	else if (pll_seen_lock && !pll_locked) pll_unlock <= 1'b1;
 end
 debug_counter #(.W(16)) u_c_ovr    (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_spr_ovr),     .count(c_ovr));
+// RENDER OVERRUN WATCH (fuuki_core.sv): lines on which each tilemap engine
+// was still busy when the line buffers swapped. Saturating.
+wire [7:0] c_tm_ovr0, c_tm_ovr1, c_tm_ovr2;
+debug_counter #(.W(8)) u_c_tmovr0 (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_tm_ovr[0]), .count(c_tm_ovr0));
+debug_counter #(.W(8)) u_c_tmovr1 (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_tm_ovr[1]), .count(c_tm_ovr1));
+debug_counter #(.W(8)) u_c_tmovr2 (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_tm_ovr[2]), .count(c_tm_ovr2));
 debug_counter #(.W(16)) u_c_gfx    (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_gfx_req),     .count(c_gfx));
 wire dl_seen;
 debug_sticky u_dl_seen (.clk(clk_sys), .clear(ctr_clear), .ev(ioctl_wr && ioctl_index == 16'd0), .seen(dl_seen));
@@ -881,14 +889,19 @@ issp_probe #(.INSTANCE_ID("F"), .PROBE_W(128), .SOURCE_W(32)) u_probe (
 		c_dl_edges,          // 127..122  ioctl_download rising edges, any index
 		pll_unlock,          // 121
 		dbg_smp,             // 120..105  sample fetch: {stalled, outstanding, worst latency, done}
-		c_fm_kon, c_z80_m1,  // 104..84  [104:100] OPL4 FM key-ons, [99:84] Z80 fetches
-		dbg_frozen,          //  83  ring mode: has the buffer stopped moving
-		pause_latched,       //  82
-		ioctl_download,      //  81
-		dl_seen,             //  80
-		c_ym_wr,             //  79..64  writes to the FM chips
-		c_pcm_kon,           //  63..56  OPL4 PCM key-ons
-		snd_peak,            //  55..48  peak |audio_l| since clear, bits 14:7
+		// 128 bits exactly: the first cut of this was 132 and the probe port
+		// silently truncated the top four, misaligning every field above
+		// bit 104 (pause_latched read as a tilemap counter's bit). The two
+		// peaks are in units of 8 clk to make the width.
+		c_tm_ovr0, c_tm_ovr1, c_tm_ovr2,   // 104..81  tilemap overruns per layer (lines)
+		c_ovr[7:0],          //  80..73  sprite engine overruns (lines)
+		dbg_tm_max[12:3],    //  72..63  worst tilemap line render, clk/8
+		dbg_spr_max[12:3],   //  62..53  worst sprite line render, clk/8
+		1'b0,                //  52
+		dbg_frozen,          //  51  ring mode: has the buffer stopped moving
+		pause_latched,       //  50
+		ioctl_download,      //  49
+		dl_seen,             //  48
 		dbg_irq_pending,     //  47..45  {irq5, irq3, irq1} pending
 		c_iack1,             //  44..40  level-1 acknowledges (wraps)
 		dbg_opl4_state,      //  39..32  {0, NEW2, F9 attenuator pair}

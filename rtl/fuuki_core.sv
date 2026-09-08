@@ -120,6 +120,10 @@ module fuuki_core (
 	output logic        dbg_irq1_trig,   // the line-248 interrupt source, one clk per frame
 	output logic [7:0]  dbg_opl4_state,  // {busy_mem, new2, mix_pcm} -- what can silence PCM
 	output logic [15:0] dbg_smp,         // sound health: fetch watch + last OPL4 register
+	// RENDER OVERRUN WATCH -- see the block of that name
+	output logic [2:0]  dbg_tm_ovr,      // one pulse per line a tilemap engine was still busy at the swap
+	output logic [12:0] dbg_tm_max,      // worst tilemap line render, clk, peak-hold
+	output logic [12:0] dbg_spr_max,     // worst sprite line render, clk, peak-hold
 	output logic        dbg_z80_m1,      // one pulse per Z80 opcode fetch, either board
 	output logic        dbg_ym_wr,       // one pulse per write to a sound chip, either board
 	output logic        dbg_pcm_keyon,   // FG-3: OPL4 PCM voice keyed on
@@ -599,6 +603,48 @@ module fuuki_core (
 	);
 
 	// =====================================================================
+	// RENDER OVERRUN WATCH. Each line engine gets one line -- 5,472 clk -- to
+	// render into its buffer, and line_start swaps the buffers whether it
+	// finished or not. An engine still busy at the swap has left the display
+	// bank half drawn: tiles from the left edge as far as it got, then the
+	// clear value, transparent, with whatever is beneath showing through.
+	// That is pbancho's attract with the CPU halted: black bands that stop
+	// partway across and flicker, over sprites -- nothing else can vary from
+	// frame to frame with the registers frozen.
+	//
+	// So: how often each engine is caught at the swap, and how long its
+	// worst line took. The counts name the layer; the peak names the margin.
+	// The per-line record (word 7, bits 12:9) carries the same flags per
+	// line so the rows can be read off rather than inferred from the picture.
+	// =====================================================================
+	logic [12:0] tm_cyc [0:2];
+	logic [12:0] spr_cyc;
+	always_ff @(posedge clk) begin
+		if (core_reset) begin
+			dbg_tm_ovr  <= 3'd0;
+			dbg_tm_max  <= 13'd0;
+			dbg_spr_max <= 13'd0;
+			spr_cyc     <= 13'd0;
+			for (int i = 0; i < 3; i++) tm_cyc[i] <= 13'd0;
+		end else begin
+			for (int i = 0; i < 3; i++) begin
+				dbg_tm_ovr[i] <= line_start && tm_busy[i];
+				if (tm_ready_rise[i])          tm_cyc[i] <= 13'd0;
+				else if (tm_busy[i] && tm_cyc[i] != 13'h1FFF) tm_cyc[i] <= tm_cyc[i] + 13'd1;
+				if (tm_done[i] && tm_cyc[i] > dbg_tm_max) dbg_tm_max <= tm_cyc[i];
+			end
+			if (spr_ready_rise && !build_busy) spr_cyc <= 13'd0;
+			else if (spr_busy && spr_cyc != 13'h1FFF) spr_cyc <= spr_cyc + 13'd1;
+			if (!spr_busy && spr_cyc > dbg_spr_max) dbg_spr_max <= spr_cyc;
+		end
+	end
+	// flags for the per-line record: the engines caught busy at the swap that
+	// presented the line being recorded. Captured one line_start early and
+	// carried, because the record for a line is written at the swap that ENDS
+	// it, and the overrun that spoiled it happened at the swap that began it.
+	logic [3:0] ovr_at_swap = 4'd0, lc_ovr = 4'd0;
+
+	// =====================================================================
 	// LINE-BUFFER CHECK (probe): does display line V show the row rendered
 	// FOR line V?
 	//
@@ -720,7 +766,8 @@ module fuuki_core (
 	//   4     { any sprite on the line, 3'b0, layer priority value, first x }
 	//   5     layer 2's LATCHED X scroll -- gogomile's cloud chain
 	//   6     layer 0's LATCHED Y scroll -- pbancho's per-line effect
-	//   7     the raster register in force, reduced ({7'b0, raster_line})
+	//   7     the raster register in force, reduced; bits 12:9 = the engines
+	//         caught busy at the swap that presented this line: {spr, tm2, tm1, tm0}
 	//
 	// Words 5-7 are what make a raster fault answerable. The chain's own
 	// arithmetic is known from a MAME capture -- gogomile's clouds are five
@@ -748,7 +795,7 @@ module fuuki_core (
 			3'd4:    lc_wdata = {lc_spr_seen, 3'b0, lc_pri, lc_spr_x};
 			3'd5:    lc_wdata = lc_sx2;
 			3'd6:    lc_wdata = lc_sy0;
-			default: lc_wdata = {7'b0, raster_line};
+			default: lc_wdata = {3'b0, lc_ovr, raster_line};   // [12:9] = {spr, tm2, tm1, tm0} busy at the swap
 		endcase
 	end
 	always_ff @(posedge clk) begin
@@ -772,6 +819,8 @@ module fuuki_core (
 			// engines used for it.
 			lc_sx2     <= r_scrollx[2];
 			lc_sy0     <= r_scrolly[0];
+			lc_ovr     <= ovr_at_swap;
+			ovr_at_swap <= {spr_busy, tm_busy[2], tm_busy[1], tm_busy[0]};
 		end else if (lc_writing) begin
 			linecap[{lc_line, lc_wcnt}] <= lc_wdata;
 			lc_wcnt <= lc_wcnt + 3'd1;

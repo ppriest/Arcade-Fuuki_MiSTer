@@ -18,6 +18,10 @@ MS="${MODELSIM_BIN:-/c/intelFPGA_lite/17.0/modelsim_ase/win32aloem}"
 
 [ -d sys ] || { echo "run me from the repository root"; exit 1; }
 
+# scripts/hwlock.py: a simulation must not start while a JTAG tool is reading
+# the device. It MAY run beside a Quartus build.
+python scripts/hwlock.py --require-no-jtag "this simulation" || exit 1
+
 # Orphaned kernels from killed runs spin at 100% CPU indefinitely and make
 # every later simulation look pathologically slow. Sweep before launching.
 if command -v powershell.exe >/dev/null 2>&1; then

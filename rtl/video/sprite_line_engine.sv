@@ -29,6 +29,28 @@
 // Record format and geometry are documented in sprite_line_list.sv. Sprites
 // are 16x16x4 on both boards, so one tile row is 8 bytes -- exactly one
 // 64-bit granule, with no second fetch.
+//
+// ---------------------------------------------------------------------------
+// THE NEXT SUB-TILE'S GRANULE IS FETCHED WHILE THE CURRENT ONE DRAWS.
+//
+// Without that, every sub-tile paid the whole SDRAM round trip and THEN
+// drew its 16 pixels at one per clock: latency + ~20 clk per tile, in
+// series, and the latency is the larger term whenever the tilemap engines
+// and the CPU are on the memory too -- the controller serves the tilemap
+// port first, so a sprite fetch waits out their bursts. pbancho's attract
+// showed what that costs: where several large sprites' tile rows coincide,
+// about sixteen lines ran past the line budget every frame, and the
+// line_tick resync cut them off with the sprites drawn only as far as it
+// had got.
+//
+// So S_TILE also computes the address of sub-tile ix+1, S_PIX issues that
+// request on its first pixel, and the response lands in gfx_row_next while
+// the pixels go out. The next S_TILE then finds the row already here and
+// goes straight to S_PIX, or joins S_WAIT if the response is still in
+// flight. A tile now costs max(latency, ~20 clk) instead of their sum.
+// Still ONE request outstanding at any time, so the transport is unchanged;
+// a resync while a prefetch is in flight drains it exactly as before.
+// ---------------------------------------------------------------------------
 
 module sprite_line_engine (
 	input  logic clk,
@@ -181,12 +203,25 @@ module sprite_line_engine (
 	logic [12:0] xoff;        // ix * zxt_r, accumulated -- see row_origin
 	logic [17:0] tile_no_r;   // tile_no, registered in S_TILE
 
+	// ---- prefetch of sub-tile ix+1 ----
+	wire [4:0]  ix_next        = ix + 5'd1;
+	wire        has_next       = (ix_next < xnum);
+	wire [4:0]  nx_next        = flipx ? (xnum - 5'd1 - ix_next) : ix_next;
+	wire [9:0]  code_index_nxt = {5'd0, ny_r} * {5'd0, xnum} + {5'd0, nx_next};
+	wire [17:0] tile_no_next   = code_base_r + {8'd0, code_index_nxt};
+	logic [17:0] tile_no_next_r;   // registered in S_TILE beside tile_no_r
+	logic        pf_pending;       // the prefetch request is in flight
+	logic        pf_valid;         // gfx_row_next holds sub-tile ix+1's row
+	logic [63:0] gfx_row_next;
+
 	// Row within the tile, after the tile's own flip-Y.
 	wire [3:0] row_f = flipy ? (4'd15 - src_row) : src_row;
 	// 16x16x4: 128 bytes per tile, 8 bytes per row -- one granule, no second fetch.
 	// tile_no_r, not tile_no: the code_index multiply is done a state earlier,
 	// so S_REQ's path into gfx_addr is two adds rather than a multiply-add.
 	wire [25:0] row_addr = gfx_base + {tile_no_r, 7'd0} + {row_f, 3'd0};
+	// the same row of the next sub-tile: row_f is per sprite per line
+	wire [25:0] row_addr_next = gfx_base + {tile_no_next_r, 7'd0} + {row_f, 3'd0};
 
 	// ---- pixel extraction, 4bpp packed, MSB nibble first ----
 	wire [3:0] src_px = nonzoom ? dx[3:0] : xacc[19:16];
@@ -210,23 +245,35 @@ module sprite_line_engine (
 
 	always_ff @(posedge clk or posedge reset) begin
 		if (reset) begin
-			st      <= S_IDLE;
-			busy    <= 1'b0;
-			ovr_ev  <= 1'b0;
-			gfx_req <= 1'b0;
-			lb_we   <= 1'b0;
+			st         <= S_IDLE;
+			busy       <= 1'b0;
+			ovr_ev     <= 1'b0;
+			gfx_req    <= 1'b0;
+			lb_we      <= 1'b0;
+			pf_pending <= 1'b0;
+			pf_valid   <= 1'b0;
 		end else begin
 			gfx_req <= 1'b0;
 			lb_we   <= 1'b0;
 			ovr_ev  <= 1'b0;
 
+			// The prefetch response lands here whatever state the engine is
+			// in, EXCEPT S_WAIT and S_DRAIN, which consume it themselves.
+			if (pf_pending && gfx_valid && st != S_WAIT && st != S_DRAIN) begin
+				gfx_row_next <= gfx_data;
+				pf_pending   <= 1'b0;
+				pf_valid     <= 1'b1;
+			end
+
 			// ---- hard resync, checked before anything else ----
 			// An outstanding request is drained rather than abandoned: the
 			// transport will deliver its response regardless, and a later
 			// request would otherwise collect it and render the wrong tile.
+			// A prefetch in flight is such a request.
 			if (line_tick) begin
 				if (st != S_IDLE) ovr_ev <= (st != S_NEXT) && (st != S_SCAN);
-				if (st == S_WAIT) begin
+				pf_valid <= 1'b0;
+				if (st == S_WAIT || pf_pending) begin
 					st <= S_DRAIN;
 				end else begin
 					st   <= S_IDLE;
@@ -328,11 +375,22 @@ module sprite_line_engine (
 					// accumulates iy * zyt_r; tile_no is registered here so
 					// S_REQ's address add does not also carry the code
 					// multiply.
-					tile_x0   <= 12'(sx) + 12'(xoff >> 3);
-					tile_no_r <= tile_no;
-					dx        <= 8'd0;
-					xacc      <= 20'd0;
-					st        <= S_REQ;
+					tile_x0        <= 12'(sx) + 12'(xoff >> 3);
+					tile_no_r      <= tile_no;
+					tile_no_next_r <= tile_no_next;
+					dx             <= 8'd0;
+					xacc           <= 20'd0;
+					// The row for THIS sub-tile: prefetched already, still
+					// in flight, or not requested (the sprite's first tile).
+					if (pf_valid) begin
+						gfx_row  <= gfx_row_next;
+						pf_valid <= 1'b0;
+						st       <= S_PIX;
+					end else if (pf_pending) begin
+						st <= S_WAIT;
+					end else begin
+						st <= S_REQ;
+					end
 				end
 
 				S_REQ: begin
@@ -341,14 +399,24 @@ module sprite_line_engine (
 					st       <= S_WAIT;
 				end
 
+				// Waits for either the direct request or an in-flight
+				// prefetch: whichever it was, the response is this tile's row.
 				S_WAIT: begin
 					if (gfx_valid) begin
-						gfx_row <= gfx_data;
-						st      <= S_PIX;
+						gfx_row    <= gfx_data;
+						pf_pending <= 1'b0;
+						st         <= S_PIX;
 					end
 				end
 
 				S_PIX: begin
+					// First pixel: start the next sub-tile's fetch, so it
+					// overlaps the 16 pixels about to be drawn.
+					if (dx == 8'd0 && has_next && !pf_pending && !pf_valid) begin
+						gfx_req    <= 1'b1;
+						gfx_addr   <= {row_addr_next[25:3], 3'd0};
+						pf_pending <= 1'b1;
+					end
 					// Pen 15 is transparent for sprites (fuukispr's transpen).
 					if (on_screen && (pen != TRANS_PEN)) begin
 						lb_we   <= 1'b1;
@@ -385,8 +453,9 @@ module sprite_line_engine (
 				// Swallow the response to a request issued before a resync.
 				S_DRAIN: begin
 					if (gfx_valid) begin
-						st   <= S_IDLE;
-						busy <= 1'b0;
+						pf_pending <= 1'b0;
+						st         <= S_IDLE;
+						busy       <= 1'b0;
 					end
 				end
 

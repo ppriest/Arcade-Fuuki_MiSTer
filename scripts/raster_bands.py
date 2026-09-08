@@ -55,9 +55,13 @@ def main():
 
     prev_sx = prev_sy = None
     boundaries = []
+    overruns = []
     for ln in range(min(lines, 240)):
         b = w[ln * WORDS_PER_LINE:(ln + 1) * WORDS_PER_LINE]
         sx2, sy0, rast = b[5], b[6], b[7] & 0x1FF
+        ovr = (b[7] >> 9) & 0xF          # {spr, tm2, tm1, tm0} busy at the swap
+        if ovr:
+            overruns.append((ln, ovr))
         if sx2 != prev_sx:
             boundaries.append((ln, sx2, sy0, rast))
             print("  line %3d : layer2 X = 0x%04X   layer0 Y = 0x%04X   raster = %3d"
@@ -76,6 +80,16 @@ def main():
                   % (want, name, near[0], d))
     print("\n+2 on every boundary is the render lead: the engines run two lines")
     print("ahead, so an ISR write lands two lines late. 0 is correct.")
+    # RENDER OVERRUN WATCH (fuuki_core.sv): the engines caught still busy at
+    # the swap that presented each line. A flagged line was displayed half
+    # drawn by that engine -- tiles from the left as far as it got, then
+    # transparent.
+    print("\nlines whose engines overran (word 7 bits 12:9 = spr tm2 tm1 tm0):")
+    if not overruns:
+        print("  none")
+    for ln, ovr in overruns:
+        names = [n for n, bit in (("tm0", 1), ("tm1", 2), ("tm2", 4), ("spr", 8)) if ovr & bit]
+        print("  line %3d : %s" % (ln, " ".join(names)))
     return 0
 
 

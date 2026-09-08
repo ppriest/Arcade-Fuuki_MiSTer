@@ -23,15 +23,16 @@ set fields {
     {irq1_pending    45  45 bit}
     {irq3_pending    46  46 bit}
     {irq5_pending    47  47 bit}
-    {snd_peak        48  55 dec}
-    {pcm_keyons      56  63 dec}
-    {ym_writes       64  79 dec}
-    {download_seen   80  80 bit}
-    {ioctl_download  81  81 bit}
-    {pause_latched   82  82 bit}
-    {ring_frozen     83  83 bit}
-    {z80_fetches     84  99 dec}
-    {fm_keyons      100 104 dec}
+    {download_seen   48  48 bit}
+    {ioctl_download  49  49 bit}
+    {pause_latched   50  50 bit}
+    {ring_frozen     51  51 bit}
+    {spr_max8        53  62 dec}
+    {tm_max8         63  72 dec}
+    {spr_overruns    73  80 dec}
+    {tm2_overruns    81  88 dec}
+    {tm1_overruns    89  96 dec}
+    {tm0_overruns    97 104 dec}
     {smp_maxlat      105 107 dec}
     {opl4_port       108 110 dec}
     {opl4_reg        111 118 hex}

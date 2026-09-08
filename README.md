@@ -81,14 +81,19 @@ What is built and running:
 
 Known issues:
 
-* Raster effects, both on tilemaps: **one line of gogomile's title cloud scrolls when it should not**,
-  and **pbancho's attract-mode black bands do not cover the sprites correctly**. Firing the raster
-  interrupt one or two lines early (an OSD switch) changes neither, so neither is the band landing
-  late. There is no sprite offset — see `docs/ROADMAP.md` for what has been ruled out.
+* **One line of gogomile's title cloud scrolls when it should not** — a raster effect on layer 2.
+  Firing the raster interrupt one or two lines early (an OSD switch) changes nothing, so it is not
+  the band landing late.
+* **gogomile's sound drops out on later stages, from stage 3 on** (reported, not yet measured).
+* (Fixed) pbancho's attract-mode black bands ending partway across the screen were sprite-engine
+  overrun, not a compositor fault; the sprite engine now prefetches the next sub-tile while drawing.
+
+See `docs/ROADMAP.md` for the measurements behind each, and what has been ruled out.
 
 ### Todo
 
-- [ ] Close the remaining raster faults above
+- [ ] gogomile's title-cloud raster line
+- [ ] gogomile's stage-3 sound dropout
 - [x] Sound: Z80, and the FG-2 chip set (YM2203, YM3812, OKI M6295)
 - [x] Sound: OPL4 PCM and the FG-3 Z80 — built, and measured playing on MiSTer
 - [x] Sound: the OPL4's FM half — [gtaylormb/opl3_fpga](https://github.com/gtaylormb/opl3_fpga),

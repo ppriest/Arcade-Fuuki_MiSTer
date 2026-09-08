@@ -127,18 +127,36 @@ unsigned field, so a voice at octave −1 with RC = 0 (the coin chime, captured 
 Signed now; `sim/opl4_chime_tb` replays the captured sequence and reads the envelope at 0x004
 after 100 ms. Confirmed by ear on MiSTer: sound effects at full level.
 
-**Still open, both tilemap raster effects:**
+**Still open:**
 
+- **gogomile's sound drops out on later stages, from stage 3 on (reported, unmeasured).** FG-2
+  audio (Z80 + YM2203 + YM3812 + OKI M6295) plays correctly on the early stages, so the dropout is
+  something the later stages exercise that the earlier ones do not. Candidates, in order of
+  suspicion: an OKI sample-ROM bank or a Z80 program bank the later stages select, landing in an
+  SDRAM range the earlier stages never read (the sample cache or the narrow bridge for `base_oki`
+  / `base_audiocpu`); a sound command later stages send that wedges the driver; or a mix/gate
+  path. The FG-2 probe chain (Z80 fetches, YM writes, OKI reads, `snd_peak`) can localise it —
+  clear at a working stage, then at stage 3 — the same way the FG-3 chime was tracked. Not yet
+  measured.
 - **One line of gogomile's title cloud scrolls when it should not.** The clouds are a five-band
   layer-2 X-scroll chain driven from the raster interrupt; one line inside it moves with the wrong
   band. Firing IRQ5 one or two lines early (the `Raster IRQ lead` OSD switch, page 1, or
   `cfg.py --set lead=N`) moved nothing at all, so it is not the band boundary landing late — it
   happens at the boundary wherever the boundary falls, on the first line after a scroll change.
-- **pbancho's attract mode draws black bands across the bottom of the screen, and they do not
-  cover the sprites correctly.** The bands are a raster effect on a tilemap; MAME covers the
-  sprites with them and this core does not, so the question is what that layer is putting down on
-  those lines and how the compositor's priority resolves it against a sprite — not where the lines
-  are.
+  (NOTE: the per-line record dump that would measure this is currently returning 0/256 words — the
+  screenshot-readout path is broken and must be repaired before this is measurable.)
+- **FIXED: pbancho's attract drew black bands that ended partway across the screen and flickered,
+  revealing sprites beneath.** It was misread at first as a compositor-priority question. It was
+  sprite-engine overrun. The `Render overrun watch` (Fuuki.sv, `dbg_tm_ovr` / `dbg_spr_max`)
+  measured it at a paused frame: no tilemap engine ever missed its line, while the sprite engine
+  was cut short on about 1.6 lines per frame, its worst line reading the whole budget (the
+  `line_tick` resync clips it there, so the true demand is larger than the peak can show). The
+  user's clue placed it — the flicker worsened as the large sprites descended and overlapping
+  sprites piled onto the same ~16 lines (one sprite-tile-row tall). Each overlapping sub-tile paid
+  a full SDRAM round trip *and then* drew 16 pixels, in series, and the controller serves the
+  tilemap port first, so the latency dominated. The fix (sprite_line_engine.sv) fetches the next
+  sub-tile's granule while the current one draws, dropping the per-tile cost from latency+draw to
+  the larger of the two. Confirmed on MiSTer by the user: the bands are solid. Build 10000020.
 
 There is **no sprite offset**: an earlier report of the credits text sitting a line low turned out
 to be the scaler, and disappears with scaling off. Everything measured against that hypothesis
@@ -808,7 +826,7 @@ reading of `fuukispr.cpp`. See "Sprites" above; the discrepancy is unexplained.
 
 ### Open
 
-1. **The two open video faults** — gogomile's title-cloud jitter and pbancho's bottom strip. See
+1. **The open video fault** — gogomile's title-cloud jitter (pbancho's bottom strip is fixed, build 10000020). See
    "Progress" above for what has been tried and what the driver reading changed.
 2. **Raster bands land two lines later than MAME's** by analysis — the engines render two lines
    ahead and the ISR's write is caught a line after the interrupt. Reducing the lead is ruled out
