@@ -132,7 +132,6 @@ localparam CONF_STR = {
 	"P1O[58],Re-arm capture,A,B;",
 	"P1O[59],Ring trigger,Off,Vector 2-4 read;",
 	"P1O[60],Line markers,Off,On;",
-	"P1O[62:61],Raster IRQ lead,0 lines,1 line,2 lines;",
 	"-;",
 	"R[0],Reset;",
 	// This list MUST agree with the .mra <buttons> positions, because the
@@ -604,7 +603,7 @@ fuuki_core u_core (
 	.dbg_window(status[56:53]), .dbg_ring(status[57]),
 	.dbg_rearm(status[58] ^ probe_src[6]), .dbg_page({probe_src[7], probe_src[4:3]}),
 	.dbg_trig(status[59]), .dbg_dump(probe_src[31:8]),
-	.dbg_marker(status[60]), .raster_lead(status[62:61]),
+	.dbg_marker(status[60]),
 	.dbg_irq_pending(dbg_irq_pending), .dbg_iack(dbg_iack), .dbg_iack_level(dbg_iack_level),
 	.dbg_irq1_trig(dbg_irq1_trig), .dbg_smp(dbg_smp),
 	.dbg_tm_ovr(dbg_tm_ovr), .dbg_tm_max(dbg_tm_max), .dbg_spr_max(dbg_spr_max),

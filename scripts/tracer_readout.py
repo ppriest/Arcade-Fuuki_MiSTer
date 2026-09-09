@@ -59,15 +59,39 @@ def shot(png):
     return png.exists()
 
 
+CORE_LINES = 240
+
+
 def rows_of(png):
+    """One value per CORE scanline, whatever size the screenshot is.
+
+    The decoder was written for the MiSTer's native 320x240 capture, one image
+    row per scanline. With MISTER_FB in the core (rotation), the screenshot is
+    the framebuffer -- 810x1080 with rotation on -- and every scanline spans
+    4.5 image rows. Reading the first 240 rows then saw only the top 53 lines,
+    and the run-length pairing rejected every band as too tall, so the dump
+    returned 0/256 words on every region from the moment rotation went in.
+
+    So: decode every row, then take the row at the centre of each scanline's
+    span. Blended rows at band edges fall between centres and are skipped,
+    which is what the run-length filter relied on at 1:1 too.
+    """
     out = subprocess.run([sys.executable, str(DECODE), str(png), "--mode", "scanline",
-                          "--limit", "240"], capture_output=True, text=True).stdout
-    rows = {}
+                          "--limit", "0"], capture_output=True, text=True).stdout
+    rows, height = {}, 0
     for line in out.splitlines():
+        m = re.match(r"#.*?:\s*(\d+)x(\d+)", line)
+        if m:
+            height = int(m.group(2))
         m = re.match(r"\s*(\d+)\s+0x([0-9A-Fa-f]+)", line)
         if m:
             rows[int(m.group(1))] = int(m.group(2), 16)
-    return [rows.get(i) for i in range(240)]
+    if height <= 0:
+        height = (max(rows) + 1) if rows else CORE_LINES
+    if height == CORE_LINES:
+        return [rows.get(i) for i in range(CORE_LINES)]
+    scale = height / CORE_LINES
+    return [rows.get(int((i + 0.5) * scale)) for i in range(CORE_LINES)]
 
 
 def entries_from_rows(rows):

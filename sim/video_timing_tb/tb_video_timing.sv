@@ -30,7 +30,6 @@ module tb_video_timing;
 	assign ce_pix = (ce_div == 4'd0);
 
 	logic [8:0] raster_line = 9'd100;
-	logic [1:0] raster_lead = 2'd0;
 
 	logic [8:0] hcnt, vcnt, vcnt_next, vcnt_next2;
 	logic h_active, v_active, hblank, vblank, hsync, vsync;
@@ -39,7 +38,7 @@ module tb_video_timing;
 
 	video_timing dut (
 		.clk(clk), .ce_pix(ce_pix), .reset(reset),
-		.raster_line(raster_line), .raster_lead(raster_lead),
+		.raster_line(raster_line),
 		.hcnt(hcnt), .vcnt(vcnt),
 		.vcnt_next(vcnt_next), .vcnt_next2(vcnt_next2),
 		.h_active(h_active), .v_active(v_active),
@@ -113,12 +112,14 @@ module tb_video_timing;
 		$display("\n--- interrupts ---");
 		$display("  irq1 x%0d at line %0d (expect 2 @ 248)", n_irq1, irq1_v);
 		$display("  irq3 x%0d at line %0d (expect 2 @ 240)", n_irq3, irq3_v);
-		$display("  irq5 x%0d at line %0d, hcnt %0d (expect 2 @ 100, hcnt 320)",
+		// Level 5 fires ONE LINE BEFORE the programmed line: the lead measured
+		// exact on gogomile's cloud bands (video_timing.sv, irq5_cmp).
+		$display("  irq5 x%0d at line %0d, hcnt %0d (expect 2 @ 99, hcnt 320)",
 		         n_irq5, irq5_v, irq5_h);
 		check(n_irq1 == 2 && irq1_v == 248, "level 1 fires once per frame at line 248");
 		check(n_irq3 == 2 && irq3_v == 240, "level 3 fires once per frame at vblank start");
-		check(n_irq5 == 2 && irq5_v == 100 && irq5_h == H_ACTIVE,
-		      "level 5 fires once per frame at the programmed line, at hblank");
+		check(n_irq5 == 2 && irq5_v == 99 && irq5_h == H_ACTIVE,
+		      "level 5 fires once per frame, one line before the programmed line, at hblank");
 
 		// A raster line outside the frame must produce NO interrupt -- the
 		// game can point it anywhere, and inventing an interrupt the hardware
@@ -164,36 +165,20 @@ module tb_video_timing;
 		end
 
 		// =============================================================
-		// Lead: the level-5 source moved 1 and 2 lines EARLY, still at
-		// hblank, still once per frame.
+		// The one-line lead at the frame boundary: raster line 0 fires on
+		// the LAST line of the previous frame, once, not never.
 		// =============================================================
-		$display("\n--- raster lead: line 100 with lead 1 and 2 ---");
+		$display("\n--- raster line 0: fires on line %0d ---", V_TOTAL - 1);
 		begin
 			int n_before;
-			raster_line = 9'd100;
-			raster_lead = 2'd1;
-			@(posedge frame_start);
-			n_before = n_irq5;
-			repeat (H_TOTAL * V_TOTAL * 12) @(posedge clk);
-			$display("  lead 1: x%0d at line %0d, hcnt %0d (expect 1 @ 99, hcnt %0d)",
-			         n_irq5 - n_before, irq5_v, irq5_h, H_ACTIVE);
-			check(n_irq5 - n_before == 1 && irq5_v == 99 && irq5_h == H_ACTIVE,
-			      "lead 1 fires once, one line early, at hblank");
-			raster_lead = 2'd2;
-			@(posedge frame_start);
-			n_before = n_irq5;
-			repeat (H_TOTAL * V_TOTAL * 12) @(posedge clk);
-			$display("  lead 2: x%0d at line %0d (expect 1 @ 98)", n_irq5 - n_before, irq5_v);
-			check(n_irq5 - n_before == 1 && irq5_v == 98 && irq5_h == H_ACTIVE,
-			      "lead 2 fires once, two lines early, at hblank");
-			// Wrap: line 0 with lead 2 fires on line 260.
 			raster_line = 9'd0;
 			@(posedge frame_start);
 			n_before = n_irq5;
 			repeat (H_TOTAL * V_TOTAL * 12) @(posedge clk);
-			check(n_irq5 - n_before == 1 && irq5_v == V_TOTAL - 2,
-			      "lead 2 on line 0 wraps to line 260");
-			raster_lead = 2'd0;
+			$display("  x%0d at line %0d (expect 1 @ %0d)", n_irq5 - n_before, irq5_v, V_TOTAL - 1);
+			check(n_irq5 - n_before == 1 && irq5_v == V_TOTAL - 1 && irq5_h == H_ACTIVE,
+			      "raster line 0 wraps to the last line of the frame");
+			raster_line = 9'd100;
 		end
 
 		$display("\n--- active area ---");

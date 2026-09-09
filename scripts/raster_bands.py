@@ -21,10 +21,12 @@ bands whose scrolls move at 2, 1, 1/2, 0 and 0 pixels per frame:
     line 119   band E,                                   0x76 (118)
 
 MAME puts a band's first line at (raster line + 1), because update_partial()
-draws through the interrupt's own line with the old registers. A boundary
-measured LATER than that is the render lead: the engines run two lines ahead
-of the display, so an ISR's write lands two lines late, and the two lines at
-each boundary keep the previous band's faster scroll.
+draws through the interrupt's own line with the old registers. The engines
+run two lines ahead of the display and an ISR's write is caught at the
+hblank after the interrupt, so where the boundary lands depends on how early
+level 5 fires (video_timing.sv, irq5_cmp). Measured on gogomile's clouds:
+two lines early put every boundary at -1, one line early put every boundary
+at +0, and that is what the RTL now does.
 """
 import struct
 import sys
@@ -78,8 +80,8 @@ def main():
             d = near[0] - want
             print("  line %3d  %-18s measured at %3d  (%+d lines)"
                   % (want, name, near[0], d))
-    print("\n+2 on every boundary is the render lead: the engines run two lines")
-    print("ahead, so an ISR write lands two lines late. 0 is correct.")
+    print("\n+0 on every boundary is correct. A constant offset is the level-5 lead")
+    print("(video_timing.sv, irq5_cmp): one line early measured +0, two lines early -1.")
     # RENDER OVERRUN WATCH (fuuki_core.sv): the engines caught still busy at
     # the swap that presented each line. A flagged line was displayed half
     # drawn by that engine -- tiles from the left as far as it got, then

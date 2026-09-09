@@ -138,13 +138,24 @@ after 100 ms. Confirmed by ear on MiSTer: sound effects at full level.
   path. The FG-2 probe chain (Z80 fetches, YM writes, OKI reads, `snd_peak`) can localise it —
   clear at a working stage, then at stage 3 — the same way the FG-3 chime was tracked. Not yet
   measured.
-- **One line of gogomile's title cloud scrolls when it should not.** The clouds are a five-band
-  layer-2 X-scroll chain driven from the raster interrupt; one line inside it moves with the wrong
-  band. Firing IRQ5 one or two lines early (the `Raster IRQ lead` OSD switch, page 1, or
-  `cfg.py --set lead=N`) moved nothing at all, so it is not the band boundary landing late — it
-  happens at the boundary wherever the boundary falls, on the first line after a scroll change.
-  (NOTE: the per-line record dump that would measure this is currently returning 0/256 words — the
-  screenshot-readout path is broken and must be repaired before this is measurable.)
+- **FIXED: gogomile's title-cloud stray line. The level-5 lead is fixed at one line, measured
+  exact, and the picture confirms it (build 10000023).** The clouds are a five-band layer-2
+  X-scroll chain driven from the raster interrupt,
+  and one line at each band boundary moved with the band above it. The per-line display record
+  (`fuuki_core.sv`, read with `memdump.py linecap 0 8 --live` on a paused frame and
+  `scripts/raster_bands.py`) put the band starts, against MAME's 30 / 64 / 89 / 119:
+
+  | level 5 fires | band starts | offset |
+  |---|---|---|
+  | two lines early | 29 / 63 / 88 / 118 | −1 on every boundary |
+  | one line early | 30 / 64 / 89 / 119 | +0 on every boundary |
+
+  Lead 0 was not measured; by the same arithmetic it is +1. The earlier note that the
+  `Raster IRQ lead` switch "moved nothing" was an observation by eye, while the dump that would
+  have shown the one-line shift was returning nothing (the screenshot-readout path decoded the
+  rotated 810×1080 framebuffer as if it were 240 lines; `tracer_readout.py` now resamples).
+  `video_timing.sv` now compares level 5 against `vcnt_next` unconditionally and the OSD switch
+  is gone. The stray line is gone from the picture on build 10000023.
 - **FIXED: pbancho's attract drew black bands that ended partway across the screen and flickered,
   revealing sprites beneath.** It was misread at first as a compositor-priority question. It was
   sprite-engine overrun. The `Render overrun watch` (Fuuki.sv, `dbg_tm_ovr` / `dbg_spr_max`)
@@ -826,20 +837,18 @@ reading of `fuukispr.cpp`. See "Sprites" above; the discrepancy is unexplained.
 
 ### Open
 
-1. **The open video fault** — gogomile's title-cloud jitter (pbancho's bottom strip is fixed, build 10000020). See
-   "Progress" above for what has been tried and what the driver reading changed.
-2. **Raster bands land two lines later than MAME's** by analysis — the engines render two lines
-   ahead and the ISR's write is caught a line after the interrupt. Reducing the lead is ruled out
-   (the render window); firing IRQ5 early is the `Raster IRQ lead` switch, and on MiSTer it
-   changed neither open fault, so this offset may not be what either of them is.
-3. **Layer-order values 6-15** — MAME indexes a 6-entry table with `priority & 0x0f`, so those read
+Both video faults are fixed: gogomile's title-cloud stray line (build 10000023, see "Open video
+faults" above) and pbancho's bottom strip (build 10000020). Open:
+
+1. **gogomile's stage-3 sound dropout** — reported, not yet measured (see "Progress" above).
+2. **Layer-order values 6-15** — MAME indexes a 6-entry table with `priority & 0x0f`, so those read
    out of bounds. The RTL picks a defined behaviour; check whether any game writes them.
-4. **Flip screen** — both drivers state scroll values are wrong when flipped, so the reference
+3. **Flip screen** — both drivers state scroll values are wrong when flipped, so the reference
    cannot be trusted to show what correct looks like. `vregs.sv` carries the constants; the engines
    do not yet honour them.
-5. **The `508000-517fff` region on FG-3** — MAME calls it "more tilemap, or linescroll? Seems to be
+4. **The `508000-517fff` region on FG-3** — MAME calls it "more tilemap, or linescroll? Seems to be
    empty all of the time". Verify it stays empty before treating it as plain RAM.
-6. **`pbancho` layer-2 ROM** — MAME loads `60.rom3` into both `tiles_l0` and `tiles_l2` with the
+5. **`pbancho` layer-2 ROM** — MAME loads `60.rom3` into both `tiles_l0` and `tiles_l2` with the
    comment "?maybe?". Confirm before duplicating 2 MB in the SDRAM map.
-7. **Clone `hiscore.dat` coverage** — `gogomileo` and `pbanchoa` have no entry, so those `.mra`
+6. **Clone `hiscore.dat` coverage** — `gogomileo` and `pbanchoa` have no entry, so those `.mra`
    files either ship without hiscore data or borrow the parent's. Decide deliberately.

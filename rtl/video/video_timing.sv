@@ -33,14 +33,9 @@ module video_timing (
 	input  logic ce_pix,
 	input  logic reset,
 
-	// Programmable raster interrupt line, from video register 0x1c.
+	// Programmable raster interrupt line, from video register 0x1c. Level 5
+	// fires ONE LINE BEFORE it -- see irq5_cmp below.
 	input  logic [8:0] raster_line,
-	// How many lines EARLY level 5 fires: 0 = at the hblank of the programmed
-	// line, as MAME's timer; 1 or 2 = that many lines before it. A runtime
-	// switch, because the band a raster ISR's write lands on is two lines
-	// below MAME's (the write is caught at the next hblank and rendered two
-	// lines ahead) and which lead is right is a question for the screen.
-	input  logic [1:0] raster_lead,
 
 	output logic [8:0] hcnt,          // 0-455
 	output logic [8:0] vcnt,          // 0-261
@@ -169,8 +164,22 @@ module video_timing (
 	// once per frame. The first version let out-of-range values (gogomile's
 	// parked 0xFFFE) fire nothing, and the game hung waiting for the IRQ5
 	// that MAME still delivers -- see the note in vregs.sv.
-	wire [8:0] irq5_cmp = (raster_lead == 2'd2) ? vcnt_next2 :
-	                      (raster_lead == 2'd1) ? vcnt_next  : vcnt;
+	//
+	// Level 5 fires at the hblank ONE LINE BEFORE the programmed line, not
+	// at the programmed line's own hblank as MAME's timer does. The engines
+	// render two lines ahead of the display, and a raster ISR's write is
+	// caught at the hblank after the interrupt, so firing at the line itself
+	// put every band boundary one line below MAME's; firing two lines early
+	// put it one line above. Measured on gogomile's title clouds with the
+	// per-line display record (fuuki_core.sv, scripts/raster_bands.py):
+	//
+	//     lead 2 : bands start at 29, 63, 88, 118   (MAME: 30, 64, 89, 119)
+	//     lead 1 : bands start at 30, 64, 89, 119   exact
+	//
+	// Lead 0 was not measured; by the same arithmetic it is one line late.
+	// This was a three-way OSD switch while that was being found; it is
+	// fixed here now that it has been.
+	wire [8:0] irq5_cmp = vcnt_next;
 	assign irq5_trig = ce_pix && (hcnt == 9'(H_ACTIVE)) &&
 	                   (irq5_cmp[RASTER_CMP_BITS-1:0] == raster_line[RASTER_CMP_BITS-1:0]);
 

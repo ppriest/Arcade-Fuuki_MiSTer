@@ -39,6 +39,11 @@ Some links discussing the games and hardware:
 
 ## History
 
+* Arcade-Fuuki_20260909.rbf
+  * **Beta release**
+  * **pbancho's flickering black bands fixed** (sprite engine prefetch).
+  * **gogomile's title-cloud stray line fixed** (raster interrupt one line early, measured).
+
 * Arcade-Fuuki_20260907.rbf
   * **Beta release**
   * **FG-3 sound effects fixed.**
@@ -81,9 +86,10 @@ What is built and running:
 
 Known issues:
 
-* **One line of gogomile's title cloud scrolls when it should not** — a raster effect on layer 2.
-  Firing the raster interrupt one or two lines early (an OSD switch) changes nothing, so it is not
-  the band landing late.
+* (Fixed) One line of gogomile's title cloud scrolled with the wrong band — a raster effect on
+  layer 2. The per-line display record measured the band boundaries one line above MAME's with
+  the raster interrupt two lines early, and exactly on MAME's with it one line early; the core
+  now fires it one line early, and the picture confirms it.
 * **gogomile's sound drops out on later stages, from stage 3 on** (reported, not yet measured).
 * (Fixed) pbancho's attract-mode black bands ending partway across the screen were sprite-engine
   overrun, not a compositor fault; the sprite engine now prefetches the next sub-tile while drawing.
@@ -92,7 +98,7 @@ See `docs/ROADMAP.md` for the measurements behind each, and what has been ruled 
 
 ### Todo
 
-- [ ] gogomile's title-cloud raster line
+- [x] gogomile's title-cloud raster line
 - [ ] gogomile's stage-3 sound dropout
 - [x] Sound: Z80, and the FG-2 chip set (YM2203, YM3812, OKI M6295)
 - [x] Sound: OPL4 PCM and the FG-3 Z80 — built, and measured playing on MiSTer

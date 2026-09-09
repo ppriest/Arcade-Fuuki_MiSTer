@@ -139,7 +139,6 @@ module fuuki_core (
 	input  logic [23:0] dbg_dump,     // memory dump: {region[3:0], page[19:0]} (JTAG source [31:8])
 	input  logic        dbg_trig,     // ring mode: freeze on the first exception-vector read
 	input  logic        dbg_marker,   // white pixels at x 0..7 on lines 0 and 239: is the framing exact?
-	input  logic [1:0]  raster_lead,  // lines early for level 5: 0, 1 or 2 (video_timing.sv)
 	output logic        dbg_frozen
 );
 
@@ -156,7 +155,7 @@ module fuuki_core (
 
 	video_timing u_vt (
 		.clk(clk), .ce_pix(ce_pix), .reset(core_reset),
-		.raster_line(raster_line), .raster_lead(raster_lead),
+		.raster_line(raster_line),
 		.hcnt(hcnt), .vcnt(vcnt), .vcnt_next(vcnt_next), .vcnt_next2(vcnt_next2),
 		.h_active(h_active), .v_active(v_active),
 		.hblank(hblank), .vblank(vblank), .hsync(hsync), .vsync(vsync),
@@ -774,8 +773,8 @@ module fuuki_core (
 	// bands at 2, 1, 1/2, 0, 0 pixels per frame, starting at lines 0, 30, 64,
 	// 89 and 119 -- so the question is only ever WHICH DISPLAY LINE GOT WHICH
 	// SCROLL, and this answers it directly instead of by inference from the
-	// picture. It also measures whether a change (the Raster IRQ lead switch,
-	// say) moved those boundaries at all, which by eye is a guess.
+	// picture. It is what fixed the level-5 lead at one line (video_timing.sv):
+	// by eye, the boundaries moving one line either way is a guess.
 	logic [15:0] linecap [0:2047];
 	logic [13:0] lc_l0, lc_l1, lc_l2;
 	logic [15:0] lc_spr;
@@ -809,7 +808,14 @@ module fuuki_core (
 				lc_spr_x    <= hcnt;
 			end
 		end
-		if (line_start && v_active) begin
+		// FROZEN WHILE THE CPU IS PAUSED. The record is rewritten every frame by
+		// the video side, which does not stop when the CPU does -- so a dump
+		// taken under a pause (and every dump pauses the CPU for the walk) read
+		// the flat frame the paused game renders, not the running one. gogomile's
+		// cloud chain is the level-5 handler rewriting scroll per band; held,
+		// it writes nothing, and the record showed one scroll value on all 240
+		// lines. Gating the write on the pause keeps the last RUNNING frame.
+		if (line_start && v_active && !pause_cpu) begin
 			lc_writing <= 1'b1;
 			lc_wcnt    <= 3'd0;
 			lc_line    <= vcnt[7:0];
