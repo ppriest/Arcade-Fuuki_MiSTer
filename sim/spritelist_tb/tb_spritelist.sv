@@ -128,19 +128,20 @@ module tb_spritelist;
 			         $signed(yt1[18:9]), yt1[8:0],
 			         rc1[63:48], rc1[47:32], rc1[31:16], rc1[15:0]);
 
-			// Record 1000 is at (105,108), 2x2 tiles -> span 32.
-			check($signed(yt0[18:9]) == 108 && yt0[8:0] == 9'd32,
-			      "entry 0 is record 1000: y 108, span 32");
-			check(rc0[15:0] == 16'h16d1, "entry 0 carries record 1000's tile code");
-
+			// The scan is forward, so the lower record number comes first and the
+			// higher one last: it is drawn on top (sprite_line_list.sv, DEPTH ORDER).
 			// Record 148 is "CREDIT 0" at (260,230), 4x1 tiles -> span 16.
-			check($signed(yt1[18:9]) == 230 && yt1[8:0] == 9'd16,
-			      "entry 1 is record 148: y 230, span 16");
-			check(rc1[15:0] == 16'h3dbb, "entry 1 carries record 148's tile code");
+			check($signed(yt0[18:9]) == 230 && yt0[8:0] == 9'd16,
+			      "entry 0 is record 148: y 230, span 16");
+			check(rc0[15:0] == 16'h3dbb, "entry 0 carries record 148's tile code");
 
-			// The depth check. Record 148 must come LAST so it wins.
-			check(rc1[15:0] == 16'h3dbb && rc0[15:0] == 16'h16d1,
-			      "backward scan puts the LOWER record number last (it wins)");
+			// Record 1000 is at (105,108), 2x2 tiles -> span 32.
+			check($signed(yt1[18:9]) == 108 && yt1[8:0] == 9'd32,
+			      "entry 1 is record 1000: y 108, span 32");
+			check(rc1[15:0] == 16'h16d1, "entry 1 carries record 1000's tile code");
+
+			check(rc0[15:0] == 16'h3dbb && rc1[15:0] == 16'h16d1,
+			      "forward scan puts the HIGHER record number last (it wins)");
 		end
 
 		// A second build must produce the same answer -- n_entries has to be

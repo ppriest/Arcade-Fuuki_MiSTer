@@ -1,45 +1,26 @@
-// The whole Fuuki core below the MiSTer framework glue: CPU, work/video RAM,
-// the three tilemap layers, the sprite path, the compositor and the SDRAM
-// backend. Fuuki.sv wires this to hps_io, the PLL and arcade_video and does
-// nothing else of substance.
+// The Fuuki core below the MiSTer framework glue: CPU, work/video RAM, three
+// tilemap layers, sprites, compositor, sound and the SDRAM backend. Fuuki.sv
+// wires this to hps_io, the PLL and arcade_video. Everything here runs in
+// ModelSim (sim/video_tb drives these modules); nothing in Fuuki.sv does.
 //
-// The split is deliberate. Everything here is testable in ModelSim against
-// MAME captures; everything in Fuuki.sv needs a DE10-nano to exercise. Keeping
-// framework glue out of this file is what lets sim/video_tb drive the same
-// modules the bitstream does.
+// Reset domains:
+//   `reset`      SDRAM backend only. Fuuki.sv drives it from ~pll_locked. It
+//                must never include ioctl_download: MiSTer holds RESET for
+//                the whole ROM download, and a download FSM held in reset
+//                writes nothing (LESSONS_LEARNED, "Never hold the memory
+//                path in the core reset").
+//   `init`       ~pll_locked, the SDRAM chip's power-up sequence.
+//   `core_reset` reset | ioctl_download. CPU and video.
 //
-// ---------------------------------------------------------------------------
-// TWO RESET DOMAINS, AND THIS IS NOT OPTIONAL.
-//
-//   `reset`      reset & ~ioctl_download. Feeds the SDRAM backend ONLY.
-//   `init`       ~pll_locked. The SDRAM chip's own power-up sequence.
-//   `core_reset` reset | ioctl_download. Feeds the CPU and the video pipeline.
-//
-// The MASK on the first one is the part that is easy to get wrong, and the
-// first Fuuki bitstream did get it wrong: `reset` was passed through with the
-// framework's RESET still in it.
-//
-// MiSTer holds core RESET asserted for the ENTIRE ROM download. Anything in
-// the memory path gated by a reset that includes the download is dead for the
-// whole transfer: Psikyo passed a composite reset into its SDRAM top, the
-// download FSM sat in idle while the HPS delivered every byte, not one write
-// reached the chip, and every later read returned power-up contents
-// (LESSONS_LEARNED, "Never hold the memory path in the core reset"). The
-// symptom was a black screen with nothing pointing at memory.
-// ---------------------------------------------------------------------------
-//
-// ONE .rbf SERVES BOTH BOARDS. `board` comes from the .mra mod byte and
-// picks the CPU mode, the tile depths, the colour shift and the sprite
-// buffering. It is a runtime input, never a parameter.
+// One .rbf serves both boards: `board` comes from the .mra mod byte and is a
+// runtime input, never a parameter.
 
 module fuuki_core (
 	input  logic clk,          // 85.909091 MHz
 	input  logic ce_pix,       // clk/12 = 7.159091 MHz
-	// SDRAM path only, and it must be MASKED OFF during the download:
-	// pass `reset & ~ioctl_download`, never the framework's RESET. See
-	// fuuki_sdram_top.sv's port comment for what happens otherwise.
+	// SDRAM backend only. Must not include ioctl_download; see the header.
 	input  logic reset,
-	// SDRAM chip power-up init, separate from any core reset: `~pll_locked`.
+	// SDRAM chip power-up init: `~pll_locked`.
 	input  logic init,
 	input  logic core_reset,   // reset | ioctl_download: CPU and video
 
@@ -98,8 +79,7 @@ module fuuki_core (
 	output logic        video_vb,
 	output logic        video_ce,
 
-	// ---- audio, signed. FG-2's mono mix goes to both channels; FG-3's
-	// OPL4 is stereo. ----
+	// ---- audio, signed. FG-2 mono to both channels; FG-3's OPL4 stereo ----
 	output logic signed [15:0] audio_l,
 	output logic signed [15:0] audio_r,
 
@@ -118,16 +98,18 @@ module fuuki_core (
 	output logic        dbg_iack,        // interrupt-acknowledge access in progress
 	output logic [2:0]  dbg_iack_level,  // level on A3..A1 during it
 	output logic        dbg_irq1_trig,   // the line-248 interrupt source, one clk per frame
-	output logic [7:0]  dbg_opl4_state,  // {busy_mem, new2, mix_pcm} -- what can silence PCM
-	output logic [15:0] dbg_smp,         // sound health: fetch watch + last OPL4 register
-	// RENDER OVERRUN WATCH -- see the block of that name
+	output logic [7:0]  dbg_opl4_state,  // {0, new2, mix_pcm[5:0]}: what can silence PCM
+	output logic [15:0] dbg_smp,         // sample fetch watch + last OPL4 register, see below
+	// render overrun watch, see below
 	output logic [2:0]  dbg_tm_ovr,      // one pulse per line a tilemap engine was still busy at the swap
 	output logic [12:0] dbg_tm_max,      // worst tilemap line render, clk, peak-hold
 	output logic [12:0] dbg_spr_max,     // worst sprite line render, clk, peak-hold
 	output logic        dbg_z80_m1,      // one pulse per Z80 opcode fetch, either board
 	output logic        dbg_ym_wr,       // one pulse per write to a sound chip, either board
 	output logic        dbg_pcm_keyon,   // FG-3: OPL4 PCM voice keyed on
-	output logic        dbg_fm_keyon,    // FG-3: OPL4 FM voice keyed on (nothing plays it yet)
+	output logic        dbg_fm_keyon,    // FG-3: OPL4 FM voice keyed on
+	output logic        dbg_snd_int,     // one pulse per falling edge of the sound CPU's INT, either board
+	output logic [3:0]  dbg_snd_state,   // {halt_n, rom_wait, int_n, nmi_n} of the running sound CPU
 
 	// ---- trace-to-screen controls (see the debug_tracer instance) ----
 	input  logic        dbg_overlay,
@@ -138,7 +120,7 @@ module fuuki_core (
 	input  logic [2:0]  dbg_page,     // which 40-entry page of the buffer to show
 	input  logic [23:0] dbg_dump,     // memory dump: {region[3:0], page[19:0]} (JTAG source [31:8])
 	input  logic        dbg_trig,     // ring mode: freeze on the first exception-vector read
-	input  logic        dbg_marker,   // white pixels at x 0..7 on lines 0 and 239: is the framing exact?
+	input  logic        dbg_marker,   // white pixels at x 0..7 on lines 0 and 239, to check framing
 	output logic        dbg_frozen
 );
 
@@ -193,11 +175,10 @@ module fuuki_core (
 	logic [1:0]   vregs_sel;
 	logic [25:0]  dl_addr_dbg;
 	logic [2:0]   cpu_fc;
-	// Declared here, ABOVE the maincpu instance that pauses on it, not at the
-	// walker where it is defined: vlog rejects use-before-declare (vlog-2388)
-	// and Quartus silently resolves it, which is how it reached the FPGA build.
+	// Declared before first use: vlog rejects use-before-declare (vlog-2388);
+	// Quartus does not.
 	wire          walk_active = (dbg_src == 2'd3);
-	// Memory-dump decode, declared here because the memories below index by it.
+	// Memory-dump decode; the memories below index by it.
 	wire [3:0]    dump_region = dbg_dump[23:20];
 	wire [19:0]   dump_page   = dbg_dump[19:0];
 	wire          walk_sdram  = (dump_region == 4'd0);
@@ -253,23 +234,12 @@ module fuuki_core (
 	assign dbg_rom_valid = rom_valid;
 	assign dbg_rom_data  = rom_data;
 
-	// FG-3's 16 shared bytes at 0x903FE0 are inside rtl/sound/fg3_sound.sv,
-	// which is where the Z80 that answers on them lives. The bring-up stub
-	// that used to play the Z80's side of srom.u7's handshake from here is
-	// gone with it.
+	// FG-3's 16 shared bytes at 0x903FE0 live in rtl/sound/fg3_sound.sv.
 
 	// =====================================================================
-	// Work RAM -- 64K x 16, one array serves both boards
-	//
-	// workram_addr is already a WORD address (maincpu.sv: addr24[17:1]), like
-	// every other *_addr here, and is used whole. It was indexed [16:1] --
-	// halved again -- so consecutive words shared one entry. The boot code
-	// only wrote RAM until the first interrupt; then the 68000 stacked PC.lo,
-	// PC.hi and SR into three words that occupied two entries, the ISR's
-	// movem overwrote the SR's, and rte popped SR=0, PC=0: user mode at
-	// address 0, then vector 4. The CPU testbench models this RAM itself
-	// (sim/maincpu_tb, `BRAM), so it could not see the core's indexing.
-	// Bit 16 is dropped: 0x410000-0x41FFFF mirrors 0x400000-0x40FFFF.
+	// Work RAM: 64K x 16, one array for both boards. workram_addr is a word
+	// address (maincpu.sv: addr24[17:1]), like every *_addr here. Bit 16 is
+	// dropped: 0x410000-0x41FFFF mirrors 0x400000-0x40FFFF.
 	// =====================================================================
 	logic [15:0] workram [0:65535];
 	always_ff @(posedge clk) begin
@@ -279,20 +249,11 @@ module fuuki_core (
 	end
 
 	// =====================================================================
-	// Tilemap VRAM -- 16K x 16, FOUR readers
-	//
-	// The CPU and the three layer engines all read this, and every engine
-	// needs its own registered single-cycle read (that is the contract in
-	// tilemap_line_engine.sv). Rather than arbitrate -- which would break
-	// that contract and stall the engines against each other -- the array is
-	// MIRRORED: every write goes to all four copies, and each reader owns
-	// one. Quartus infers four simple dual-port M10K blocks.
-	//
-	// The cost is 1 Mbit of the device's 5.5. It could be cut to a quarter,
-	// because engine 0 only ever reads bank 0, engine 1 bank 1 and engine 2
-	// banks 2/3 -- but that means slicing the address per copy, and a first
-	// bitstream is the wrong place to trade a correctness risk for BRAM
-	// there is no shortage of.
+	// Tilemap VRAM: 16K x 16, four readers. Each layer engine needs its own
+	// registered single-cycle read (tilemap_line_engine.sv's contract), so
+	// the array is mirrored: every write goes to all four copies, each reader
+	// owns one. 1 Mbit of M10K; could be quartered by slicing the address per
+	// copy (engine 0 reads only bank 0, engine 1 bank 1, engine 2 banks 2/3).
 	// =====================================================================
 	logic [13:0] tm_vaddr [0:2];
 	logic [15:0] tm_vdata [0:2];
@@ -322,7 +283,7 @@ module fuuki_core (
 	end
 
 	// =====================================================================
-	// Palette -- 8192 x xRGB-555, CPU read/write plus the compositor's read
+	// Palette: 8192 x xRGB-555, a CPU copy and the compositor's copy
 	// =====================================================================
 	logic [12:0] pal_rd_addr;
 	logic [15:0] pal_rd_data;
@@ -366,24 +327,13 @@ module fuuki_core (
 	);
 
 	// =====================================================================
-	// PER-LINE REGISTER SNAPSHOT
-	//
-	// Everything the renderer reads out of the video registers is latched
-	// once per scanline, at the START OF HBLANK, and the engines and the
-	// compositor see only the latched copy.
-	//
-	// The engines used to read the live registers and sample them on their
-	// line buffer's READY edge, which is not a fixed point in the line: a CPU
-	// write landing near it took effect on one line or the next depending on
-	// where the buffer's clear pass happened to be, so gogomile's title
-	// clouds jittered back and forth between frames. Hblank is a fixed point
-	// and is after the raster interrupt fires (video_timing drives irq5 at
-	// hcnt == H_ACTIVE), so an ISR's write cannot race the latch it belongs
-	// after.
-	//
-	// PER LINE, not per frame: pbancho rewrites the layer scroll from a
-	// level-5 handler on every line of a band, and latching once per frame
-	// would flatten exactly the effect the raster interrupt exists to produce.
+	// Per-line register snapshot. The engines and the compositor read only
+	// this copy, latched at the start of hblank, which is after the raster
+	// interrupt (video_timing fires irq5 at hcnt == H_ACTIVE), so an ISR's
+	// write lands before the latch it belongs to. Per line, not per frame:
+	// pbancho rewrites the scroll from a level-5 handler on every line of a
+	// band. Do not sample on the line buffer's READY edge: it is not a fixed
+	// point in the line and the scroll jitters (gogomile's title clouds).
 	// =====================================================================
 	wire vreg_latch = ce_pix && (hcnt == 9'd320);
 
@@ -410,12 +360,9 @@ module fuuki_core (
 	end
 
 	// =====================================================================
-	// Per-layer configuration.
-	//
-	// Straight from each driver's GFXDECODE and video_start(), and the same
-	// table scripts/prep_tilemap_tb.py writes for the testbench -- the two
-	// must agree or the bitstream renders differently from the thing that
-	// was diffed against MAME's screenshot.
+	// Per-layer configuration, from each driver's GFXDECODE and video_start().
+	// scripts/prep_tilemap_tb.py writes the same table for the testbench; the
+	// two must agree.
 	//
 	//             layer 0        layer 1        layer 2
 	//   FG-2      16x16x4        16x16x8        8x8x4
@@ -427,17 +374,15 @@ module fuuki_core (
 	//             colour >>= 4   colour >>= 4   colour as-is
 	//             trans 0xff     trans 0xff     trans 0x0f
 	//
-	// (*) FG-2's layer 1 is 8bpp with granularity SIXTEEN, set explicitly by
-	//     gfx(1)->set_granularity(16). The pen legitimately exceeds the
-	//     granularity and must never be masked.
+	// (*) FG-2's layer 1 is 8bpp with granularity 16 (gfx(1)->set_granularity(16)).
+	//     The pen legitimately exceeds the granularity; never mask it.
 	// =====================================================================
 	wire [2:0] cfg_tile16 = 3'b011;                       // layers 0,1 are 16x16
 	wire [2:0] cfg_bpp8   = (board == BOARD_FG3) ? 3'b011 : 3'b010;  // FG-2: layer 1 only
 	wire [2:0] cfg_gran256= (board == BOARD_FG3) ? 3'b011 : 3'b000;
 	wire [2:0] cfg_shift4 = (board == BOARD_FG3) ? 3'b011 : 3'b000;
 
-	// gfx_base is 0 for every layer: fuuki_sdram_top adds BASE_TILES_Lx on
-	// its own side, so an offset here would be applied twice.
+	// gfx_base is 0 for every layer: fuuki_sdram_top adds BASE_TILES_Lx itself.
 	localparam logic [12:0] PAL_BASE [0:2] = '{13'h0000, 13'h0400, 13'h0C00};
 
 	// =====================================================================
@@ -469,33 +414,15 @@ module fuuki_core (
 	genvar g;
 	generate
 		for (g = 0; g < 3; g++) begin : layer
-			// Start on the line buffer's READY edge, not on line_start, and
-			// render vcnt_next2 -- exactly as sim/video_tb wires it, because
-			// that is the configuration whose composed frame was diffed
-			// against MAME's screenshot. Starting at line_start puts the
-			// engine's first ~320 writes inside the buffer's clear pass,
-			// where the clear owns the write port and they vanish.
-			//
-			// NOTE video_timing.sv's header prescribes vcnt_next for tilemaps
-			// and vcnt_next2 only for sprites, and jtcps1 does the same thing
-			// (scroll at `vrender`, CPS2 objects at `vrender1`). This core
-			// uses vcnt_next2 for BOTH, and the extra line is load-bearing:
-			// it is what gives the engine a WHOLE LINE to render in.
-			//
-			// TRIED AND REVERTED: swapping the tilemap line buffers at the
-			// start of active instead of at line_start, which presents a bank
-			// one line earlier and so allows vcnt_next. It broke both games --
-			// the right-hand side of every tilemap went blank and flickered --
-			// because it also cuts the render window down to hblank: 1632 clk,
-			// less the 320-clk clear, against a worst line measured at 1123
-			// clk for ONE layer in isolation. Three layers share one SDRAM
-			// port, so the real figure is larger and the engine simply does
-			// not finish the line. jtcps1 gets away with one line because its
-			// scroll layers render on the fly during the active display
-			// rather than into a buffer during hblank.
-			//
-			// So the two-line lead stays until the renderer is fast enough,
-			// or overlaps its fetch with the display, to live inside hblank.
+			// Start on the line buffer's READY edge and render vcnt_next2, as
+			// sim/video_tb does. Starting at line_start puts the first ~320
+			// writes inside the buffer's clear pass, where they vanish.
+			// vcnt_next2, not the vcnt_next video_timing.sv prescribes for
+			// tilemaps, gives the engine a whole line to render in.
+			// Do not swap the tilemap buffers at the start of active to allow
+			// vcnt_next: that cuts the render window to hblank (1632 clk less
+			// the 320-clk clear) against a worst line of 1123 clk for one
+			// layer alone, and the right side of every tilemap goes blank.
 			tilemap_line_engine u_tm (
 				.clk(clk), .reset(core_reset),
 				.line_start(tm_ready_rise[g]), .render_line(vcnt_next2),
@@ -524,7 +451,7 @@ module fuuki_core (
 	endgenerate
 
 	// =====================================================================
-	// Sprite path: buffered RAM -> once-per-frame candidate list -> per-line
+	// Sprite path: buffered RAM -> per-frame candidate list -> per-line
 	// engine -> double-buffered line buffer.
 	// =====================================================================
 	logic        copy_busy, copy_busy_d;
@@ -543,8 +470,8 @@ module fuuki_core (
 		.rd_addr(sr_addr), .rd_data(sr_data)
 	);
 
-	// Both boards snapshot sprite RAM at frame_start (spriteram_dbuf), and
-	// the list must not read across the copy: it builds when the copy ends.
+	// Sprite RAM is snapshotted at frame_start (spriteram_dbuf); the list
+	// builds when the copy ends so it never reads across it.
 	always_ff @(posedge clk) copy_busy_d <= copy_busy;
 	wire copy_done  = copy_busy_d && !copy_busy;
 	wire build_start = copy_done;
@@ -602,19 +529,12 @@ module fuuki_core (
 	);
 
 	// =====================================================================
-	// RENDER OVERRUN WATCH. Each line engine gets one line -- 5,472 clk -- to
-	// render into its buffer, and line_start swaps the buffers whether it
-	// finished or not. An engine still busy at the swap has left the display
-	// bank half drawn: tiles from the left edge as far as it got, then the
-	// clear value, transparent, with whatever is beneath showing through.
-	// That is pbancho's attract with the CPU halted: black bands that stop
-	// partway across and flicker, over sprites -- nothing else can vary from
-	// frame to frame with the registers frozen.
-	//
-	// So: how often each engine is caught at the swap, and how long its
-	// worst line took. The counts name the layer; the peak names the margin.
-	// The per-line record (word 7, bits 12:9) carries the same flags per
-	// line so the rows can be read off rather than inferred from the picture.
+	// Render overrun watch (probe). Each line engine has one line, 5,472 clk,
+	// and line_start swaps the buffers whether or not it finished; an engine
+	// still busy at the swap leaves the display bank half drawn (tiles as
+	// far as it got, then transparent). dbg_tm_ovr pulses per caught line;
+	// dbg_*_max is the worst line, peak-hold. Word 7 of the per-line record
+	// carries the same flags per line.
 	// =====================================================================
 	logic [12:0] tm_cyc [0:2];
 	logic [12:0] spr_cyc;
@@ -637,25 +557,17 @@ module fuuki_core (
 			if (!spr_busy && spr_cyc > dbg_spr_max) dbg_spr_max <= spr_cyc;
 		end
 	end
-	// flags for the per-line record: the engines caught busy at the swap that
-	// presented the line being recorded. Captured one line_start early and
-	// carried, because the record for a line is written at the swap that ENDS
-	// it, and the overrun that spoiled it happened at the swap that began it.
+	// Engines caught busy at the swap that presented the recorded line.
+	// Captured one line_start early: the record for a line is written at the
+	// swap that ends it, and the overrun happened at the swap that began it.
 	logic [3:0] ovr_at_swap = 4'd0, lc_ovr = 4'd0;
 
 	// =====================================================================
-	// LINE-BUFFER CHECK (probe): does display line V show the row rendered
-	// FOR line V?
-	//
-	// Each engine renders vcnt_next2 into the bank that line_start just made
-	// the render bank, and that bank is displayed after the NEXT line_start.
-	// Simulation agrees the arithmetic lands row V on line V; MiSTer shows
-	// sprites a line below where MAME puts them. This tags each bank with the
-	// row its engine set out to render and, on every displayed line, holds
-	// (vcnt - tag of the bank being displayed). 0 means the row is on its
-	// line; +1 means the picture is one line LOW (row V displayed on V+1).
-	// The bad counters saturate at 15 and count lines where the delta was not
-	// zero, so a one-off glitch and a systematic offset read differently.
+	// Line-buffer check: does display line V show the row rendered for V?
+	// Tags each bank with the row its engine set out to render and holds
+	// (vcnt - tag of the displayed bank): 0 means row V is on line V, +1 one
+	// line low. The bad counters saturate at 15. Not on the probe at
+	// present; kept so it can be re-exported without a rebuild of the logic.
 	// =====================================================================
 	logic [8:0] tm1_tag [0:1];
 	logic [8:0] spr_tag [0:1];
@@ -674,44 +586,23 @@ module fuuki_core (
 			if (vcnt != spr_disp_tag && spr_bad != 4'd15) spr_bad <= spr_bad + 4'd1;
 		end
 	end
-	// The line-buffer check that used to be on the probe is retired: it read
-	// delta 0 for hundreds of frames on both engines, and the sprite-offset
-	// fault it was built for turned out to be the scaler. The counters stay
-	// so the check can be re-exported without rebuilding the logic.
 	wire [15:0] lb_check_unused = {spr_delta, tm1_delta, spr_bad, tm1_bad};
 
-	// The sample port's request and valid, declared HERE, above the watch
-	// that reads them, not beside the SDRAM instance 400 lines below: vlog
-	// rejects use-before-declare and Quartus quietly accepts it. The dbg_pri
-	// declaration above the per-line record exists for the same reason, and
-	// this one was missed when the watch went in -- every simulation in this
-	// tree failed to compile from that commit until this.
+	// The sample port's request and valid, declared before the watch that
+	// reads them (vlog use-before-declare).
 	logic        smp_req, smp_valid;
 
 	// =====================================================================
-	// SAMPLE FETCH WATCH. The sample ROM port serves FG-2's OKI and FG-3's
-	// OPL4 wavetable, and BOTH chips assume their fetch completes: jt6295
-	// does not wait at all, and the OPL4 issues a one-cycle request and then
-	// holds busy_mem until a valid it can only get from us. So a single lost
-	// valid is not a glitch, it is a permanent stall -- the PCM engine stops
-	// advancing, its accumulator holds its last value, and the mix goes to a
-	// constant. That is silence with a non-zero level, which is exactly what
-	// a peak-hold reads as "still working".
-	//
-	// So: is a fetch outstanding right now, how long has the worst one
-	// taken, and has any ever exceeded a threshold no healthy fetch should.
-	//   [15]     stalled: a fetch has been outstanding > 4096 clk (sticky)
-	//   [14]     a fetch is outstanding at this instant
-	//   [13:6]   the register selector the Z80 last wrote to an OPL4 address
-	//            port -- a sound CPU writing hard with no key-ons is in a
-	//            loop, and this names the register it is on
+	// Sample fetch watch. The sample ROM port serves FG-2's OKI and FG-3's
+	// OPL4 wavetable, and both assume the fetch completes: jt6295 does not
+	// wait, and the OPL4 holds busy_mem until valid. One lost valid stalls
+	// the PCM engine for good with the mix stuck at a constant, which a
+	// peak-hold still reads as working. dbg_smp:
+	//   [15]     stalled: a fetch outstanding > 4096 clk (sticky)
+	//   [14]     a fetch is outstanding now
+	//   [13:6]   register selector the Z80 last wrote to an OPL4 address port
 	//   [5:3]    which OPL4 port that write went to
-	//   [2:0]    worst fetch latency, in units of 512 clk, saturating
-	//
-	// The fetch counter and the finer latency field are gone: the count only
-	// ever read 255 and the latency field was scaled wrong -- it saturated
-	// once a fetch passed 63 CLOCKS, which every healthy SDRAM round trip
-	// does, so it read 63 on a working machine and measured nothing.
+	//   [2:0]    worst fetch latency, units of 512 clk, saturating
 	// =====================================================================
 	logic [7:0]  dbg_opl4_sel;
 	logic        dbg_new2;
@@ -740,41 +631,26 @@ module fuuki_core (
 			end
 		end
 	end
-	// smp_age counts in clk; >>6 puts the reported worst latency in units of
-	// 64 clk, so 1 unit is about 0.75 us at 85.909 MHz.
 	assign dbg_smp = {smp_stall, smp_out, dbg_opl4_sel, dbg_opl4_port, smp_maxlat};
-	// A PCM engine can be given key-ons and still make no sound two ways that
-	// leave the driver looking healthy: NEW2 low, which gates every key-on
-	// inside opl4_regs, or the F9 attenuator at 7, which is mix_scale 0.
-	// Neither is visible from outside the chip, and both produce exactly the
-	// reported symptom -- what is already sounding continues, nothing new
-	// starts.
+	// NEW2 low gates every key-on inside opl4_regs; the F9 attenuator at 7 is
+	// mix_scale 0. Either silences new voices while the driver looks healthy.
 	assign dbg_opl4_state = {1'b0, dbg_new2, dbg_mix_pcm};
 
-	// =====================================================================
-	// The compositor's resolved layer-priority value. Declared HERE, above
-	// the record that samples it, not beside the compositor 240 lines below:
-	// vlog rejects use-before-declare and Quartus quietly accepts it, which
-	// is how a truncated bus once reached the FPGA build (LESSONS_LEARNED).
+	// The compositor's resolved layer-priority value, declared before the
+	// record that samples it (vlog use-before-declare).
 	logic [2:0] dbg_pri;
 
-	// PER-LINE DISPLAY RECORD (dump region 6). EIGHT words per display line,
-	// 240 lines, written as the line is shown:
+	// Per-line display record (dump region 6): eight words per display line,
+	// 240 lines, written as the line is shown.
 	//   0..2  layer 0..2 at x = 160: { opaque, 2'b0, palette index }
 	//   3     sprite at x = 160:     { opaque, priority[1:0], palette index }
 	//   4     { any sprite on the line, 3'b0, layer priority value, first x }
-	//   5     layer 2's LATCHED X scroll -- gogomile's cloud chain
-	//   6     layer 0's LATCHED Y scroll -- pbancho's per-line effect
-	//   7     the raster register in force, reduced; bits 12:9 = the engines
-	//         caught busy at the swap that presented this line: {spr, tm2, tm1, tm0}
-	//
-	// Words 5-7 are what make a raster fault answerable. The chain's own
-	// arithmetic is known from a MAME capture -- gogomile's clouds are five
-	// bands at 2, 1, 1/2, 0, 0 pixels per frame, starting at lines 0, 30, 64,
-	// 89 and 119 -- so the question is only ever WHICH DISPLAY LINE GOT WHICH
-	// SCROLL, and this answers it directly instead of by inference from the
-	// picture. It is what fixed the level-5 lead at one line (video_timing.sv):
-	// by eye, the boundaries moving one line either way is a guess.
+	//   5     layer 2's latched X scroll
+	//   6     layer 0's latched Y scroll
+	//   7     { 3'b0, engines busy at the swap {spr, tm2, tm1, tm0}, raster register }
+	// Words 5-7 answer which display line got which scroll. Reference cases:
+	// gogomile's clouds (five bands at 2, 1, 1/2, 0, 0 px/frame from lines 0,
+	// 30, 64, 89, 119, from a MAME capture) and pbancho's per-line scroll.
 	logic [15:0] linecap [0:2047];
 	logic [13:0] lc_l0, lc_l1, lc_l2;
 	logic [15:0] lc_spr;
@@ -794,7 +670,7 @@ module fuuki_core (
 			3'd4:    lc_wdata = {lc_spr_seen, 3'b0, lc_pri, lc_spr_x};
 			3'd5:    lc_wdata = lc_sx2;
 			3'd6:    lc_wdata = lc_sy0;
-			default: lc_wdata = {3'b0, lc_ovr, raster_line};   // [12:9] = {spr, tm2, tm1, tm0} busy at the swap
+			default: lc_wdata = {3'b0, lc_ovr, raster_line};   // [12:9] = {spr, tm2, tm1, tm0}
 		endcase
 	end
 	always_ff @(posedge clk) begin
@@ -808,21 +684,15 @@ module fuuki_core (
 				lc_spr_x    <= hcnt;
 			end
 		end
-		// FROZEN WHILE THE CPU IS PAUSED. The record is rewritten every frame by
-		// the video side, which does not stop when the CPU does -- so a dump
-		// taken under a pause (and every dump pauses the CPU for the walk) read
-		// the flat frame the paused game renders, not the running one. gogomile's
-		// cloud chain is the level-5 handler rewriting scroll per band; held,
-		// it writes nothing, and the record showed one scroll value on all 240
-		// lines. Gating the write on the pause keeps the last RUNNING frame.
+		// Not written while the CPU is paused (every dump pauses it for the
+		// walk): the video side keeps rendering the paused, flat frame, and
+		// the record must keep the last running one.
 		if (line_start && v_active && !pause_cpu) begin
 			lc_writing <= 1'b1;
 			lc_wcnt    <= 3'd0;
 			lc_line    <= vcnt[7:0];
-			// The scrolls as the line just DISPLAYED was rendered with. They
-			// are captured here, at the same edge the next line's latch
-			// happens, so the value recorded against line V is the one the
-			// engines used for it.
+			// The scrolls the line just displayed was rendered with, captured
+			// at the same edge as the next line's latch.
 			lc_sx2     <= r_scrollx[2];
 			lc_sy0     <= r_scrolly[0];
 			lc_ovr     <= ovr_at_swap;
@@ -839,50 +709,27 @@ module fuuki_core (
 	end
 
 	// =====================================================================
-	// Compositor and palette lookup
-	// =====================================================================
-	// =====================================================================
-	// Trace to screen.
-	//
-	// 128 bits of JTAG probe answers "how much" and "where is it now". It
-	// cannot answer "what happened in the run-up", which is the question that
-	// identifies a cause. This buffers 256 events and reads them out one per
-	// scanline, so a single screenshot carries 256 consecutive samples -- the
-	// technique the sibling Psikyo core used for its bring-up, module
-	// vendored from it unchanged.
-	//
-	// RING MODE first: it holds the LATEST 256 events and freezes when the
-	// stream goes quiet, so a stopped download freezes the buffer on the last
-	// writes before it stopped.
-	//
-	// The module has NO RESET PORT, deliberately -- its header explains why,
-	// and this core was already bitten by exactly that: counters cleared by
-	// the very reset under investigation.
+	// Trace to screen. Buffers 256 events and reads them out one per
+	// scanline, so one screenshot carries 256 consecutive samples; the
+	// 128-bit probe can only answer "how much". Module vendored unchanged
+	// from the Psikyo core. Ring mode holds the latest 256 events and freezes
+	// when the stream goes quiet. The module has no reset port, deliberately;
+	// see its header.
 	// =====================================================================
 	logic [23:0] trace_data;
 	logic        trace_stb;
 
-	// CPU accesses are captured on the VALID that completes them, paired with
-	// the address that was requested, and tagged with the kernel's function
-	// code. Capturing on rom_req alone gave a scrambled order on MiSTer
-	// (0, 3, 1, ...) that no 68000 sequence produces; the completed access
-	// is the one the CPU actually consumed. FC separates a vector/data read
-	// (5) from a program fetch (6) from an interrupt acknowledge (7), which is
-	// the difference between "the core is being reset" and "the CPU is taking
-	// exceptions".
-	//
-	// GATED ON THE DOWNLOAD HAVING FINISHED. The CPU runs for ~3,000 fetches
-	// on empty SDRAM before MiSTer asserts RESET for the transfer; ungated,
-	// those fill a first-N capture and window 0 never shows the real boot.
-	// dl_done has no reset, on purpose (see debug_tracer.sv's header).
+	// CPU accesses are captured on the valid that completes them, with the
+	// requested address and the kernel's function code: FC 5 is a vector or
+	// data read, 6 a program fetch, 7 an interrupt acknowledge. Capturing on
+	// rom_req gives a scrambled order.
+	// Gated on dl_done: the CPU runs ~3,000 fetches on empty SDRAM before
+	// MiSTer asserts RESET for the transfer, and those would fill a first-N
+	// capture. dl_done has no reset (debug_tracer.sv's header). ldr_active
+	// counts as the ROM arriving: on the fast DDR path no ioctl_wr reaches
+	// the core.
 	logic        dl_seen0 = 1'b0, dl_done = 1'b0;
 	logic [20:0] pend_addr;
-	//
-	// ldr_active counts as "the ROM arrived" too: on the fast DDR path the HPS
-	// DMAs the image straight into DDR3 and NO ioctl_wr ever reaches the core,
-	// so gating on writes alone left dl_done clear forever -- which silently
-	// disabled trace sources 1 and 2 and the SDRAM/memory walker, whose dumps
-	// then came back as 256 zeros.
 	always_ff @(posedge clk) begin
 		if (ioctl_wr && ioctl_index == 16'd0) dl_seen0 <= 1'b1;
 		if (ldr_active)                       dl_seen0 <= 1'b1;
@@ -891,32 +738,27 @@ module fuuki_core (
 	end
 
 	// =====================================================================
-	// SDRAM read-back walker -- trace source 3.
+	// SDRAM read-back walker, trace source 3. Reads 256 consecutive words
+	// through the CPU's own path (bridge, cache, arbiter, controller) with
+	// the CPU paused and hands each to the tracer as {index, word}. Runs one
+	// pass when it becomes active or dbg_rearm toggles, once the download
+	// has finished; a settle after the kick lets an in-flight CPU access
+	// drain so its valid is not taken for the walker's first.
 	//
-	// Reads 256 consecutive words through the CPU's OWN path (bridge, cache,
-	// arbiter, controller) with the CPU paused, and hands each one to the
-	// tracer as {word index, data}: one page of what the CPU would see, per
-	// screenshot, to diff against the ROM image. dbg_window picks the page,
-	// so pages 0-15 cover the first 8 KB -- vector table and boot code.
-	//
-	// Runs one pass when it becomes active or dbg_rearm toggles, and only
-	// once the download has finished, for the same reason the fetch sources
-	// are gated. A short settle after the kick lets any in-flight CPU access
-	// drain, so its valid is not mistaken for the walker's first.
-	// =====================================================================
-	// walk_active is declared with the other core-level signals near the top.
-	//
-	// MEMORY DUMP. dbg_dump = {region, page} from the JTAG source [31:8]:
+	// Memory dump. dbg_dump = {region, page} from JTAG source [31:8]:
 	//   region 0  SDRAM, page = 512-byte page of the 64 MB (page 0 falls back
 	//             to dbg_window, which is how the pattern test addresses it)
-	//   region 1  tilemap VRAM      (64 pages)     region 4  video registers
-	//   region 2  palette           (32 pages)               (0-15 regs, 16-17 unknown,
-	//   region 3  sprite RAM (live) (16 pages)               18 priority, 19-20 tile bank)
+	//   region 1  tilemap VRAM      (64 pages)
+	//   region 2  palette           (32 pages)
+	//   region 3  sprite RAM (live) (16 pages)
+	//   region 4  video registers: 0-15 regs, 16-17 unknown, 18 priority,
+	//             19-20 tile bank
 	//   region 5  work RAM          (256 pages)
-	//   region 6  per-line display record (8 pages) -- see PER-LINE DISPLAY RECORD
+	//   region 6  per-line display record (8 pages)
 	//   region 7  FG-3's 16 shared bytes with the Z80 (1 page, words 0-15)
-	// Non-SDRAM regions read the CPU-side port of each memory, which is why
-	// the CPU is paused while the walker runs. Each entry is {index, word}.
+	// Non-SDRAM regions read the CPU-side port of each memory, hence the
+	// pause.
+	// =====================================================================
 	logic        walk_active_d = 1'b0, walk_rearm_d = 1'b0, dl_done_d = 1'b0;
 	logic        walking = 1'b0, walk_wait = 1'b0, walk_req = 1'b0, walk_stb = 1'b0;
 	logic [7:0]  walk_settle = 8'd0;
@@ -932,8 +774,7 @@ module fuuki_core (
 			4'd1:    mem_word = vram_rdata;
 			4'd2:    mem_word = palette_rdata;
 			4'd3:    mem_word = spriteram_rdata;
-			// region 4: words 0-18 through the vregs port (regs, unknown,
-			// priority); 19-20 the sprite tile bank as the renderer sees it.
+			// region 4: words 19-20 are the sprite tile bank as the renderer sees it.
 			4'd4:    mem_word = (walk_idx == 8'd19) ? tilebank_render[31:16] :
 			                    (walk_idx == 8'd20) ? tilebank_render[15:0]  : vregs_rdata;
 			4'd5:    mem_word = workram_rdata;
@@ -945,12 +786,10 @@ module fuuki_core (
 	wire        walk_valid = walk_sdram ? rom_valid : mem_v2;
 	wire [15:0] walk_word  = walk_sdram ? rom_data  : mem_word;
 
-	// Kick on ANY of: the download finishing while the source is already
-	// selected, the source being selected after the download, or a re-arm.
-	// The first version kicked only on the source's rising edge AND
-	// dl_done, but the OSD bits arrive from the HPS before the download ends,
-	// so that edge always passed with dl_done low and the walker never ran --
-	// the dump decoded as 256 zeros.
+	// Kick on any of: the download finishing with the source already
+	// selected, the source selected after the download, or a re-arm. The OSD
+	// bits arrive before the download ends, so the source's rising edge
+	// alone is not enough.
 	wire walk_kick = walk_active && dl_done &&
 	                 ((dl_done && !dl_done_d) || !walk_active_d ||
 	                  (dbg_rearm ^ walk_rearm_d));
@@ -1001,17 +840,16 @@ module fuuki_core (
 		endcase
 	end
 
-	// TRIGGER: the first supervisor-data read inside vectors 2..4 (bus error,
-	// address error, illegal instruction; byte 0x08..0x13, word 4..9). The
-	// boot never reads those legitimately, so in ring mode the buffer freezes
-	// holding the 255 ROM reads that led to the exception plus the vector
-	// read itself as the newest entry. The readout rotates on that entry.
+	// Trigger: the first supervisor-data read of vectors 2..4 (bus error,
+	// address error, illegal instruction; words 4..9). The boot never reads
+	// those, so in ring mode the buffer freezes holding the 255 reads that
+	// led to the exception plus the vector read as the newest entry.
 	wire vec_trig = rom_valid && dl_done && (cpu_fc == 3'd5) &&
 	                (pend_addr >= 21'd4) && (pend_addr <= 21'd9);
 
-	// Band and row-in-band are counted, not divided: `vcnt / 6` synthesised
-	// to an lpm_divide on the tracer's BRAM address and missed clk_sys by
-	// 2.671 ns. The counters lag vcnt by one clock, which lands in hblank.
+	// Band and row are counted, not divided: `vcnt / 6` synthesises to an
+	// lpm_divide on the tracer's BRAM address and misses clk_sys by 2.671 ns.
+	// The counters lag vcnt by one clock, in hblank.
 	logic [23:0] trace_rd;
 	logic [5:0]  trace_band     = '0;   // 0..39 on the visible lines
 	logic [2:0]  trace_row      = '0;   // 0..5 within the band
@@ -1033,30 +871,27 @@ module fuuki_core (
 		trace_rd_index <= 9'(dbg_page * 9'd40) + 9'(trace_band);
 	end
 
-	// IDLE_BITS 28 = 2**28 clk = 3.1 s of quiet before the ring freezes. The
-	// default 22 is 49 ms, which the pause between .mra parts trips -- the
-	// buffer then froze mid-transfer and looked exactly like the end of it.
+	// IDLE_BITS 28 = 3.1 s of quiet before the ring freezes. The default 22
+	// (49 ms) is tripped by the pause between .mra parts.
 	debug_tracer #(.DEPTH(256), .WIDTH(24), .IDLE_BITS(28)) u_trace (
 		.clk(clk),
 		.cap_stb(trace_stb), .cap_data(trace_data),
-		// The walker reuses dbg_window as its PAGE selector, so the tracer
-		// must not also treat it as an event-skip: with window=2 it skipped
-		// 16,382 events and the 256-word dump recorded nothing.
+		// The walker uses dbg_window as its page selector, so the tracer must
+		// not also treat it as an event skip.
 		.ctl_rearm(dbg_rearm), .ctl_window(walk_active ? 4'd0 : dbg_window),
 		.ctl_ring(dbg_ring), .ctl_trig_en(dbg_trig), .cap_trig(vec_trig),
-		// BANDED, SELF-CHECKING READOUT. Each entry occupies SIX scanlines:
-		// three showing the value, three its bitwise INVERSE. The decoder pairs
-		// (v, ~v) runs by content and requires v ^ ~v == all ones, so any
-		// transform between this pixel and the PNG is detected instead of being
-		// read as data. That check is what exposed the framework's gamma LUT
-		// (now forced off under the overlay in Fuuki.sv), which the one-row
-		// readout had reported as SDRAM corruption. 40 entries per screen,
-		// page-selected over JTAG; 7 pages cover the 256-entry buffer.
+		// Banded readout: each entry occupies six scanlines, three showing the
+		// value and three its inverse. The decoder pairs (v, ~v) runs and
+		// requires v ^ ~v == all ones, so any transform between pixel and PNG
+		// (the framework's gamma LUT, forced off under the overlay in Fuuki.sv)
+		// is detected. 40 entries per screen; 7 pages cover the buffer.
 		.rd_index(trace_rd_index), .rd_data(trace_rd),
 		.frozen(dbg_frozen)
 	);
 
-
+	// =====================================================================
+	// Compositor and palette lookup
+	// =====================================================================
 	compositor u_comp (
 		.l0(tm_rd[0]), .l1(tm_rd[1]), .l2(tm_rd[2]),
 		.spr(spr_rd),
@@ -1066,27 +901,20 @@ module fuuki_core (
 	);
 
 	// =====================================================================
-	// Output stage.
-	//
-	// The pixel path is TWO registered reads deep -- the line buffers, then
-	// the palette -- so the colour for hcnt appears two clocks later. The
-	// blanking, sync and pixel enable are delayed by the same two clocks so
-	// the scaler sees them paired. Getting this wrong shifts the picture by
-	// two clk_sys (a sixth of a pixel) and, worse, samples the wrong side of
-	// a blanking edge.
-	//
-	// xRGB-555 as MAME decodes it: palette_device::xRGB_555 is
-	// standard_rgb_decoder<5,5,5, 10,5,0>, so bits 14:10 are RED, 9:5 green,
-	// 4:0 blue. pal5bit() replicates the top 3 bits into the low byte, which
-	// is what makes white actually reach 0xFF.
+	// Output stage. The pixel path is two registered reads deep (line
+	// buffers, then palette), so blanking, sync and pixel enable are delayed
+	// two clocks to stay paired with the colour.
+	// xRGB-555 as MAME decodes it (palette_device::xRGB_555 is
+	// standard_rgb_decoder<5,5,5, 10,5,0>): bits 14:10 red, 9:5 green, 4:0
+	// blue. pal5bit replicates the top 3 bits into the low bits so white
+	// reaches 0xFF.
 	// =====================================================================
 	function automatic [7:0] pal5bit(input [4:0] v);
 		pal5bit = {v, v[4:2]};
 	endfunction
 
-	// Line markers: the first and last active lines, at the left edge, so a
-	// screen or a screenshot shows whether the framing keeps both. Delayed
-	// with the blanking so they sit on the pixels they name.
+	// Line markers on the first and last active lines, delayed with the
+	// blanking so they sit on the pixels they name.
 	wire marker_px = dbg_marker && (hcnt < 9'd8) && (vcnt == 9'd0 || vcnt == 9'd239);
 	logic [1:0] q_mk;
 	logic [1:0] q_hs, q_vs, q_hb, q_vb, q_ce;
@@ -1099,8 +927,8 @@ module fuuki_core (
 		q_ce <= {q_ce[0], ce_pix};
 	end
 
-	// The overlay REPLACES the picture rather than blending: the decoder reads
-	// exact 24-bit values back out of the PNG, so blending would corrupt them.
+	// The overlay replaces the picture rather than blending: the decoder reads
+	// exact 24-bit values back out of the PNG.
 	wire [23:0] trace_px = trace_inv ? ~trace_rd : trace_rd;
 	assign video_r  = q_mk[1] ? 8'hFF : dbg_overlay ? trace_px[23:16] : pal5bit(pal_rd_data[14:10]);
 	assign video_g  = q_mk[1] ? 8'hFF : dbg_overlay ? trace_px[15:8]  : pal5bit(pal_rd_data[9:5]);
@@ -1112,14 +940,11 @@ module fuuki_core (
 	assign video_ce = q_ce[1];
 
 	// =====================================================================
-	// SDRAM backend
-	//
-	// `reset` here is the DOWNLOAD-MASKED reset, not `core_reset` and not the
-	// framework's RESET -- see this file's header and the port comment in
-	// fuuki_sdram_top.sv.
+	// SDRAM backend. `reset` is the backend's own reset, not `core_reset`;
+	// see the header.
 	// =====================================================================
-	// The sound boards' two memory clients, declared before the backend that
-	// serves them. One pair of ports, whichever board is running.
+	// The sound boards' memory clients: one pair of ports, whichever board
+	// runs.
 	logic        z80_rom_req, z80_rom_valid;   // smp_req/smp_valid: declared above the fetch watch
 	logic [18:0] z80_rom_addr;
 	logic [21:0] smp_addr;
@@ -1145,7 +970,7 @@ module fuuki_core (
 		.tm2_valid(tm_valid[2]), .tm2_data(tm_data[2]),
 		.spr_req(spr_req), .spr_addr(spr_addr),
 		.spr_valid(spr_valid), .spr_data(spr_gdata),
-		// rom_addr is a WORD address; the backend takes an even BYTE address
+		// rom_addr is a word address; the backend takes an even byte address
 		// and adds BASE_MAINCPU itself.
 		.cpu_req (walk_active ? (walk_req && walk_sdram) : rom_req),
 		.cpu_addr(walk_active ? walk_addr : 26'({rom_addr, 1'b0})),
@@ -1158,17 +983,16 @@ module fuuki_core (
 	);
 
 	// =====================================================================
-	// SOUND. One board runs, the other is held in reset: FG-2's Z80 with the
-	// YM2203 / YM3812 / OKI set (rtl/sound/fg2_sound.sv), FG-3's Z80 with the
-	// OPL4 (rtl/sound/fg3_sound.sv). Both are synthesized, because one .rbf
-	// serves both boards.
+	// Sound. One board runs, the other is held in reset; both are
+	// synthesized. FG-2: Z80 with YM2203 / YM3812 / OKI (rtl/sound/
+	// fg2_sound.sv). FG-3: Z80 with the OPL4 (rtl/sound/fg3_sound.sv).
 	//
-	// Clock enables, all exact on the 85.909 MHz grid (14.318181 x 6):
-	//   Z80    6 MHz      66/945   (both boards: 12 MHz / 2)
-	//   YM     3.58 MHz   1/24     (28.640 / 8 = 85.909 / 24)
+	// Clock enables, exact on the 85.909 MHz grid (14.318181 x 6):
+	//   Z80    6 MHz      66/945   (12 MHz / 2, both boards)
+	//   YM     3.58 MHz   1/24     (28.640 / 8)
 	//   OKI    1 MHz      11/945
-	// The fractional ones are Bresenham accumulators, as the main CPU's. The
-	// OPL4 derives its own 33.8688 MHz enable internally.
+	// The fractional ones are Bresenham accumulators. The OPL4 derives its
+	// own 33.8688 MHz enable internally.
 	// =====================================================================
 	logic [9:0] cen_z80_acc = 10'd0, cen_oki_acc = 10'd0;
 	logic [4:0] cen_ym_cnt  = 5'd0;
@@ -1189,6 +1013,7 @@ module fuuki_core (
 	logic [19:0] fg2_smp_addr;
 	logic signed [15:0] fg2_audio;
 	logic        fg2_m1, fg2_ym_wr;
+	logic        fg2_int_n, fg2_nmi_n, fg2_halt_n, fg2_rom_wait;
 
 	fg2_sound u_snd2 (
 		.clk(clk), .reset(core_reset || snd_fg3),
@@ -1200,7 +1025,9 @@ module fuuki_core (
 		.oki_req(fg2_smp_req), .oki_addr(fg2_smp_addr),
 		.oki_valid(smp_valid && !snd_fg3), .oki_data(smp_data),
 		.audio(fg2_audio),
-		.dbg_m1(fg2_m1), .dbg_ym_wr(fg2_ym_wr)
+		.dbg_m1(fg2_m1), .dbg_ym_wr(fg2_ym_wr),
+		.dbg_int_n(fg2_int_n), .dbg_nmi_n(fg2_nmi_n),
+		.dbg_halt_n(fg2_halt_n), .dbg_rom_wait(fg2_rom_wait)
 	);
 
 	logic        fg3_rom_req, fg3_smp_req;
@@ -1208,6 +1035,7 @@ module fuuki_core (
 	logic [21:0] fg3_smp_addr;
 	logic signed [15:0] fg3_audio_l, fg3_audio_r;
 	logic        fg3_m1, fg3_opl4_wr;
+	logic        fg3_int_n, fg3_halt_n, fg3_rom_wait;
 
 	fg3_sound u_snd3 (
 		.clk(clk), .reset(core_reset || !snd_fg3),
@@ -1221,6 +1049,7 @@ module fuuki_core (
 		.wave_valid(smp_valid && snd_fg3), .wave_data(smp_data),
 		.audio_l(fg3_audio_l), .audio_r(fg3_audio_r),
 		.dbg_m1(fg3_m1), .dbg_opl4_wr(fg3_opl4_wr),
+		.dbg_int_n(fg3_int_n), .dbg_halt_n(fg3_halt_n), .dbg_rom_wait(fg3_rom_wait),
 		.dbg_fm_keyon(dbg_fm_keyon), .dbg_pcm_keyon(dbg_pcm_keyon),
 		.dbg_opl4_sel(dbg_opl4_sel), .dbg_opl4_port(dbg_opl4_port),
 		.dbg_new2(dbg_new2), .dbg_mix_pcm(dbg_mix_pcm),
@@ -1236,5 +1065,13 @@ module fuuki_core (
 	assign audio_r = snd_fg3 ? fg3_audio_r : fg2_audio;
 	assign dbg_z80_m1 = snd_fg3 ? fg3_m1     : fg2_m1;
 	assign dbg_ym_wr  = snd_fg3 ? fg3_opl4_wr : fg2_ym_wr;
+	assign dbg_snd_state = snd_fg3 ? {fg3_halt_n, fg3_rom_wait, fg3_int_n, 1'b1}
+	                               : {fg2_halt_n, fg2_rom_wait, fg2_int_n, fg2_nmi_n};
+	// INT falling edges: FG-2 the YM3812 timer that sequences the music,
+	// FG-3 the OPL4's interrupt. Music stopped with the CPU still fetching
+	// and this not counting means the time base is lost.
+	logic snd_int_d = 1'b1;
+	always_ff @(posedge clk) snd_int_d <= dbg_snd_state[1];
+	assign dbg_snd_int = snd_int_d && !dbg_snd_state[1];
 
 endmodule

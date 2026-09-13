@@ -1,28 +1,22 @@
-// Single-port wrapper around MiSTer's real DDRAM_* interface.
+// Single-port wrapper around MiSTer's DDRAM_* interface.
 //
-// Vendored from Arcade-Psikyo_MiSTer, where the protocol was verified against
-// a working reference (MiSTer-devel/TSConf_MiSTer's ddram.sv) rather than
-// derived from the documentation alone. Unchanged except for this header.
+// Vendored from Arcade-Psikyo_MiSTer, where the protocol was checked against
+// MiSTer-devel/TSConf_MiSTer's ddram.sv. Unchanged except for this header.
 //
-// Presents a req/valid client interface, matching this project's convention
-// for latency-agnostic external memory ports: one transaction in flight at a
-// time, no arbitration of its own.
-//
+// req/valid client interface, one transaction in flight, no arbitration.
 //   READ:  8-byte-aligned granule in, full 64-bit DDRAM_DOUT out (`addr`'s
 //          low 3 bits are ignored).
 //   WRITE: single BYTE in (`wdata`), `addr` selects the lane via DDRAM_BE.
 //
-// DDRAM_BURSTCNT is always 1 -- no multi-beat bursting. Here the only client
-// is the ROM loader, whose copy is bounded by DDR3 latency per granule; wider
-// bursts are the obvious throughput improvement if the copy ever needs one.
+// DDRAM_BURSTCNT is always 1. The only client is the ROM loader; wider
+// bursts are the throughput improvement if the copy ever needs one.
 
 module ddram_phy (
 	input  logic clk,
 	input  logic reset,
 
-	// physical DDRAM interface (sys/emu_ports.vh) -- DDRAM_CLK is driven
-	// separately at the top level (assign DDRAM_CLK = clk;), not by this
-	// module, matching the reference's own convention.
+	// physical DDRAM interface (sys/emu_ports.vh). DDRAM_CLK is driven at the
+	// top level, not here.
 	input  logic         DDRAM_BUSY,
 	output logic [7:0]  DDRAM_BURSTCNT,
 	output logic [28:0] DDRAM_ADDR,
@@ -83,14 +77,13 @@ module ddram_phy (
 				end
 
 				S_WAIT_READ: begin
-					if (!DDRAM_BUSY) read_issued <= 1'b1;   // RD pulsed this cycle -> don't repeat it
+					if (!DDRAM_BUSY) read_issued <= 1'b1;   // RD pulsed this cycle; don't repeat it
 					if (DDRAM_DOUT_READY) state <= S_IDLE;
 				end
 
 				S_WAIT_WRITE: begin
 					if (!DDRAM_BUSY) begin
-						if (write_issued) state <= S_IDLE;   // WE was pulsed last cycle, and the
-															  // controller has dropped busy again
+						if (write_issued) state <= S_IDLE;   // WE pulsed last cycle and busy has dropped
 						else              write_issued <= 1'b1;
 					end
 				end

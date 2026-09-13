@@ -1,45 +1,38 @@
 // Fast ROM loading: bulk copy from DDR3 into the SDRAM ROM map.
 //
-// The slow path streams the ROM through hps_io's ioctl interface a byte at a
-// time, stalling the HPS with ioctl_wait for an SDRAM transaction on every one
-// of them -- 17.5 MB for an FG-2 set and 56.5 MB for FG-3, which is most of a
-// minute. The fast path removes the FPGA from the transfer entirely: an
-// `address="0x30000000"` attribute on the .mra's <rom index="0"> makes the HPS
-// DMA the ROM straight into DDR3, so the core sees ioctl_download assert and
-// deassert with NO ioctl_wr pulses at all. This module then copies DDR3 ->
-// SDRAM with the core held in reset, reading 8-byte granules and writing them
-// as four 16-bit SDRAM words.
+// An `address="0x30000000"` attribute on the .mra's <rom index="0"> makes
+// the HPS DMA the ROM into DDR3, so the core sees ioctl_download assert and
+// deassert with no ioctl_wr pulses. This module then copies DDR3 to SDRAM
+// with the core held in reset, one 8-byte granule read per four 16-bit
+// SDRAM writes.
 //
-// Vendored from Arcade-Psikyo_MiSTer (mechanism originally from
-// srg320/Arcade-PsikyoSH2_MiSTer), with its samuraia ADPCM byte-swap dropped
-// -- no Fuuki set needs one -- and the SDRAM address widened to 26 bits.
+// Mechanism from srg320/Arcade-PsikyoSH2_MiSTer via Arcade-Psikyo_MiSTer.
 //
-// The two paths coexist: an .mra WITHOUT the address attribute still streams
-// through ioctl and sdram_download exactly as before, which is what
-// scripts/sdram_pattern_test.py's inline-hex .mra files rely on. The caller
-// decides which ran by watching whether any ioctl_wr arrived during the
-// download (Fuuki.sv, "FAST ROM LOADING").
+// An .mra without the address attribute still streams through ioctl and
+// sdram_download; scripts/sdram_pattern_test.py's inline-hex .mra files rely
+// on that. The caller tells the two apart by whether any ioctl_wr arrived
+// (Fuuki.sv, "FAST ROM LOADING").
 module rom_loader (
 	input  logic clk,
 	input  logic reset,
 
-	// Bytes to copy. The whole board's SDRAM map, so no per-set length is
-	// needed; the padding beyond a smaller set costs only copy time.
+	// Bytes to copy: the whole board's SDRAM map. Padding beyond a smaller
+	// set costs only copy time.
 	input  logic [27:0] length,
 
 	input  logic         start,   // pulse: begin the copy
 	output logic         busy,    // 1 while copying; hold the core in reset
 
-	// DDR3 read port (rtl/memory/ddram_phy.sv): 8-byte granules, byte offset
-	// from the 0x30000000 HPS extra-RAM base the .mra loads to.
+	// DDR3 read port (ddram_phy.sv): 8-byte granules, byte offset from the
+	// 0x30000000 HPS extra-RAM base.
 	output logic         ddr_req,
 	output logic [27:0]  ddr_addr,
 	input  logic         ddr_busy,
 	input  logic         ddr_valid,
 	input  logic [63:0]  ddr_rdata,
 
-	// SDRAM write port -- the same hold-until-busy contract as
-	// sdram_download's, and it takes the same arbiter port.
+	// SDRAM write port: sdram_download's hold-until-busy contract, same
+	// arbiter port.
 	output logic         dl_req,
 	output logic [25:0]  dl_addr,
 	output logic [15:0]  dl_data,
@@ -61,8 +54,8 @@ module rom_loader (
 	assign dl_we16  = 1'b1;     // both byte lanes, one SDRAM transaction per word
 	assign dl_addr  = 26'(byte_addr) + {23'd0, word_idx, 1'b0};
 
-	// The granule arrives little-endian: ROM byte N sits at bit (N%8)*8, so
-	// word k is simply gran[k*16 +: 16] and lands at byte_addr + k*2.
+	// The granule is little-endian: ROM byte N is at bit (N%8)*8, so word k
+	// is gran[k*16 +: 16] and lands at byte_addr + k*2.
 	always_comb begin
 		unique case (word_idx)
 			2'd0: dl_data = gran[15:0];

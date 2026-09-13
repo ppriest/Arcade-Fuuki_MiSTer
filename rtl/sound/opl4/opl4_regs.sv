@@ -1,16 +1,12 @@
 // YMF278B (OPL4) bus interface, status, timers and PCM register file.
 //
-// Modeled on MAME's ymfm reference (3rdparty/ymfm: ymfm_opl.h ymf278b,
-// ymfm_pcm.h pcm_registers) -- the same code MAME's psikyo.cpp uses for
-// these boards, and this project's accuracy target. FM synthesis is NOT
-// implemented here (opl4.sv's header explains the split); this block
-// carries everything the sound program interacts with directly: the
-// 6-port bus protocol, chip-ID/status/busy semantics, the two OPL
-// timers with their IRQ (the Z80 sound driver's sequencer heartbeat),
-// the NEW/NEW2 mode flags, the 256-byte PCM register file, and the
-// external-memory access window (PCM regs 02-06).
+// Modeled on ymfm (3rdparty/ymfm: ymfm_opl.h ymf278b, ymfm_pcm.h
+// pcm_registers), MAME's YMF278B. No FM synthesis here (see opl4.sv).
+// This block carries the 6-port bus protocol, chip-ID/status/busy, the two
+// OPL timers with their IRQ, the NEW/NEW2 flags, the 256-byte PCM register
+// file and the external-memory window (PCM regs 02-06).
 //
-// Port map (offset within the chip select, = Z80 I/O 0x08+offset):
+// Port map (offset within the chip select; Z80 I/O 0x40+offset on FG-3):
 //   0 r: status    w: FM address low
 //   1 w: FM data
 //   2 w: FM address high   3 w: FM data
@@ -25,7 +21,7 @@ module opl4_regs (
 	input  logic        chip_cen,      // ~33.8688 MHz enable (opl4.sv)
 	input  logic        fm_tick,       // chip_cen/684: one FM sample (timer time base)
 
-	// Z80-facing bus (one-cycle rd/wr strobes from sound_cpu's I/O decode)
+	// Z80-facing bus, one-cycle rd/wr strobes (shaped in opl4.sv)
 	input  logic [2:0] addr,
 	input  logic        rd,
 	input  logic        wr,
@@ -33,10 +29,9 @@ module opl4_regs (
 	output logic [7:0] dout,
 	output logic        irq_n,
 
-	// PCM register file read port for the wavetable engine (opl4_pcm.sv):
-	// combinational, engine-owned; the engine's own header-load writes come
-	// back through pcm_hdr_we (never simultaneous with a Z80 data write --
-	// the engine holds them off while a bus write is in flight this cycle).
+	// PCM register file read port for the engine (opl4_pcm.sv):
+	// combinational, engine-owned. Its header-load writes come back through
+	// pcm_hdr_we.
 	input  logic [7:0] pcm_raddr,
 	output logic [7:0] pcm_rdata,
 	input  logic        pcm_hdr_we,
@@ -51,9 +46,8 @@ module opl4_regs (
 	output logic [4:0] pcm_wavesel_ch,
 	output logic        new2,               // OPL4 mode enabled (gates PCM writes)
 
-	// External sample memory window (PCM regs 02-06), shared SDRAM client
-	// owned by opl4.sv: this block only issues the byte-at-address
-	// prefetches the data-port protocol needs.
+	// External memory window (PCM regs 02-06): byte prefetches for the
+	// data-port protocol, arbitrated in opl4.sv.
 	output logic        mem_rd_req,        // pulse: fetch byte at mem_rd_addr
 	output logic [21:0] mem_rd_addr,
 	input  logic        mem_rd_valid,
@@ -64,17 +58,15 @@ module opl4_regs (
 	logic [9:0] address;
 
 	// ---- FM register subset ----
-	// Only what the non-synthesis side needs: timers (02/03/04), NEW
-	// (0x105 bit0), NEW2 (0x105 bit1). Other FM writes are accepted and
-	// dropped (synthesis not implemented -- opl4.sv header).
+	// Timers (02/03/04), NEW (0x105 bit0), NEW2 (0x105 bit1). Other FM
+	// writes are accepted and dropped.
 	logic [7:0] timer_a_reg, timer_b_reg;
 	logic        mask_a, mask_b, load_a, load_b;
 	logic        flag_a, flag_b;
 	logic        new1;
 
-	// Timer counters: A counts (1024 - 4*value) FM samples -- implemented
-	// as a count-up from value*4 to 1023; B counts 16*(256 - value), as a
-	// count-up from value*16 to 4095.
+	// Timer A counts (1024 - 4*value) FM samples, as a count-up from
+	// value*4 to 1023; B counts 16*(256 - value), from value*16 to 4095.
 	logic [9:0]  timer_a_cnt;
 	logic [11:0] timer_b_cnt;
 
@@ -89,9 +81,9 @@ module opl4_regs (
 	wire         irq  = (flag_a & ~mask_a) | (flag_b & ~mask_b);
 	assign irq_n = ~irq;
 
-	// LD: wavetable header loads take "about 300us" (13 samples); the real
-	// engine load is far faster here, but the flag is part of the protocol
-	// the driver may poll, so time it like the reference.
+	// LD: a wavetable header load takes about 300 us (13 samples) in ymfm.
+	// The engine here loads faster, but the driver may poll the flag, so
+	// it is timed like the reference.
 	logic [3:0] ld_cnt;
 	logic [9:0] ld_sample_div;      // counts chip_cen/768 like the sample tick
 
@@ -104,9 +96,9 @@ module opl4_regs (
 	// ---- memory-access window (PCM regs 02-06) ----
 	// reg 02 bit0 = memory access mode; regs 03-05 = 22-bit address;
 	// reg 06 = data port with post-increment. Reads cannot stall the Z80,
-	// so the byte at the CURRENT address is prefetched whenever the
-	// address changes (or after each data access) and served from
-	// mem_buf; BUSY covers the fetch latency.
+	// so the byte at the current address is prefetched whenever the address
+	// changes or a data access completes, and served from mem_buf; BUSY
+	// covers the fetch latency.
 	logic [7:0] mem_buf;
 	logic        mem_pending;
 	wire  [21:0] mem_addr_cur = {pcm_regs[8'h03][5:0], pcm_regs[8'h04], pcm_regs[8'h05]};
@@ -114,10 +106,9 @@ module opl4_regs (
 	wire mem_mode = pcm_regs[8'h02][0];
 
 	// ---- bus read mux ----
-	// The value is LATCHED on the read strobe: reads have side effects
-	// (the ID consume below), and the Z80 samples the data bus late in
-	// its I/O cycle -- a combinational dout would have already flipped to
-	// the post-consume value by then.
+	// dout is latched on the read strobe: reads have side effects (the ID
+	// consume) and the Z80 samples the bus late in its I/O cycle, when a
+	// combinational dout would already show the post-consume value.
 	logic [7:0] read_val;
 	always_comb begin
 		read_val = 8'hFF;
@@ -167,14 +158,14 @@ module opl4_regs (
 			mem_rd_req     <= 1'b0;
 			timer_a_cnt    <= 10'd0;
 			timer_b_cnt    <= 12'd0;
-			// register-file reset (the file is flops, not BRAM: it needs
-			// multiple asynchronous read ports); F8 per the reference
+			// The file is flops, not BRAM: it needs several asynchronous
+			// read ports. F8 reset value per ymfm.
 			for (int i = 0; i < 256; i++) pcm_regs[i] <= (i == 'hF8) ? 8'h1B : 8'h00;
 		end else begin
 			mem_rd_req <= 1'b0;
 
-			// prefetch scheduling FIRST, so a same-cycle mem_kick setter
-			// below wins over this clear (NBA last-assignment-wins)
+			// prefetch scheduling first, so a same-cycle mem_kick setter
+			// below wins over this clear
 			if (mem_kick && !mem_pending) begin
 				mem_kick    <= 1'b0;
 				mem_pending <= 1'b1;
@@ -208,7 +199,7 @@ module opl4_regs (
 			end
 			if (wr && addr == 3'd4) address <= {2'b10, din};
 
-			// FM data writes: timers + NEW/NEW2; everything else dropped
+			// FM data writes: timers and NEW/NEW2 only
 			if (fm_space) begin
 				busy_cnt <= 8'd56;
 				case (address[8:0])
@@ -235,13 +226,13 @@ module opl4_regs (
 				endcase
 			end
 
-			// PCM data writes (gated on NEW2, like the reference)
+			// PCM data writes, gated on NEW2 as in ymfm
 			if (pcm_space && new2) begin
 				busy_cnt <= 8'd88;
 				if (address[7:0] == 8'h06 && mem_mode) begin
-					// external memory WRITE not supported: the wave ROM is
-					// SDRAM-resident and read-only in this system (the real
-					// board has no wave SRAM either); autoincrement anyway
+					// External memory write not supported: the wave ROM is
+					// read-only and the board has no wave SRAM. Autoincrement
+					// anyway.
 					{pcm_regs[8'h03][5:0], pcm_regs[8'h04], pcm_regs[8'h05]} <= mem_addr_cur + 22'd1;
 					mem_kick <= 1'b1;
 				end else begin
@@ -251,13 +242,14 @@ module opl4_regs (
 				end
 			end
 
-			// data-port READ consumes the buffer: autoincrement + refetch
+			// data-port read consumes the buffer: autoincrement and refetch
 			if (rd && addr == 3'd5 && address[9] && address[7:0] == 8'h06 && mem_mode) begin
 				{pcm_regs[8'h03][5:0], pcm_regs[8'h04], pcm_regs[8'h05]} <= mem_addr_cur + 22'd1;
 				mem_kick <= 1'b1;
 			end
 
-			// engine-side header-load writes (regs 0x80..0xF7 bands)
+			// engine-side header-load writes (regs 0x80-0xF7); last
+			// assignment, so they win over a same-cycle Z80 data write
 			if (pcm_hdr_we) pcm_regs[pcm_hdr_waddr] <= pcm_hdr_wdata;
 
 			// ---- timers (FM-sample time base) ----

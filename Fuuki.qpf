@@ -1,2 +1,11 @@
 QUARTUS_VERSION = "17.0"
+
+# Revisions
+#
+# Fuuki_stp is the instrumented build: the JTAG probe, the Debug OSD page and
+# the sound mute switches. Fuuki is the release: same source, DEBUG_ISSP not
+# defined, so the probe compiles out and the debug settings are hidden and
+# forced off. scripts/build_staged.py builds Fuuki_stp by default and the
+# release with --rev Fuuki.
+PROJECT_REVISION = "Fuuki_stp"
 PROJECT_REVISION = "Fuuki"

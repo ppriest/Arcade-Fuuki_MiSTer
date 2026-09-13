@@ -321,6 +321,22 @@ uniformly across `ddram_arbiter`, `sdram_arbiter5` and the HPS download path -- 
 `hps_io` is a genuine one-shot and needs a wrapper (`sdram_download.sv`) converting it with
 `ioctl_wait` backpressure.
 
+### A held request must be able to fall -- never derive it from a signal the client changes
+
+The hold-until-acknowledged contract has a second half: after the valid, the request must drop,
+or a server that waits for it to drop (`sample_cache`'s `S_DRAIN`, which exists to stop a held
+request being served twice) waits forever. The OKI bridge in `fg2_sound.sv` derived its request
+from `rom_addr != hold_addr` and re-tagged `hold_addr` from the chip's live `rom_addr` on the
+valid. jt6295 moves `rom_addr` on its own schedule; when it moved on the clock edge that
+registered the valid, the request never fell and gogomile's music stopped, minutes in, whenever
+a cache miss happened to meet the slot boundary to the clock. The probe read it as one fetch
+outstanding with the stall flag set and a zero worst latency. Register the address WITH the
+request, make the request the in-flight flag alone, and store the answer under the address it
+was issued for (`rtl/sound/oki_rom_bridge.sv`; `sim/oki_bridge_tb` sweeps the latency and shows
+the old logic deadlocking and the new not). Two model faults in writing that bench are the same
+lesson from the server's side: re-sampling a still-high request after its own valid, and not
+resetting the model with the DUT, both put the answer to one request into the next.
+
 ### Treat any direct, non-arbitrated connection to a req/valid transport as suspect
 
 `sdram_phy.sv` asserts `valid` and returns to `S_IDLE` on the same cycle. Arbitrated consumers get a

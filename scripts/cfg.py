@@ -23,6 +23,10 @@ says so.
 
 BIT MAP -- keep in step with Fuuki.sv's CONF_STR. A bit that moves in one and
 not the other reads as a plausible setting doing nothing.
+
+The debug fields (DEBUG_BITS below) reach the core only in the instrumented
+Fuuki_stp build. The release revision hides them from the OSD and forces
+them to zero whatever this file sets -- Fuuki.sv, "DEBUG BUILD OR RELEASE".
 """
 import argparse
 import os

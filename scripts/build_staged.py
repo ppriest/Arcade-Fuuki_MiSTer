@@ -19,19 +19,29 @@ The build is exactly HEAD:
   * the built commit is written to build/BUILT_COMMIT beside the log, so
     every .rbf maps to one commit.
 
-    python scripts/build_staged.py                 # compile HEAD
+    python scripts/build_staged.py                 # compile HEAD, revision Fuuki_stp
+    python scripts/build_staged.py --rev Fuuki     # the release revision
     python scripts/build_staged.py --seed 12345    # try another placement
     python scripts/build_staged.py --allow-dirty   # HEAD, ignoring edits
 
+Two Quartus revisions build from the same source (Fuuki.sv, "DEBUG BUILD OR
+RELEASE"): Fuuki_stp carries the JTAG probe, the Debug OSD page and the sound
+mute switches; Fuuki is the release, with the probe compiled out and those
+settings hidden and forced off. They are held to different standards: a
+release must close timing on every clock, because it runs on machines we
+cannot see; a debug build may miss it, stated, because it runs on ours.
+docs/RELEASE_PROCESS.md.
+
 Outputs, all inside the stage:
     build/q_staged.log                 the build log (deploy.py's gate reads it)
-    build/output_files/Fuuki.rbf       the bitstream
-    build/output_files/Fuuki.sta.summary
+    build/output_files/<rev>.rbf       the bitstream
+    build/output_files/<rev>.sta.summary
     build/BUILT_COMMIT
 
-Deploy it by pointing deploy.py at the stage:
+Deploy it by pointing deploy.py at the stage (the script prints the exact
+command for the revision it built):
     python scripts/deploy.py --rbf-only --log build/q_staged.log \\
-        --rbf build/output_files/Fuuki.rbf --sta build/output_files/Fuuki.sta.summary
+        --rbf build/output_files/<rev>.rbf --sta build/output_files/<rev>.sta.summary
 
 The worktree persists between builds -- Quartus's db/ with it, which costs
 nothing for full compiles and avoids re-checkout churn -- and each run
@@ -50,7 +60,8 @@ import sys
 
 QUARTUS_BIN = os.environ.get(
     "QUARTUS_BIN", r"C:\intelFPGA_lite\17.0\quartus\bin64")
-REV = "Fuuki"
+REVISIONS = ("Fuuki_stp", "Fuuki")   # Fuuki.qpf; the first is the default
+REV = REVISIONS[0]                    # set from --rev in main()
 
 
 def run(cmd, **kw):
@@ -99,7 +110,11 @@ def report_resources(stage):
 
 
 def main():
+    global REV
     ap = argparse.ArgumentParser()
+    ap.add_argument("--rev", default=REVISIONS[0], choices=REVISIONS,
+                    help="Quartus revision: Fuuki_stp (default) is the "
+                         "instrumented build, Fuuki the release")
     ap.add_argument("--seed", type=int,
                     help="override the fitter SEED in the STAGED .qsf "
                          "(placement only; worth trying before restructuring "
@@ -111,6 +126,7 @@ def main():
                     help="build HEAD even though the tree has uncommitted "
                          "changes (they are NOT included in the build)")
     args = ap.parse_args()
+    REV = args.rev
 
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     stage = os.path.join(here, "build")
@@ -171,6 +187,7 @@ def main():
     stamp = "%s  %s\n" % (head, datetime.datetime.now().isoformat())
     open(os.path.join(stage, "BUILT_COMMIT"), "w").write(stamp)
     print("stage:  %s" % stage)
+    print("rev:    %s (%s)" % (REV, "release" if REV == "Fuuki" else "instrumented"))
     print("commit: %s (%s)" % (head_short, head))
     if dirty and args.allow_dirty:
         print("NOTE:   the tree has uncommitted changes and they are NOT in "
@@ -203,20 +220,35 @@ def main():
     if not ok:
         sys.exit("BUILD FAILED -- see %s" % log_path)
 
-    if violations and not args.allow_negative_slack:
+    # A debug build may ship with negative slack: it runs on our own DE10-nano,
+    # and the probe and tracer cost timing a release does not pay. A release
+    # may not -- once it leaves here we cannot know what it runs on, and a
+    # marginal path is exactly the fault that surfaces as someone else's
+    # intermittent glitch. docs/RELEASE_PROCESS.md.
+    is_release = (REV == "Fuuki")
+    if violations and is_release and not args.allow_negative_slack:
         print("")
         for clk, slack, tns in violations:
             print("  FAILING: %-58s %8.3f  TNS %s" % (clk, slack, tns))
         sys.exit(
-            "\nTIMING NOT MET -- %d clock(s) fail. The .rbf at\n"
-            "  %s\nis not trustworthy. Close timing, try --seed, or pass\n"
-            "--allow-negative-slack deliberately."
+            "\nNOT RELEASE QUALIFIED -- %d clock(s) fail timing. The .rbf at\n"
+            "  %s\nmust not be published. Close timing, try --seed, rebuild as\n"
+            "the debug revision (no --rev), or pass --allow-negative-slack if\n"
+            "you are deliberately publishing a known-marginal build and will\n"
+            "say so in the release notes."
             % (len(violations),
                os.path.join(stage, "output_files", "%s.rbf" % REV)))
-    if violations:
+    if violations and is_release:
         print("")
-        print("WARNING: --allow-negative-slack given; this build misses timing "
-              "on %d clock(s)." % len(violations))
+        print("WARNING: --allow-negative-slack given; publishing a build that")
+        print("         fails timing on %d clock(s). Say so in the release notes."
+              % len(violations))
+    elif violations:
+        print("")
+        for clk, slack, tns in violations:
+            print("  FAILING: %-58s %8.3f  TNS %s" % (clk, slack, tns))
+        print("(negative slack is qualified for the debug revision; a release")
+        print(" build is gated on closing it. deploy.py needs --allow-timing-miss.)")
 
     rbf = os.path.join(stage, "output_files", "%s.rbf" % REV)
     print("\nOK -- deploy with:\n"

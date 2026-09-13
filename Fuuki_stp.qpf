@@ -1,0 +1,7 @@
+QUARTUS_VERSION = "17.0"
+
+# The instrumented project on its own: opening this in the Quartus IDE gives
+# the Fuuki_stp revision (JTAG probe, Debug OSD page, sound mute switches)
+# without the release revision beside it. Fuuki.qpf lists both. The revision
+# itself is Fuuki_stp.qsf; scripts/build_staged.py builds it by default.
+PROJECT_REVISION = "Fuuki_stp"

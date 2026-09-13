@@ -1,36 +1,21 @@
 // N-way round-robin arbiter onto one sdram_phy port, plus an absolute-priority
 // write path for the ROM download.
 //
-// One parameterised module rather than the several near-identical copies this
-// design would otherwise grow: the read clients differ only in count.
+// Client contract: c_req[i] is a level held until c_valid[i] pulses. A
+// one-shot pulse arriving while another client is being served is lost.
+// One-shot sources (hps_io's ioctl_wr) go through a converter such as
+// sdram_download.sv.
 //
-// ---------------------------------------------------------------------------
-// EVERY CLIENT IS ON A HOLD-UNTIL-ACKNOWLEDGED CONTRACT.
+// Use N = 1 rather than wiring a lone client to the phy: sdram_phy returns
+// to idle on its valid cycle and re-samples a still-high request as a second
+// transaction. The registered c_valid here gives the client a cycle of margin.
 //
-// `c_req[i]` must stay asserted until `c_valid[i]` pulses. A one-shot pulse
-// arriving while the arbiter is servicing someone else is silently LOST -- the
-// scan simply never sees it, and the client waits forever for a response to a
-// request that was never made. This bit Psikyo across `ddram_arbiter`,
-// `sdram_arbiter5` and the HPS download path, which is why `hps_io`'s genuinely
-// one-shot `ioctl_wr` gets `sdram_download.sv` as a converter rather than being
-// wired straight in (LESSONS_LEARNED, "Hold every request until acknowledged").
+// The download write path wins over every read; it is only active while ROM
+// loads, before anything is drawn.
 //
-// The corollary matters as much: a client with a DEDICATED port still needs a
-// shim, because `sdram_phy` returns to idle on the valid cycle itself and will
-// re-sample a still-high request as a second transaction. Arbitrated clients
-// get a cycle of margin for free; a direct connection does not, and the symptom
-// is stale data rather than a hang (LESSONS_LEARNED, "Treat any direct,
-// non-arbitrated connection to a req/valid transport as suspect"). Use
-// N_CLIENTS = 1 here rather than wiring a lone client to the phy.
-// ---------------------------------------------------------------------------
-//
-// The download write path takes absolute priority over every read. That costs
-// nothing at runtime because it is only active while ROM is loading, before
-// anything is being drawn -- the same reasoning Psikyo's arbiters record.
-//
-// This module knows nothing about regions or widths. It moves 64-bit granules
-// at 8-byte-aligned addresses, which is exactly what `sdram_phy` provides;
-// clients narrower than that sit behind `sdram_narrow_bridge`.
+// This module moves 64-bit granules at 8-byte-aligned addresses and knows
+// nothing about regions or widths; narrower clients sit behind
+// sdram_narrow_bridge.
 
 module sdram_arbiter #(
 	parameter int N = 4
@@ -69,21 +54,15 @@ module sdram_arbiter #(
 	logic [$clog2(N)-1:0] rr_ptr;    // round-robin start point
 	logic [$clog2(N)-1:0] serving;
 
-	// Pick the next requesting client at or after rr_ptr, wrapping.
-	//
-	// The width here is deliberate: Psikyo's 6-client arbiter used a 3-bit
-	// counter to scan 6 clients and the wrap arithmetic overflowed, so one
-	// client was never reached from one particular rr_ptr value. It presented
-	// as a solo-requester deadlock -- the hardest kind to spot, because it only
-	// happens when exactly that client asks from exactly that pointer. Using
-	// an integer loop over N avoids hand-rolling the wrap at all.
-	// Pending requests: set by a RISING EDGE on c_req, cleared when served.
-	// This is what lets pulse clients and level clients share one arbiter.
+	// Pending requests: set by a rising edge on c_req, cleared when served.
+	// This lets pulse clients and level clients share one arbiter.
 	logic [N-1:0] pend, c_req_d;
 
 	logic       have_pick;
 	logic [$clog2(N)-1:0] pick;
 
+	// Next pending client at or after rr_ptr, wrapping. An integer loop over
+	// N, so the wrap arithmetic cannot overflow a hand-sized counter.
 	always_comb begin
 		have_pick = 1'b0;
 		pick      = rr_ptr;
@@ -105,19 +84,10 @@ module sdram_arbiter #(
 			if (k == int'(pick)) pick_addr = c_addr[26*k +: 26];
 	end
 
-	// LATCH THE DATA ON phy_valid. Nothing in the path from sdram.sv's dout to
-	// here registers it, and `dout0`/`dout1`/`dout2` are literally the SAME
-	// register inside the controller -- so a consumer that samples even one
-	// cycle after its own valid reads whatever another port has in flight.
-	//
-	// c_valid is registered and therefore asserts one cycle AFTER phy_valid,
-	// which is deliberate (it is the margin that stops a held request being
-	// re-sampled). Passing rdata combinationally alongside it means the data
-	// and the valid describe different cycles. The symptom is not a hang: the
-	// first access to each new granule quietly returns the PREVIOUS granule,
-	// which stays invisible everywhere consecutive granules happen to hold the
-	// same bytes -- here it hid in 62 of 64 words of a vector table full of
-	// 0xFFFF. LESSONS_LEARNED, "Capture read data on the valid pulse".
+	// Read data is latched on phy_valid. Nothing between sdram.sv's dout and
+	// here registers it, and dout0/1/2 are the same register, so c_valid
+	// (registered, one cycle after phy_valid) must present a latched copy
+	// or the client reads another port's granule.
 	logic [63:0] rdata_l;
 	assign c_rdata = rdata_l;
 
@@ -135,9 +105,8 @@ module sdram_arbiter #(
 			phy_req <= 1'b0;
 			c_valid <= '0;
 
-			// Edge capture, in EVERY state -- a request arriving mid-service
-			// must still be recorded, which is the whole point of doing it here
-			// rather than in the idle branch.
+			// Edge capture in every state, so a request arriving mid-service
+			// is still recorded.
 			c_req_d <= c_req;
 			pend    <= pend | (c_req & ~c_req_d);
 
@@ -145,7 +114,6 @@ module sdram_arbiter #(
 			S_IDLE: begin
 				if (!phy_busy) begin
 					if (dl_req) begin
-						// Download wins outright. Only live during loading.
 						phy_req   <= 1'b1;
 						phy_we    <= 1'b1;
 						phy_we16  <= dl_we16;
@@ -168,10 +136,8 @@ module sdram_arbiter #(
 			S_READ: begin
 				if (phy_valid) begin
 					rdata_l <= phy_rdata;
-					// The client's valid asserts one cycle before this state
-					// machine returns to idle, which is the margin that keeps
-					// a still-high held request from being re-sampled as a
-					// second transaction.
+					// c_valid asserts one cycle before this machine is back in
+					// idle: the margin against re-sampling a held request.
 					c_valid[serving] <= 1'b1;
 					rr_ptr <= (int'(serving) == N-1) ? '0
 					                                 : ($clog2(N))'(int'(serving) + 1);

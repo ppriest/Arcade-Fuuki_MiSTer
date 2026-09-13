@@ -7,28 +7,23 @@
 //
 // Memory map (sound_map):
 //   0000-5FFF  ROM, fixed
-//   6000-7FFF  RAM, 8 KB (here)
+//   6000-7FFF  RAM, 8 KB
 //   8000-FFFF  ROM, banked: bank n (0..2) is physical (n+1)*0x8000, so the
-//              physical address is {bank+1, a[14:0]} and the fixed region is
-//              {0, a[14:0]} -- one 17-bit address covers the 128 KB image.
+//              physical address is {bank+1, a[14:0]}; one 17-bit address
+//              covers the 128 KB image.
 // I/O map (sound_io_map, 8-bit):
-//   00  w  ROM bank (values above 2 are logged and ignored by MAME)
+//   00  w  ROM bank (values above 2 ignored)
 //   11  r  sound latch            20  w  OKI bank = (data & 6) >> 1
-//   30  w  nop, "in the NMI routine"
+//   30  w  nop, in the NMI routine
 //   40-41  w  YM2203               50-51 rw  YM3812
 //   60  r  OKI status              61  w  OKI data
 //
-// The main CPU's byte write to 0x8A0001 latches the command and PULSES the
-// Z80's NMI (MAME: pulse_input_line). There is no acknowledge port: the NMI
-// routine reads 0x11 and writes 0x30. So the latch is a plain register and
-// the NMI is a pulse held across a few Z80 clock enables, long enough for
-// T80's edge detector, which samples on CLKEN.
+// The main CPU's write to 0x8A0001 latches the command and pulses the Z80
+// NMI (MAME pulse_input_line). No acknowledge port: the NMI routine reads
+// 0x11 and writes 0x30.
 //
-// The Z80 side -- T80se instantiation, address decode shape, the split
-// WAIT_n scheme (fixed one-wait for RAM/IO, a real req/valid handshake for
-// ROM with the valid pulse stretched into a level the clock-enabled CPU
-// cannot miss) -- is the Psikyo core's sound_cpu.sv, whose header records
-// why each of those is the way it is; only the map differs.
+// Z80 side (T80se, split WAIT_n, stretched ROM handshake): the Psikyo
+// core's sound_cpu.sv; only the map differs.
 module fg2_sound (
 	input  logic        clk,
 	input  logic        reset,
@@ -56,9 +51,8 @@ module fg2_sound (
 	input  logic        oki_valid,
 	input  logic [7:0]  oki_data,
 
-	// Mute either half at runtime. FM is the YM2203 + YM3812 pair, PCM the
-	// OKI -- the same split the FG-3 board's switches make, so one pair of
-	// OSD entries serves both.
+	// Runtime mutes. FM is the YM2203 + YM3812 pair, PCM the OKI: the same
+	// split as FG-3, so one pair of OSD entries serves both.
 	input  logic        en_fm,
 	input  logic        en_pcm,
 
@@ -67,7 +61,13 @@ module fg2_sound (
 
 	// probes
 	output logic        dbg_m1,      // one pulse per Z80 opcode fetch
-	output logic        dbg_ym_wr    // one pulse per write to either FM chip
+	output logic        dbg_ym_wr,   // one pulse per write to either FM chip
+	// How a stopped sound CPU is stopped: halted, waiting on a ROM fetch,
+	// or running with its interrupt line dead.
+	output logic        dbg_int_n,   // the YM3812 timer interrupt, as the Z80 sees it
+	output logic        dbg_nmi_n,   // the sound-latch NMI pulse
+	output logic        dbg_halt_n,
+	output logic        dbg_rom_wait // a ROM fetch is outstanding on the SDRAM
 );
 
 	// =====================================================================
@@ -91,7 +91,7 @@ module fg2_sound (
 	// ---- address decode ----
 	wire is_ram    = (a[15:13] == 3'b011);        // 6000-7FFF
 	wire is_banked = a[15];                        // 8000-FFFF
-	// (everything else below 0x6000 is the fixed ROM)
+	// below 0x6000 is the fixed ROM
 
 	logic [1:0] bank;                              // 0..2
 	assign rom_addr = is_banked ? {bank + 2'd1, a[14:0]} : {2'b00, a[14:0]};
@@ -113,8 +113,8 @@ module fg2_sound (
 	wire io_oki_wr  = (a[7:0] == 8'h61);
 
 	// ---- sound latch and NMI ----
-	// NMI_PULSE clock enables low: T80 detects the falling edge on a CLKEN
-	// tick, so the pulse must straddle at least one; several, for margin.
+	// NMI held low for NMI_PULSE clock enables: T80 detects the falling edge
+	// on a CLKEN tick, so the pulse must straddle at least one.
 	localparam int NMI_PULSE = 8;
 	logic [7:0] latch_reg;
 	logic [3:0] nmi_cnt;
@@ -156,12 +156,9 @@ module fg2_sound (
 	logic signed [15:0] ym1_snd, ym2_snd;
 	logic signed [13:0] oki_snd;
 
-	// jt03 / jtopl derive their write strobe as !cs_n && !wr_n, so cs_n
-	// must carry the I/O qualifier as well as the address decode: WR_n is
-	// asserted for memory writes too, and a RAM write to any 0x6x50 would
-	// otherwise land in the OPL's register file. The strobe then spans one
-	// I/O cycle -- jtopl_mmr samples it every clock and jt12 on its enable,
-	// both idempotent for a repeated register write.
+	// jt03 / jtopl strobe on !cs_n && !wr_n, so cs_n must include !iorq_n or
+	// a RAM write to 0x6x50 lands in the OPL's registers. The strobe spans
+	// the whole I/O cycle; both chips are idempotent for a repeated write.
 	wire ym1_cs_n = ~(io_ym1 && !iorq_n);
 	wire ym2_cs_n = ~(io_ym2 && !iorq_n);
 	jt03 u_ym1 (
@@ -181,8 +178,8 @@ module fg2_sound (
 	);
 	assign int_n = ym2_irq_n;
 
-	// jt6295 detects its own falling edge of wrn on clk, so the level is
-	// exactly one write per Z80 I/O cycle. ss = 1: pin 7 high, /132.
+	// jt6295 edge-detects wrn on clk, so the level is one write per Z80 I/O
+	// cycle. ss = 1: pin 7 high, /132.
 	logic [17:0] oki_rom_addr;
 	logic [7:0]  oki_rom_data;
 	logic        oki_rom_ok;
@@ -193,30 +190,13 @@ module fg2_sound (
 		.sound(oki_snd), .sample()
 	);
 
-	// The chip's ROM bus is a level interface: it sets rom_addr and expects
-	// rom_data for it, with rom_ok saying the data is there. Turn each new
-	// address into one held request, and hold the answer with its address
-	// so rom_ok stays true only while the chip still asks for that byte.
-	logic [17:0] oki_hold_addr;
-	logic        oki_hold_ok;
-	assign oki_addr = {oki_bank, oki_rom_addr};
-	assign oki_req  = (oki_rom_addr != oki_hold_addr) || !oki_hold_ok;
-	assign oki_rom_ok = oki_hold_ok && (oki_rom_addr == oki_hold_addr);
-	always_ff @(posedge clk or posedge reset) begin
-		if (reset) begin
-			oki_hold_addr <= 18'd0;
-			oki_hold_ok   <= 1'b0;
-			oki_rom_data  <= 8'd0;
-		end else begin
-			if (oki_valid) begin
-				oki_hold_addr <= oki_rom_addr;
-				oki_rom_data  <= oki_data;
-				oki_hold_ok   <= 1'b1;
-			end else if (oki_rom_addr != oki_hold_addr) begin
-				oki_hold_ok   <= 1'b0;
-			end
-		end
-	end
+	// Level ROM bus to one held req/valid fetch at a time; see oki_rom_bridge.sv.
+	oki_rom_bridge u_oki_bridge (
+		.clk(clk), .reset(reset),
+		.rom_addr(oki_rom_addr), .rom_data(oki_rom_data), .rom_ok(oki_rom_ok),
+		.bank(oki_bank),
+		.req(oki_req), .addr(oki_addr), .valid(oki_valid), .data(oki_data)
+	);
 
 	// =====================================================================
 	// Z80 read data mux, ROM handshake, WAIT_n
@@ -253,9 +233,8 @@ module fg2_sound (
 		else       access_started <= access_now_nonrom;
 	end
 
-	// ROM: one request per M-cycle, and none after its answer has arrived
-	// -- is_rom_read stays high for the rest of the clock-enable-stretched
-	// T-state, and without !rom_done a second request fired every fetch.
+	// ROM: one request per M-cycle. is_rom_read stays high for the rest of
+	// the clock-enable-stretched T-state, so !rom_done blocks a second one.
 	logic rom_pending;
 	always_ff @(posedge clk or posedge reset) begin
 		if (reset) rom_pending <= 1'b0;
@@ -285,18 +264,12 @@ module fg2_sound (
 	// =====================================================================
 	// Mix, as the driver routes to its mono speaker:
 	//   YM2203 0.15    YM3812 0.30    M6295 0.85
-	// in 1/32 steps: 5, 10, 27 -- 0.156, 0.313, 0.844. The OKI's 14-bit
-	// output is brought to 16 bits first. The gains sum past unity, so the
-	// sum saturates rather than wrapping.
+	// in 1/32 steps: 5, 10, 27. The OKI's 14-bit output is widened to 16
+	// bits first. The gains sum past unity, so the sum saturates.
 	//
-	// PIPELINED IN THREE STAGES, and that is a timing fix, not a style
-	// choice. Done in one clock -- three multiplies, a three-way add, a
-	// shift, two comparisons and a mux, all starting from the chips' own
-	// combinational outputs -- this was the design's worst path family:
-	// jt49's sound and jt03_acc's snd into audio[*], -0.161 ns with
-	// TNS -2.347 across the whole failing set. The mute muxes made it
-	// longer still. Splitting it costs three clk_sys cycles of latency on a
-	// signal sampled at 48 kHz, which is 1/600th of a sample.
+	// Three register stages: in one clock, from the chips' combinational
+	// outputs, this was the design's worst timing path. The latency is
+	// three clk cycles on a signal sampled at 48 kHz.
 	// =====================================================================
 	wire signed [15:0] oki16 = {oki_snd, 2'b00};
 
@@ -316,7 +289,7 @@ module fg2_sound (
 		// 3: sum, then shift and saturate
 		s3_sum <= 23'(s2_ym1) + 23'(s2_ym2) + 23'(s2_oki);
 		if      ((s3_sum >>> 5) >  23'sd32767) audio <=  16'sd32767;
-		// 16'sh8000, not -16'sd32768 -- see opl4.sv's sat16.
+		// 16'sh8000, not -16'sd32768: see opl4.sv sat16.
 		else if ((s3_sum >>> 5) < -23'sd32768) audio <= 16'sh8000;
 		else                                   audio <= 16'(s3_sum >>> 5);
 	end
@@ -331,5 +304,9 @@ module fg2_sound (
 	end
 	assign dbg_m1    = m1_active && !m1_d;
 	assign dbg_ym_wr = ym_wr_now && !ymwr_d;
+	assign dbg_int_n    = int_n;
+	assign dbg_nmi_n    = nmi_n;
+	assign dbg_halt_n   = halt_n;
+	assign dbg_rom_wait = is_rom_read && !rom_done;
 
 endmodule

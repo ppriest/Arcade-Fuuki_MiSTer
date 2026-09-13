@@ -1,22 +1,17 @@
 // Source-step lookup for zoomed sprites.
 //
-// MAME scales a sprite by handing gfx zoom_transpen a 16.16 factor of
-// 512 * (zoom + 8), where zoom = 128 - 4*field, so the drawn size of a
-// 16-pixel tile is (16 * scale) >> 16 = (zoom + 8) / 8 and destination pixel d
-// samples source pixel (d << 16) / scale.
-//
-// That is a divide per pixel, which nothing here wants. It is also
-// unnecessary: the reciprocal only depends on the 4-bit zoom field, so all
-// sixteen values fit in a table.
+// MAME hands zoom_transpen a 16.16 scale of 512 * (zoom + 8), zoom = 128 -
+// 4*field, so a 16-pixel tile draws (zoom + 8) / 8 wide and destination pixel
+// d samples source pixel (d << 16) / scale. The reciprocal depends only on the
+// 4-bit field, so it is a table:
 //
 //     step = (128 << 16) / (zoom + 8)     added to a 16.16 accumulator,
 //                                         source pixel = acc >> 16
 //
-// The 512*(zoom+8) factor is the NEXT LARGER integer step -- MAME's comment
-// says "nearest greater integer value to avoid holes" -- so a nominally
-// full-size sprite drawn through the zoom path is 17 pixels, not 16. That is
-// why the engine keeps MAME's separate non-zoomed path rather than treating
-// full size as zoom 0 and calling it equivalent.
+// 512*(zoom+8) is the next larger integer step ("nearest greater integer
+// value to avoid holes"), so a full-size sprite through the zoom path is 17
+// pixels, not 16. That is why the engine keeps MAME's separate non-zoomed
+// path.
 
 module sprite_zoom_lut (
 	input  logic [3:0]  zoom_field,   // sprite record's 4-bit zoom, 0 = full size
@@ -28,10 +23,8 @@ module sprite_zoom_lut (
 	assign zoom_t   = 8'd128 - {2'd0, zoom_field, 2'd0};
 	assign dst_size = (zoom_t + 8'd8) >> 3;
 
-	// step = (128 << 16) / (zoom_t + 8), truncated -- the same truncation
-	// MAME's integer division performs. Every entry is checkable in one line:
-	//     python -c "print([(128<<16)//(136-4*z) for z in range(16)])"
-	// which is how the one transcription error in this table was caught.
+	// step = (128 << 16) / (zoom_t + 8), truncated as MAME's integer division.
+	// Check: python -c "print([(128<<16)//(136-4*z) for z in range(16)])"
 	always_comb begin
 		case (zoom_field)
 			4'd0:  step = 18'd61680;    // /136

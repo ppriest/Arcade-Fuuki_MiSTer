@@ -245,6 +245,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/opl3/opl3.sv
 
 # The boards: Z80 glue, the chips, the mix; and the shared sample cache.
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/sample_cache.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/oki_rom_bridge.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/fg2_sound.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/fg3_sound.sv
 

@@ -1,32 +1,22 @@
 // Raw video timing for both Fuuki boards, plus the three interrupt sources.
 //
-// ---------------------------------------------------------------------------
-// WHERE THESE NUMBERS COME FROM -- read this before changing any of them.
+// Neither driver calls set_raw(); fuukifg2.cpp and fuukifg3.cpp give only
+// set_refresh_hz(60) and a visible area, so htotal, vtotal and sync positions
+// are derived (docs/ROADMAP.md, "Screen timing"):
 //
-// Neither Fuuki driver calls set_raw(). fuukifg2.cpp and fuukifg3.cpp declare
-// only set_refresh_hz(60) and a visible area, so htotal, vtotal and every sync
-// position are NOT available from MAME and had to be derived. See
-// docs/ROADMAP.md, "Screen timing":
+//   FG-2's 28.640 MHz XTAL is 2 x 14.318181 MHz: pixel clock 28.640 / 4 =
+//   7.16 MHz, htotal 456, vtotal 262, 59.92 Hz.
 //
-//   FG-2's 28.640 MHz XTAL is 2 x 14.318181 MHz, the classic arcade value:
-//       pixel clock 28.640 / 4 = 7.16 MHz, htotal 456, vtotal 262 -> 59.92 Hz
+//   FG-3's parts list says 28.432 MHz. Treated as a transcription of 28.6432,
+//   since the boards share the video ASIC pair. One timing for both boards,
+//   one PLL, no per-board switch.
 //
-//   FG-3's parts list transcribes 28.432 MHz. That figure is deliberately NOT
-//   used: the two boards share a video ASIC pair, and 28.6432 -> 28.432 is a
-//   plausible dropped digit in a transcribed list. BOTH BOARDS USE THIS
-//   TIMING, so there is one timing module, one PLL and no per-board switch.
+// Corroboration: the level-1 interrupt fires at line 248, so vtotal > 248.
+// ce_pix is clk_sys/12 = 85.909091/12 = 7.159 MHz.
 //
-// Corroboration, not proof: the level-1 interrupt fires at scanline 248, which
-// requires vtotal > 248, and 262 fits with 240 visible lines.
-//
-// This is also exactly Psikyo's timing, so its PLL ratios and pixel divide
-// transfer directly -- ce_pix is clk_sys/12 = 85.909091/12 = 7.159 MHz.
-//
-// Sync PULSE positions are an RTL design choice, not sourced from MAME, which
-// has no opinion on them because it does not drive a CRT: hsync is a 32-pixel
+// Sync pulse positions are an RTL choice, not from MAME: hsync is a 32-pixel
 // pulse starting 16 pixels into hblank, vsync a 3-line pulse starting 4 lines
-// into vblank. MiSTer's own scaler is what adapts this to a real display.
-// ---------------------------------------------------------------------------
+// into vblank.
 
 module video_timing (
 	input  logic clk,
@@ -34,29 +24,20 @@ module video_timing (
 	input  logic reset,
 
 	// Programmable raster interrupt line, from video register 0x1c. Level 5
-	// fires ONE LINE BEFORE it -- see irq5_cmp below.
+	// fires one line before it; see irq5_cmp.
 	input  logic [8:0] raster_line,
 
 	output logic [8:0] hcnt,          // 0-455
 	output logic [8:0] vcnt,          // 0-261
 
-	// The line a fetch started at the NEXT line_start will DISPLAY on.
-	//
-	// line_start fires at the start of hblank, while vcnt still holds the line
-	// just displayed, but what it fetches appears on the following line -- so
-	// the tilemap engines must index with vcnt+1, never vcnt.
-	//
-	// The sprite path needs ONE MORE line of lead than the tilemaps. The
-	// tilemap engines latch their row at line_start and display it on the very
-	// next line; sprite_line_buffer SWAPS banks at line_start, so a bank filled
-	// after one line_start is not displayed until after the NEXT one. Psikyo
-	// indexed its sprite render with vcnt+1 and its rows landed one scanline
-	// BELOW the tilemaps on MiSTer.
-	//
-	// Both are wrapped on V_TOTAL before use: a raw vcnt+1 at the last raster
-	// line would fetch line 0 as row 262.
-	output logic [8:0] vcnt_next,     // vcnt + 1, wrapped -- tilemap fetch row
-	output logic [8:0] vcnt_next2,    // vcnt + 2, wrapped -- sprite render row
+	// The line a fetch started at the next line_start will display on.
+	// line_start fires at the start of hblank with vcnt still the line just
+	// displayed, so the tilemap engines fetch vcnt+1. The sprite line buffer
+	// swaps banks at line_start, so a bank filled after one line_start is not
+	// displayed until after the next: sprites render vcnt+2. Both wrap on
+	// V_TOTAL.
+	output logic [8:0] vcnt_next,     // vcnt + 1, wrapped: tilemap fetch row
+	output logic [8:0] vcnt_next2,    // vcnt + 2, wrapped: sprite render row
 
 	output logic h_active,            // hcnt in [0, 319]
 	output logic v_active,            // vcnt in [0, 239]
@@ -68,10 +49,9 @@ module video_timing (
 	output logic line_start,          // 1-cycle pulse at the start of hblank
 	output logic frame_start,         // 1-cycle pulse on vblank's rising edge
 
-	// Interrupt sources. Each is a ONE-CYCLE pulse; maincpu.sv edge-detects
-	// them into a held pending flag that only an acknowledge clears, which is
-	// what reproduces MAME's HOLD_LINE. Positions are from fuukitmap.cpp's own
-	// timers:
+	// Interrupt sources, one-cycle pulses. maincpu.sv edge-detects them into
+	// a held pending flag cleared only by acknowledge (MAME's HOLD_LINE).
+	// Positions from fuukitmap.cpp's timers:
 	//   level 1  screen().time_until_pos(248)                    -> line 248, x=0
 	//   level 3  screen().time_until_vblank_start()              -> line 240, x=0
 	//   level 5  screen().time_until_pos(vregs[0x1c], max_x + 1) -> that line,
@@ -93,36 +73,20 @@ module video_timing (
 
 	localparam int IRQ1_LINE = 248;
 
-	// =====================================================================
-	// Width of the raster-line comparator -- SETTLED FROM REAL TRACES.
-	//
-	// The register at 0x1c is 16 bits, but only some of them can reach a
-	// 0..261 line counter. How many is a hardware question MAME cannot
-	// answer, so it was measured against captured MAME traces of both games
-	// driving real raster effects (debug/, 2026-09-04).
-	//
-	// gogomile drives an interrupt on EVERY scanline: 240 writes per frame,
-	// cycling 240 -> 1 -> 2 -> ... -> 239 -> 240. That usage decides it.
-	//
-	// With an 8-bit comparator against vtotal = 262, lines 256..261 alias
-	// onto 0..5, and the sequence self-destructs:
+	// Width of the raster-line comparator. gogomile programs an interrupt on
+	// every scanline, cycling 240 -> 1 -> 2 -> ... -> 239 -> 240. An 8-bit
+	// compare against vtotal 262 aliases lines 256-261 onto 0-5:
 	//
 	//     8-bit:  fires at 240, 257, 258, 259, 260, 261, 6, 7, 8 ...
 	//     9-bit:  fires at 240,   1,   2,   3,   4,   5, 6, 7, 8 ...
 	//
-	// The 8-bit version consumes the values for lines 1-5 during vblank, so
-	// the effect loses its first five scanlines, starts at line 6, and takes
-	// five spurious interrupts per frame. The 9-bit version reproduces the
-	// game's evident intent exactly, one interrupt per line.
-	//
-	// 9 is therefore the default. Set it to 8 to reproduce the aliasing
-	// deliberately (tb_video_timing has a case that pins the difference).
-	// =====================================================================
+	// so the effect loses its first five lines and takes five spurious
+	// interrupts a frame. Measured against captured MAME traces (debug/).
+	// Set to 8 to reproduce the aliasing; tb_video_timing pins the difference.
 	localparam int RASTER_CMP_BITS = 9;
 
 	// ---- raster counters ----
-	// hcnt/vcnt only ADVANCE on ce_pix but hold their value otherwise, matching
-	// the framework's ce_pix/CE_PIXEL convention.
+	// Advance on ce_pix, hold otherwise: the framework's CE_PIXEL convention.
 	always_ff @(posedge clk or posedge reset) begin
 		if (reset) begin
 			hcnt <= 9'd0;
@@ -154,31 +118,21 @@ module video_timing (
 	assign frame_start = ce_pix && (hcnt == 9'(H_ACTIVE)) && (vcnt == 9'(V_ACTIVE));
 
 	// ---- interrupt sources ----
-	// Gated on ce_pix so each fires exactly once per frame, at one raster
-	// position, rather than every clk cycle the comparison happens to hold.
+	// Gated on ce_pix so each fires once per frame at one raster position.
 	assign irq1_trig = ce_pix && (hcnt == 9'd0) && (vcnt == 9'(IRQ1_LINE));
 	assign irq3_trig = ce_pix && (hcnt == 9'd0) && (vcnt == 9'(V_ACTIVE));
 
-	// raster_line arrives from vregs.sv already reduced modulo V_TOTAL, as
-	// MAME's time_until_pos() does, so every register value fires exactly
-	// once per frame. The first version let out-of-range values (gogomile's
-	// parked 0xFFFE) fire nothing, and the game hung waiting for the IRQ5
-	// that MAME still delivers -- see the note in vregs.sv.
+	// raster_line arrives from vregs.sv already reduced as MAME's
+	// time_until_pos() reduces it, so every register value fires once a frame.
 	//
-	// Level 5 fires at the hblank ONE LINE BEFORE the programmed line, not
-	// at the programmed line's own hblank as MAME's timer does. The engines
-	// render two lines ahead of the display, and a raster ISR's write is
-	// caught at the hblank after the interrupt, so firing at the line itself
-	// put every band boundary one line below MAME's; firing two lines early
-	// put it one line above. Measured on gogomile's title clouds with the
-	// per-line display record (fuuki_core.sv, scripts/raster_bands.py):
+	// Level 5 fires at the hblank one line before the programmed line, not at
+	// that line's own hblank as MAME's timer does: the engines render two lines
+	// ahead of the display and a raster ISR's write is caught at the hblank
+	// after the interrupt. Measured on gogomile's title clouds
+	// (scripts/raster_bands.py):
 	//
 	//     lead 2 : bands start at 29, 63, 88, 118   (MAME: 30, 64, 89, 119)
 	//     lead 1 : bands start at 30, 64, 89, 119   exact
-	//
-	// Lead 0 was not measured; by the same arithmetic it is one line late.
-	// This was a three-way OSD switch while that was being found; it is
-	// fixed here now that it has been.
 	wire [8:0] irq5_cmp = vcnt_next;
 	assign irq5_trig = ce_pix && (hcnt == 9'(H_ACTIVE)) &&
 	                   (irq5_cmp[RASTER_CMP_BITS-1:0] == raster_line[RASTER_CMP_BITS-1:0]);

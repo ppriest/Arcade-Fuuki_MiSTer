@@ -1,43 +1,29 @@
 // YMF278B (OPL4) 24-channel PCM wavetable engine.
 //
-// Direct translation of MAME's ymfm reference implementation
-// (3rdparty/ymfm: ymfm_pcm.cpp/h, pcm_channel/pcm_engine) -- the register
-// semantics, envelope math, pitch step, LFO depths and mixing all follow
-// that code, which is this project's accuracy target. See
-// docs/phase2_sh404.md ("SH404 audio").
+// Translation of ymfm (3rdparty/ymfm: ymfm_pcm.cpp/h, pcm_channel and
+// pcm_engine): register semantics, envelope math, pitch step, LFO depths
+// and mixing follow that code.
 //
-// Time structure: one output sample per sample_tick (chip/768 = 44.1kHz).
-// Each sample walks the 24 channels sequentially; a channel slot reads
-// its registers through the single regfile read port (opl4_regs.sv),
-// clocks key state / envelope / LFO / position, fetches 1-2 sample bytes
-// from the wave ROM (SDRAM, via the shared mem port) and accumulates the
-// panned output. Quiet released channels early-out after two register
-// reads, so the walk fits the ~1948-clk budget comfortably in practice;
-// if a pathological all-channels-active sample overruns, the next tick
-// is simply taken late (sample stretching, inaudible at this scale).
+// One output sample per sample_tick (chip/768 = 44.1 kHz). Each sample
+// walks the 24 channels in turn; a slot reads its registers through the
+// single regfile read port (opl4_regs.sv), clocks key state, envelope, LFO
+// and position, fetches 1-2 sample bytes from the wave ROM and accumulates
+// the panned output. Quiet released channels early-out after two register
+// reads. If a pass overruns the ~1948 clk between ticks, the next tick is
+// taken late.
 //
 // Wavetable loads (writes to regs 0x08-0x1F) run a 12-byte header fetch
-// FSM between channel slots, exactly the reference's load_wavetable():
-// base address/format/loop/end from bytes 0-6, bytes 7-11 written back
-// into the channel's registers 0x80/0x98/0xB0/0xC8/0xE0.
+// between channel slots, as ymfm's load_wavetable(): base address, format,
+// loop and end from bytes 0-6; bytes 7-11 written back to the channel's
+// registers 0x80/0x98/0xB0/0xC8/0xE0.
 module opl4_pcm (
 	input  logic        clk,
 	input  logic        reset,
 	input  logic        sample_tick,   // pulse: produce one output sample
-	// The engine advances only on cen. It used to run at full clk_sys, which
-	// made every path inside it a genuine single-cycle path and left the
-	// envelope rate chain (c_oct/c_rc -> p_eg_inc) as the design's worst
-	// family. Measured with all 24 channels keyed on, a pass took 553 of the
-	// 1948 clk_sys cycles between sample ticks -- 28%, so there was time to
-	// spend. At cen = clk_sys/2 a pass costs about 1106 and every internal
-	// path gets two periods, which Psikyo.sdc then states as a multicycle.
-	//
-	// What must NOT move to cen: the pulses arriving from full-rate logic.
-	// sample_tick, wavesel_stb and mem_rd_valid are one clk_sys cycle wide,
-	// so an engine that only looked on cen edges would miss them. They are
-	// latched at full rate below, AFTER the case, so a pulse landing on the
-	// same edge the engine consumes one is still not lost. This is the same
-	// failure adpcma_sample_cache had when it sampled req only in S_IDLE.
+	// The engine advances only on cen (clk/2); build/Fuuki.sdc states its
+	// internal paths as a multicycle. sample_tick, wavesel_stb and
+	// mem_rd_valid are one clk wide, so they are latched at full rate,
+	// after the case, and are excluded from that multicycle.
 	input  logic        cen,
 
 	// register file access (opl4_regs.sv)
@@ -90,8 +76,7 @@ module opl4_pcm (
 
 	// power (exp) table: attenuation_to_volume = pow[input[7:0]] >> input[12:8]
 	logic [12:0] pow_table [0:255];
-	// path is project-root-relative for Quartus; testbenches mirror it
-	// under their own directory (sim/opl4_tb/rtl/...)
+	// path is repo-root-relative; Quartus and run_sim.sh both run from there
 	initial $readmemh("rtl/sound/opl4/opl4_pow_table.hex", pow_table);
 
 	// LFO step / AM depth / PM depth per the reference
@@ -117,10 +102,8 @@ module opl4_pcm (
 		endcase
 	endfunction
 
-	// effective envelope rate: 0->0, 15->63, else raw*4+correction clamped
-	// to 0..63. The correction is SIGNED (see corr below), so the sum is
-	// signed too and clamps at both ends, as the reference's
-	// clamp(raw * 4 + correction, 0, 63) does.
+	// effective envelope rate: 0->0, 15->63, else clamp(raw*4 + corr, 0, 63)
+	// with corr signed, as in ymfm
 	function automatic [5:0] eff_rate(input [3:0] raw, input signed [7:0] corr);
 		logic signed [8:0] r;
 		if (raw == 4'd0)       eff_rate = 6'd0;
@@ -192,14 +175,8 @@ module opl4_pcm (
 	logic signed [3:0] c_pan;
 	logic [2:0]  c_lfo_spd, c_vib, c_amd;
 	logic [3:0]  c_ar, c_dr, c_sl, c_sr, c_rc, c_rr;
-	// Loop/end points, cached like every other per-channel field. They are NOT
-	// register-file values -- they come from the sample header at key-on and
-	// are constant for the note -- but reading them as ch_end[ch]/ch_loop[ch]
-	// inside S_ENV put two 24:1 muxes, selected by the slot index, in series
-	// with the 32-bit wrap compare and its two 32-bit adds. Once the sprite
-	// path was retimed that became the entire failing-path population of the
-	// design (235 paths, ch -> ch_nextpos). Latched in S_RD8, two states
-	// before use, matching the other c_* fields.
+	// Loop/end from the sample header, latched in S_RD8 so the 24:1 muxes
+	// are not in series with the wrap compare and adds in S_ENV3.
 	logic [15:0] c_end, c_loop;
 
 	// slot working values
@@ -210,23 +187,19 @@ module opl4_pcm (
 	logic signed [15:0] w_sample;
 	logic [7:0]  w_byte0;
 
-	// Full-rate latches for the pulses above. Named fr_* because Psikyo.sdc
-	// has to exclude them from the opl4_pcm multicycle: they are written on
-	// every clk_sys edge, not only on cen.
+	// Full-rate latches. Named fr_* because build/Fuuki.sdc excludes them
+	// from the opl4_pcm multicycle: they are written on every clk edge.
 	logic        fr_mem_valid;
 	logic [7:0]  fr_mem_data;
 
 	// hoisted FSM scratch (Quartus 17 dislikes unnamed-block declarations)
 	logic [8:0]  hs_wavnum;
 	logic [21:0] hs_base;
-	// Pipeline registers splitting the two deep stages. Both were single-cycle
-	// and both dominated clk_sys: the envelope chain
+	// Pipeline registers splitting the envelope chain
 	//   c_rc/c_oct -> corr -> eff_rate -> cur_rate -> eg_inc -> es_env_next
 	// and the output chain
 	//   c_amd -> am_depth_f -> (* lfo_tri) -> att2vol -> (* w_sample) -> acc
-	// each ran table lookups and a multiply in one clock. The slot machine has
-	// roughly 1948 clk per sample and uses a few hundred, so an extra state per
-	// stage costs 48 cycles per sample and buys the whole path.
+	// across states. An extra state costs 24 clk per sample of ~1948.
 	logic [5:0]  p_rate;        // cur_rate, registered
 	logic [3:0]  p_eg_inc;      // eg_inc, registered
 	logic        p_frac_zero;
@@ -248,9 +221,8 @@ module opl4_pcm (
 	logic [21:0] hdr_addr;
 	logic [7:0]  hdr_bytes [0:6];
 
-	// output accumulators (sum of both DO1 and DO2 pairs -- this board has
-	// one DAC on the mixed output and the games route everything there;
-	// summing both pairs avoids muting a channel the driver routes to DO1)
+	// Output accumulators, the sum of the DO1 and DO2 pairs: the board has
+	// one DAC on the mixed output, so a channel routed to DO1 is not muted.
 	logic signed [19:0] acc_l, acc_r;
 
 	// ---- derived slot math ----
@@ -261,23 +233,11 @@ module opl4_pcm (
 	wire [3:0] shamt = 4'(c_oct + 4'sd8);                   // 0..15
 	wire [31:0] step_exact = ({21'd0, 1'b1, c_fnum} << shamt) >> 3;
 
-	// envelope rate correction: 15 -> none, else (oct+rc)*2 + fnum[9].
-	//
-	// SIGNED. oct is -8..7 and rc 0..14, so (oct+rc) is -8..21 and the
-	// correction -16..43; the reference computes it as int32_t and adds it
-	// to raw*4 before clamping to 0..63. This was built as an UNSIGNED
-	// {rc_sum[4:0], fnum[9]}, which is right for every non-negative sum and
-	// wrong for every negative one: oct=-1 with rc=0 gave 0b11111,0 = 62
-	// instead of -2, and eff_rate then clamped the rate to 63 -- INSTANT.
-	//
-	// That is what made Asura Buster's sound effects near-silent while its
-	// music was fine. The coin chime (wave 289, captured from MAME with
-	// scripts/opl4_log.py) plays at oct=-1 with the header's RC=0, DR=2 and
-	// SL=14: the reference decays it at rate 6, slowly, from full level; this
-	// core decayed it at rate 63, straight to SL=14 -- about -42 dB -- in the
-	// first envelope clock, and held it there. Music keys on at oct>=0 or
-	// with RC=15 and never took the negative branch. Psikyo's copy of this
-	// file has the same fault; its games evidently never exercise it.
+	// Envelope rate correction: RC 15 -> none, else (oct+rc)*2 + fnum[9],
+	// signed: oct is -8..7, so the sum is -8..21 and the correction -16..43,
+	// which ymfm adds to raw*4 as int32_t before clamping. Do not build it
+	// unsigned: a negative correction then clamps the rate to 63 (instant),
+	// which is oct=-1 with RC=0, as Asura Buster's coin chime (wave 289).
 	wire signed [5:0] rc_sum = {{2{c_oct[3]}}, c_oct} + {2'b00, c_rc};     // -8..21
 	wire signed [7:0] corr = (c_rc == 4'd15) ? 8'sd0
 	                       : {{2{rc_sum[5]}}, rc_sum, c_fnum[9]};          // -16..43
@@ -302,9 +262,8 @@ module opl4_pcm (
 	wire [5:0]  cur_rate = slot_rate(w_state_eg);
 	wire [3:0]  rate_shift = cur_rate[5:2];
 
-	// (B) rate_shift selects one of only twelve shift distances, so what used
-	// to be two 23-bit barrel shifts of envc is a constant slice and a constant
-	// mask. Same values, a fraction of the logic, no extra cycle.
+	// rate_shift has twelve values, so the two barrel shifts of envc are a
+	// constant slice and mask per case.
 	logic       frac_zero;
 	logic [2:0] relevant;
 	always_comb begin
@@ -320,18 +279,13 @@ module opl4_pcm (
 			4'd8:  begin relevant = envc[5:3];   frac_zero = (envc[2:0]  ==  3'd0); end
 			4'd9:  begin relevant = envc[4:2];   frac_zero = (envc[1:0]  ==  2'd0); end
 			4'd10: begin relevant = envc[3:1];   frac_zero = (envc[0]    ==  1'b0); end
-			// rate_shift >= 11: no fractional bits left to test, and the shift
-			// distance is zero.
+			// rate_shift >= 11: no fractional bits left to test
 			default: begin relevant = envc[2:0]; frac_zero = 1'b1; end
 		endcase
 	end
 
-	// (A) inc_table[cur_rate] >> {relevant,2'b00} was selecting nibble
-	// `relevant` of a 32-bit word -- a 64:1 mux feeding a 32-bit barrel shift.
-	// Split into the word mux and an explicit 8:1 nibble mux, which is the same
-	// 512:1 selection expressed as logic Quartus can build cheaply. Written as
-	// a case rather than a 512-entry array on purpose: an array that size
-	// invites M10K inference, and the design has none spare (553/553).
+	// Word mux, then an explicit 8:1 nibble mux. A case rather than a
+	// 512-entry array: that would infer an M10K, and none is spare.
 	wire [31:0] inc_word = inc_table[cur_rate];
 	logic [3:0] eg_inc;
 	always_comb begin
@@ -347,26 +301,19 @@ module opl4_pcm (
 		endcase
 	end
 
-	// LFO is clocked and THEN consumed within the same sample (the
-	// reference increments m_lfo_counter at the top of clock() and uses
-	// the updated value for both PM and, later, AM) -- so PM math runs on
-	// the freshly stepped value, and w_lfo carries it to the output stage.
+	// The LFO is stepped and then consumed within the same sample, as ymfm's
+	// clock() does: PM and AM both use the updated value, carried in w_lfo.
 	wire [17:0] lfo_upd = ch_lfo[ch] + {12'd0, lfo_step_f(c_lfo_spd)};
 
-	// AM (output stage, from w_lfo = the updated counter)
+	// AM, from w_lfo (registered in S_CALC)
 	wire [6:0] lfo_tri = w_lfo[17] ? ~w_lfo[16:10] : w_lfo[16:10];
 	wire [9:0] am_add = 10'((lfo_tri * am_depth_f(c_amd)) >> 7);
-	// PM: quarter-cycle-shifted updated LFO, signed -0x40..0x3F
-	// Fed from w_lfo (registered in S_CALC), not lfo_upd, so the 24-entry
-	// ch_lfo[ch] mux is not in series with the PM multiply. Same value --
-	// w_lfo IS lfo_upd, one state later -- but the path starts at a
-	// register instead of at ch. See S_ENV.
+	// PM: quarter-cycle-shifted LFO, signed -0x40..0x3F. From w_lfo, not
+	// lfo_upd, so the ch_lfo[ch] mux is not in series with the multiply,
+	// which consumes p_pm_val (registered in S_ENV).
 	wire [17:0] lfo_sh = w_lfo + 18'h10000;
 	wire [6:0] pm_tri = lfo_sh[17] ? ~lfo_sh[16:10] : lfo_sh[16:10];
 	wire signed [7:0] pm_val = {1'b0, pm_tri} - 8'sd64;
-	// Consumes the REGISTERED pm_val (p_pm_val, latched in S_ENV), so the
-	// multiply no longer sits behind the quarter-cycle add, the triangle
-	// inversion and the bias subtract. See S_ENV/S_ENV2.
 	wire signed [13:0] pm_add = (p_pm_val * $signed({1'b0, pm_depth_f(c_vib)})) >>> 7;
 
 	function automatic [9:0] pan_att_l(input signed [3:0] pan);
@@ -415,10 +362,9 @@ module opl4_pcm (
 				ch_tl[i]        <= {7'h7F, 10'd0};
 			end
 		end else begin
-			// Cleared at full rate so these stay one clk_sys cycle wide, which
-			// is what opl4.sv's arbiter and opl4_regs expect. They are set only
-			// inside the cen-gated case below, so they are excluded from the
-			// multicycle in Psikyo.sdc -- they capture on every edge.
+			// Cleared at full rate so these stay one clk cycle wide, as
+			// opl4.sv's arbiter and opl4_regs expect; build/Fuuki.sdc excludes
+			// them from the multicycle.
 			pcm_hdr_we  <= 1'b0;
 			mem_rd_req  <= 1'b0;
 			key_consume <= 1'b0;
@@ -582,31 +528,14 @@ module opl4_pcm (
 					w_curpos <= ch_nextpos[ch];
 					state     <= S_ENV;
 				end
-				// Register the rate chain (corr -> eff_rate -> cur_rate -> eg_inc)
-				// so S_ENV2's arithmetic does not sit behind it in one clock.
+				// Register the rate chain (corr -> eff_rate -> cur_rate -> eg_inc),
+				// the PM triangle and the AM term, so S_ENV2 and S_OUT do not sit
+				// behind them.
 				S_ENV: begin
 					p_rate      <= cur_rate;
 					p_eg_inc    <= eg_inc;
 					p_frac_zero <= frac_zero;
-					// PM front half only: w_lfo -> quarter-cycle add -> triangle
-					// invert -> bias subtract. The multiply and the 32-bit add that
-					// used to follow it in this same state now live in S_ENV2.
-					//
-					// History: this chain started in S_CALC as ch -> ch_lfo[ch] mux
-					// -> add -> shift -> invert -> sub -> multiply -> 32-bit add
-					// (-4.958ns, every one of the top 15 failing paths). Moving it
-					// here dropped the 24-entry mux and fixed that, but the rest
-					// stayed in one clock and became the worst path again at
-					// -0.188ns, with all eight failures starting at w_lfo[17] and
-					// ending at w_step. Splitting at pm_val puts roughly half the
-					// logic on each side and costs no cycle, since S_ENV2 already
-					// runs for every channel.
 					p_pm_val    <= pm_val;
-					// Likewise the AM term, for S_OUT. It depends only on
-					// w_lfo and c_amd, both registered in S_CALC and unchanged
-					// through S_OUT, so the value is the same one S_OUT would
-					// have computed -- but the invert-and-multiply no longer
-					// sits in front of S_OUT's muxes and att2vol lookup.
 					p_am        <= am_add;
 					state       <= S_ENV2;
 				end
@@ -616,9 +545,9 @@ module opl4_pcm (
 					es_st_next   = w_state_eg;
 					if (p_frac_zero) begin
 						if (w_state_eg == EG_ATTACK) begin
-							// reference: att += (~att * inc) >> 4, where ~att
-							// is the C-integer negation -(att+1) -- i.e. the
-							// attenuation DECAYS by ceil((att+1)*inc / 16)
+							// ymfm: att += (~att * inc) >> 4, with ~att the
+							// C integer -(att+1), so att decays by
+							// ceil((att+1)*inc / 16)
 							if (p_rate < 6'd62) begin
 								es_dec = 10'(((11'(w_env) + 11'd1) * p_eg_inc + 15'd15) >> 4);
 								es_env_next = (es_dec > w_env) ? 10'd0 : w_env - es_dec;
@@ -634,14 +563,7 @@ module opl4_pcm (
 					p_env_next      <= es_env_next;
 					p_st_next       <= es_st_next;
 					ch_lfo[ch]      <= w_lfo;
-					// PM back half: multiply the registered triangle by the vibrato
-					// depth and add the pitch step. c_fnum/c_oct/c_vib are all
-					// registered back in the RD states and p_pm_val was latched in
-					// S_ENV, so this is the same value S_ENV used to produce -- just
-					// with a register in the middle of the chain. The position
-					// advance that used to consume w_step here has moved to S_ENV3;
-					// keeping it would have handed this state the same one-clock
-					// chain it was meant to relieve.
+					// pitch step plus vibrato; consumed in S_ENV3
 					w_step          <= step_exact + 32'($signed(pm_add));
 					// total level interpolation (19 up / 38 down per sample)
 					if (c_lvl_direct) ch_tl[ch] <= {c_tl_reg, 10'd0};
@@ -651,15 +573,10 @@ module opl4_pcm (
 					else if (ch_tl[ch] > {c_tl_reg, 10'd0})
 						ch_tl[ch] <= ((ch_tl[ch] - 17'd38) < {c_tl_reg, 10'd0})
 						            ? {c_tl_reg, 10'd0} : ch_tl[ch] - 17'd38;
-					// The fetch address is computed unconditionally. It depends
-					// only on w_curpos and ch_baseaddr[ch], both stable here,
-					// whereas the quiet test (now in S_ENV3) sits at the far end of the
-					// envelope arithmetic above. Gating the address on that test
-					// put the entire envelope chain in series with the baseaddr
-					// mux and the x3 multiply, which was the worst path at
-					// -2.385ns. opl4.sv's arbiter latches pcm_mem_addr only
-					// inside if (pcm_mem_req), so an address computed for a
-					// silent channel is never sampled.
+					// Fetch address, computed unconditionally so the envelope
+					// chain is not in series with it; opl4.sv's arbiter only
+					// latches it with mem_rd_req, so a silent channel's address
+					// is never sampled.
 					case (ch_format[ch])
 						2'd0: mem_rd_addr <= ch_baseaddr[ch] + 22'(w_curpos[31:16]);
 						2'd2: mem_rd_addr <= ch_baseaddr[ch] + {5'd0, w_curpos[31:16], 1'b0};
@@ -670,24 +587,13 @@ module opl4_pcm (
 					state <= S_ENV3;
 				end
 
-				// The envelope writeback and the quiet decision, split off from
-				// the arithmetic that produces them. In S_ENV2 the attack
-				// multiply, the clamps and the reverb test ran straight into the
-				// 24-entry ch_env write decode in one clock -- the worst path at
-				// -1.117ns. Splitting there costs a state per channel per sample,
-				// about 24 clk_sys cycles out of the ~1948 available between
-				// 44.1kHz sample ticks, so the engine still finishes each sample
-				// with room to spare. It is the first of these splits that is not
-				// free, which is why it was left until last.
+				// Envelope writeback and the quiet decision, a state after the
+				// arithmetic so the ch_env write decode is not behind it.
 				S_ENV3: begin
 					ch_env[ch]      <= p_env_next;
 					ch_eg_state[ch] <= p_st_next;
-					// Position advance + loop wrap, moved down from S_ENV2 so that
-					// w_step can be computed there. w_curpos is registered in S_CALC
-					// and c_end/c_loop in S_RD8, so all three inputs are stable, and
-					// ch_nextpos[ch] is not read until this channel's next S_CALC --
-					// several states away. Unconditional, so a channel that goes
-					// quiet below still advances its position exactly as before.
+					// Position advance and loop wrap, unconditional: a channel
+					// that goes quiet still advances.
 					es_np = w_curpos + w_step;
 					if (es_np >= {c_end, 16'd0})
 						es_np = es_np + {c_loop, 16'd0} - {c_end, 16'd0};
@@ -700,13 +606,9 @@ module opl4_pcm (
 					end
 				end
 
-				// The attenuation sum is registered here, in the states that are
-				// already stalled on the sample ROM. ch_env[ch] and ch_tl[ch] are
-				// written by S_ENV2/S_ENV3, so by now they hold the values S_OUT
-				// would read -- but computing it here keeps the two 24-entry
-				// channel muxes out of series with att2vol's lookup and barrel
-				// shift, which was the worst path at -1.712ns. Re-assigning on
-				// each stalled cycle is harmless; the inputs do not change.
+				// The attenuation sum is registered in the states already stalled
+				// on the sample ROM, keeping the ch_env/ch_tl muxes out of series
+				// with att2vol. Re-assigning on each stalled cycle is harmless.
 				S_FETCH0: begin
 				  p_env_eff <= {1'b0, ch_env[ch]} + {1'b0, p_am}
 				             + {2'b00, ch_tl[ch][16:8]};
@@ -733,9 +635,9 @@ module opl4_pcm (
 					fr_mem_valid <= 1'b0;
 					if (ch_format[ch] == 2'd2)
 						w_sample <= {w_byte0, fr_mem_data};
-					// 12-bit packing (reference fetch_sample): the middle
-					// byte's LOW nibble belongs to the even sample, the
-					// HIGH nibble to the odd one
+					// 12-bit packing (ymfm fetch_sample): the middle byte's
+					// low nibble belongs to the even sample, the high nibble
+					// to the odd one
 					else if (!w_curpos[16])
 						w_sample <= {w_byte0, fr_mem_data[3:0], 4'd0};
 					else
@@ -745,12 +647,10 @@ module opl4_pcm (
 				end
 
 				// ---- output accumulate ----
-				// Attenuation and the att2vol lookups, registered. Doing these
-				// and the sample multiply in one clock made acc_l/acc_r the
-				// worst clk_sys path in the design.
+				// att2vol lookups in S_OUT, the multiply in S_OUT2.
 				S_OUT: begin
-					// attenuation = envelope + AM + total-level (7.10 -> .2
-					// units via >>8, per the reference's `total_level >> 8`)
+					// attenuation = envelope + AM + total level (7.10 -> .2
+					// units via >>8, ymfm's `total_level >> 8`)
 					os_lenv = p_env_eff + {1'b0, pan_l};
 					os_renv = p_env_eff + {1'b0, pan_r};
 					p_lvol <= att2vol((os_lenv > 11'h3FF) ? 13'hFFC : {os_lenv[9:0], 2'b00});
@@ -788,9 +688,8 @@ module opl4_pcm (
 			endcase
 			end
 
-			// Full-rate pulse capture, deliberately AFTER the case: the case
-			// clears these when it consumes them, and a set has to win over a
-			// clear landing on the same edge or the event is dropped.
+			// Full-rate pulse capture, after the case: a set must win over the
+			// case's same-edge clear or the event is dropped.
 			if (sample_tick) tick_pending <= 1'b1;
 			if (wavesel_stb) begin
 				load_pending <= 1'b1;

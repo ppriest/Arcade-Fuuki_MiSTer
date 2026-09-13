@@ -24,10 +24,7 @@
 module sdram
 (
 	// interface to the MT48LC16M16 chip
-	inout       [15:0] SDRAM_DQ,   // 16 bit bidirectional data bus -- driven via
-	                                // dq_oe/dq_out below (plain `inout reg`, as
-	                                // upstream declares it, isn't accepted the same
-	                                // way under vlog -sv; behavior is unchanged)
+	inout       [15:0] SDRAM_DQ,   // driven via dq_oe/dq_out; vlog -sv rejects upstream's `inout reg`
 	output reg [12:0] SDRAM_A,    // 13 bit multiplexed address bus
 	output reg        SDRAM_DQML, // byte mask
 	output reg        SDRAM_DQMH, // byte mask
@@ -43,19 +40,17 @@ module sdram
 	input             init,        // init signal after FPGA config to initialize RAM
 	input             clk,         // sdram is accessed at up to 128MHz
 
-	// port 0 -- addr is the WORD address of the first of 4 sequential words
-	// making up one 64-bit read granule (low 2 bits of the word address
-	// should be 00 for reads -- see docs/phase1_sdram_map.md). Writes are
-	// still single-word (wrl0/wrh0 select byte lanes of din0), unaffected
-	// by the burst-4 read extension.
+	// Three ports, fixed priority 0 > 1 > 2. Reads: addr is the word address
+	// of the first of 4 sequential words forming one 64-bit granule; its low
+	// 2 bits should be 00. Writes are single-word; wrl/wrh select byte lanes.
+	// req/ack: toggle req to request, ack takes req's value at completion.
 	input      [25:1] addr0,
 	input             wrl0,
 	input             wrh0,
 	input      [15:0] din0,
 	output     [63:0] dout0,
 	input             req0,
-	output reg        ack0 = 1'b0,   // see PROVENANCE.md -- simulation-fidelity fix,
-	                                  // matches ack1/ack2 and `state` below
+	output reg        ack0 = 1'b0,   // initialised for simulation, as `state` below
 
 	input      [25:1] addr1,
 	input             wrl1,
@@ -80,35 +75,23 @@ assign {SDRAM_DQMH,SDRAM_DQML} = SDRAM_A[12:11];
 
 localparam RASCAS_DELAY   = 3'd2; // tRCD=20ns -> 2 cycles@85MHz
 localparam BURST_LENGTH   = 3'd2; // 0=1, 1=2, 2=4, 3=8, 7=full page -- 4, for one 64-bit granule
-localparam ACCESS_TYPE    = 1'd0; // 0=sequential, 1=interleaved -- sequential: burst returns
-                                   // words in ascending address order, matching gfx ROM layout
+localparam ACCESS_TYPE    = 1'd0; // 0=sequential, 1=interleaved -- sequential: words in ascending address order
 localparam CAS_LATENCY    = 3'd2; // 2/3 allowed
 localparam OP_MODE        = 2'd0; // only 0 (standard operation) allowed
-localparam NO_WRITE_BURST = 1'd1; // 0=write burst enabled, 1=only single access write --
-                                   // writes stay single-word; only the HPS byte-at-a-time
-                                   // download path writes, no burst needed there
+localparam NO_WRITE_BURST = 1'd1; // 0=write burst enabled, 1=only single access write
 
 localparam MODE = { 3'b000, NO_WRITE_BURST, OP_MODE, CAS_LATENCY, ACCESS_TYPE, BURST_LENGTH};
 
-// STATE_LAST now covers 4 read-capture cycles (STATE_READ0..STATE_READ3)
-// after CAS latency elapses, not just 1 -- see PROVENANCE.md.
 localparam STATE_IDLE   = 4'd0;                // state to check the requests
 localparam STATE_START  = STATE_IDLE+4'd1;     // state in which a new command is started
 localparam STATE_CONT   = STATE_START+RASCAS_DELAY;
-localparam STATE_READ0  = STATE_CONT+CAS_LATENCY+4'd1;   // +1: matches upstream's own
-                                                          // STATE_READY=STATE_CONT+CAS_LATENCY+1
-                                                          // margin, unchanged from upstream --
-                                                          // see PROVENANCE.md
+localparam STATE_READ0  = STATE_CONT+CAS_LATENCY+4'd1;   // +1: upstream's STATE_READY margin, see PROVENANCE.md
 localparam STATE_READ1  = STATE_READ0+4'd1;
 localparam STATE_READ2  = STATE_READ0+4'd2;
 localparam STATE_READ3  = STATE_READ0+4'd3;
 localparam STATE_LAST   = STATE_READ3;         // last state in cycle
 
-reg  [3:0] state = 4'd0;   // upstream relies on Quartus's zero-power-up default for
-                            // FPGA registers (real hardware); explicit here since plain
-                            // ModelSim simulation leaves an uninitialized reg X instead,
-                            // which would otherwise wedge the whole state machine (state==X
-                            // never equals STATE_LAST, so `reset`/`mode` never advance)
+reg  [3:0] state = 4'd0;   // explicit: an X here never reaches STATE_LAST in simulation, so init never advances
 reg [22:1] a;
 reg        a25;   // byte address bit 25: column bit A9 on a 64 MB chip
 reg [15:0] data;
@@ -119,21 +102,8 @@ reg        active = 0;
 reg  [2:0] ram_req = 0;
 wire [2:0] wr = {wrl2|wrh2,wrl1|wrh1,wrl0|wrh0};
 
-// rfs_cnt/rfs/rfs2 (access-manager block below) and init_old
-// (initialization block further down) both used to be declared as
-// block-local `reg`s inside their own `always @(posedge clk)` blocks --
-// rfs_cnt/rfs/rfs2 as plain `reg`, init_old as `static reg init_old=0;`
-// (upstream's own existing pattern, inherited here, not added by this
-// project). Both forms compile fine under ModelSim but Quartus 17.0's
-// SystemVerilog elaborator rejects non-blocking assignments to EITHER
-// form outright ("automatic variables can't have non-blocking
-// assignments") -- a real Quartus-only synthesis error, not a ModelSim
-// quirk, found running quartus_map on the real Psikyo.sv build
-// (docs/ROADMAP.md's top-level integration work). `static` is not a
-// working fix for this Quartus version; moving the declarations to
-// module level (unambiguously static, like every other reg in this file)
-// is. Given explicit `= 0` initializers at the same time, same
-// simulation-fidelity reasoning as `state`/`active`/`ram_req` above.
+// Module level, not block-local: Quartus 17.0 rejects non-blocking
+// assignments to block-local regs, static or not.
 reg [9:0] rfs_cnt = 10'd0;
 reg        rfs = 1'b0, rfs2 = 1'b0;
 reg         init_old = 1'b0;
@@ -144,10 +114,8 @@ assign dout0 = dout;
 assign dout1 = dout;
 assign dout2 = dout;
 
-// mode/reset must be declared before the access-manager block below since
-// it references them -- SystemVerilog (unlike the plain-Verilog upstream
-// this was adapted from) doesn't resolve forward references across
-// always-block boundaries the same way, confirmed by compiling with vlog -sv.
+// Declared before the access-manager block that reads them; vlog -sv does
+// not resolve the forward reference.
 localparam MODE_NORMAL = 2'b00;
 localparam MODE_RESET  = 2'b01;
 localparam MODE_LDM    = 2'b10;
@@ -159,15 +127,9 @@ reg [4:0] reset=5'h1f;
 // access manager
 always @(posedge clk) begin
 	rfs_cnt <= rfs_cnt + 1'd1;
-	// 670, not upstream's 850. The MT48LC16M16 needs 8192 auto-refresh
-	// commands per 64 ms = one every 7.8125 us. At this project's
-	// 85.909091 MHz clk_sys, 850 cycles is 9.90 us -- 27% OVER spec. That
-	// is a real violation, not a margin: during the multi-second 14.7 MB
-	// ROM download the refresh is also deferred by traffic (rfs <= rfs2
-	// below), and address 0 is written FIRST, so the reset vector sits
-	// longest of all before the CPU reads it. Symptom was non-deterministic
-	// ROM corruption -- the same .mra read back correct on one load and
-	// corrupt on the next. 670 cycles = 7.80 us, just inside spec.
+	// 8192 auto-refreshes per 64 ms = one per 7.8125 us. At 85.909091 MHz
+	// that is 671 cycles; 670 = 7.80 us. Upstream's 850 is 27% over spec,
+	// and the refresh is also deferred by traffic (rfs <= rfs2 below).
 	if (rfs_cnt == 670) begin
 		rfs <= 1;
 		rfs_cnt <= 0;
@@ -217,11 +179,9 @@ always @(posedge clk) begin
 		end
 	end
 
-	// Burst-of-4 read capture: one 16-bit lane per cycle across the four
-	// STATE_READ0..STATE_READ3 cycles, ascending address order (lane 0 =
-	// lowest address = dout[15:0]) matching ACCESS_TYPE=sequential above.
-	// Write completion (ack, no data capture) shares STATE_READ3 for a
-	// single uniform completion point -- see PROVENANCE.md for why.
+	// Burst-of-4 read capture, one lane per cycle, ascending address order:
+	// lane 0 is the lowest address, dout[15:0]. Writes complete at
+	// STATE_READ3 too, with no capture.
 	if (state == STATE_READ0 && ram_req && !we) dout[15:0]  <= SDRAM_DQ;
 	if (state == STATE_READ1 && ram_req && !we) dout[31:16] <= SDRAM_DQ;
 	if (state == STATE_READ2 && ram_req && !we) dout[47:32] <= SDRAM_DQ;
@@ -293,24 +253,14 @@ always @(posedge clk) begin
 
 	if(mode == MODE_NORMAL) begin
 		casex(state)
-			// Row/column split SWAPPED from upstream (upstream: row=a[13:1]
-			// (low bits), col=a[22:14] (high bits)). Upstream never bursts
-			// (BURST_LENGTH=0), so the split is an arbitrary choice there.
-			// For burst-4, the low address bits MUST select the column,
-			// since that's what the SDR chip auto-increments across a
-			// burst -- 4 consecutive word addresses need to land at 4
-			// consecutive columns of the SAME row, not 4 different rows.
-			// Confirmed as a real bug (not a hunch) by tb_sdram.sv: with
-			// the upstream split, a 4-word burst starting at word address N
-			// silently read from rows N, N+1, N+2, N+3 at column 0 each
-			// time -- wrong data, not just misaligned. See PROVENANCE.md.
+			// Row = high bits, column = low bits, the reverse of upstream.
+			// A burst auto-increments the column, so the 4 words of a granule
+			// must sit in consecutive columns of one row.
 			STATE_START: SDRAM_A <= a[22:10];
-			// A10 = auto-precharge; A9 = byte address bit 25, which is column
-			// bit 9 on a 64 MB chip (13 row x 10 column x 4 bank) and ignored by
-			// the 32 MB chip (9 column bits) -- so the low 32 MB map identically
-			// on both modules. This is the 128 MB module's layout: 2 x 64 MB, the
-			// second chip selected by byte address bit 26, which this core does
-			// not use (FG-3 needs 56.5 MB).
+			// A10 = auto-precharge. A9 = byte address bit 25: column bit 9 on
+			// the 64 MB chip, ignored by the 32 MB chip, so the low 32 MB map
+			// identically on both. The 128 MB module's second chip would be
+			// byte address bit 26, which this core does not use.
 			STATE_CONT:  SDRAM_A <= {dqm, 1'b1, a25, a[9:1]};
 		endcase
 	end
@@ -319,17 +269,9 @@ always @(posedge clk) begin
 	else SDRAM_A <= 0;
 end
 
-// Upstream drives SDRAM_CLK via an altddio_out megafunction instance here
-// (a phase-shifted DDR output, so the chip sees a clock edge advanced
-// relative to the address/command bus it's latching against). Deliberately
-// NOT vendored into this module -- same posture as ddram_phy.sv, which
-// documents "DDRAM_CLK is driven separately at the top level... not by this
-// module": keeps this transport-layer module free of device-specific hard
-// IP that would need Altera's simulation libraries (altera_mf) compiled and
-// mapped just to simulate the burst-4 read logic this module actually
-// exists to verify. Real SDRAM_CLK phase generation is top-level
-// integration work (see docs/ROADMAP.md's "Next steps"), same stage as
-// wiring this module's ports into the real address map/arbiters.
+// Upstream drives SDRAM_CLK through an altddio_out instance. Not vendored:
+// the top level drives the phase-shifted pin clock itself, and this keeps
+// the module simulable without altera_mf.
 assign SDRAM_CLK = clk;
 
 endmodule

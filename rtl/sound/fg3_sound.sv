@@ -5,43 +5,31 @@
 //
 // Memory map (sound_map):
 //   0000-5FFF  ROM, fixed
-//   6000-6FFF  RAM, 4 KB (here)
-//   7FF0-7FFF  the 16 bytes shared with the 68020 at 0x903FE0
-//   8000-FFFF  ROM, banked: 16 entries of 0x8000 from the region base, so
-//              the physical address is {bank, a[14:0]} and the fixed region
-//              is {4'd0, a[14:0]} -- one 19-bit address covers all 512 KB.
+//   6000-6FFF  RAM, 4 KB
+//   7FF0-7FFF  16 bytes shared with the 68020 at 0x903FE0
+//   8000-FFFF  ROM, banked: 16 x 0x8000 from the region base, so the
+//              physical address is {bank, a[14:0]}; one 19-bit address
+//              covers the 512 KB.
 // I/O map (sound_io_map, 8-bit):
-//   00     w  ROM bank            30  w  nop ("leftover/unused nmi handler")
+//   00     w  ROM bank            30  w  nop (unused NMI handler)
 //   40-45 rw  YMF278B
 //
-// There is no sound latch and no NMI on this board: the 68020 and the Z80
-// talk through those 16 shared bytes. srom.u7's protocol, read from the
-// firmware: at boot the Z80 writes 0xCD to byte 0 and spins until the 68020
-// replaces it with 0xAE; its main loop then watches the even bytes for a
-// command whose high nibble is 0xA, with the odd byte after it as the
-// parameter, and clears the byte once taken. asurabld's boot spins at
-// 0x200F6 until byte 0 reads 0xCD, so this Z80 running is what lets the
-// 68020 leave its reset code -- it replaces the bring-up stub that used to
-// play the Z80's side from fuuki_core.sv.
+// No sound latch and no NMI: the 68020 and the Z80 talk through the shared
+// bytes. Protocol, from srom.u7: at boot the Z80 writes 0xCD to byte 0 and
+// spins until the 68020 replaces it with 0xAE; its main loop then watches
+// the even bytes for a command with high nibble 0xA, the odd byte after it
+// as parameter, and clears the byte once taken. The 68020's reset code
+// waits for the 0xCD, so the Z80 must run for the main CPU to boot.
 //
-// The OPL4 is Psikyo's (rtl/sound/opl4/, from E:\Arcade-Psikyo_MiSTer):
-// bus protocol, status/ID/BUSY/LD, both timers with IRQ, and the 24-channel
-// PCM wavetable engine, running on MiSTer there.
+// OPL4 (rtl/sound/opl4/, shared with the Psikyo core): bus protocol,
+// status/ID/BUSY/LD, both timers with IRQ, and the 24-channel PCM engine.
+// Its FM half is gtaylormb/opl3_fpga (rtl/sound/opl3/). Ports 0x40-0x43
+// are the YMF262 bus, so the OPL3 gets the same cs/rd/wr restricted to
+// those four ports and returns its sample for the DO2 mix. Ports 0x44-0x45
+// (PCM) are withheld from it. Status, timers and IRQ stay with opl4_regs:
+// the OPL3's INSTANTIATE_TIMERS is 0, its dout and irq_n unconnected.
 //
-// Its FM half is gtaylormb/opl3_fpga (rtl/sound/opl3/), and it attaches
-// where the real part joins them: ports 0x40-0x43 ARE the YMF262 bus --
-// address low / data / address high / data -- which is exactly the
-// interface that core presents. So the OPL3 is given the same cs/rd/wr the
-// OPL4 sees, restricted to those four ports, and hands its sample back for
-// the DO2 mix. Ports 0x44-0x45 (PCM) are deliberately withheld from it.
-//
-// What the OPL3 does NOT do here: status, timers and IRQ stay with
-// opl4_regs, which already implements them and is proven on MiSTer. The
-// vendored core's INSTANTIATE_TIMERS is 0 by default, so it does not fight
-// for them, and its dout and irq_n are left unconnected.
-//
-// The Z80 side -- T80se, the split WAIT_n, the stretched ROM handshake --
-// is fg2_sound.sv's, which is Psikyo's sound_cpu.sv; only the map differs.
+// Z80 side (T80se, split WAIT_n, stretched ROM handshake): as fg2_sound.sv.
 module fg3_sound (
 	input  logic        clk,
 	input  logic        reset,
@@ -49,8 +37,8 @@ module fg3_sound (
 	// 6 MHz clock enable, from clk (85.909 MHz): 66/945
 	input  logic        cen_z80,
 
-	// 68020 side of the shared RAM. Byte addressed 0-15; the CPU wins a
-	// same-cycle collision with the Z80, as the bring-up stub did.
+	// 68020 side of the shared RAM, byte addressed 0-15. The 68020 wins a
+	// same-cycle collision with the Z80.
 	input  logic [3:0]  host_addr,
 	input  logic        host_we,
 	input  logic [7:0]  host_wdata,
@@ -69,7 +57,7 @@ module fg3_sound (
 	input  logic        wave_valid,
 	input  logic [7:0]  wave_data,
 
-	// Mute either half at runtime, to hear what each contributes.
+	// Runtime mutes.
 	input  logic        en_fm,
 	input  logic        en_pcm,
 
@@ -79,17 +67,18 @@ module fg3_sound (
 	// probes
 	output logic        dbg_m1,          // one pulse per Z80 opcode fetch
 	output logic        dbg_opl4_wr,     // one pulse per write to the OPL4
-	output logic        dbg_fm_keyon,    // FM key-on -- nothing plays it yet
+	output logic        dbg_fm_keyon,    // FM key-on (regs B0-B8, bit 5)
 	output logic        dbg_pcm_keyon,
-	// What the Z80 last told the OPL4: the register selector it wrote to an
-	// address port (0, 2 or 4), and which port the last write went to. A
-	// sound CPU writing hard while starting no voices is in a loop, and this
-	// names the register the loop is on.
+	output logic        dbg_int_n,       // the OPL4 interrupt, as the Z80 sees it
+	output logic        dbg_halt_n,
+	output logic        dbg_rom_wait,    // a ROM fetch is outstanding on the SDRAM
+	// Last register selector written to an address port (0, 2 or 4), and
+	// the port of the last write: names the register a looping driver is on.
 	output logic [7:0]  dbg_opl4_sel,
 	output logic [2:0]  dbg_opl4_port,
 	output logic        dbg_new2,        // OPL4 mode: gates every PCM key-on
 	output logic [5:0]  dbg_mix_pcm,     // F9 attenuator pair; 7 is silence
-	// The 16 bytes the 68020 and this Z80 talk through, for dump region 7.
+	// shared RAM readback, for dump region 7
 	input  logic [3:0]  dbg_shared_addr,
 	output logic [7:0]  dbg_shared_data
 );
@@ -128,8 +117,7 @@ module fg3_sound (
 	always_ff @(posedge clk) ram_rd_data <= ram[a[11:0]];
 
 	// ---- shared RAM, 16 bytes, two write ports ----
-	// Registers rather than an inferred dual-port RAM: at 16 bytes the flops
-	// cost nothing and there is no read-during-write behaviour to depend on.
+	// Flops, not an inferred dual-port RAM: no read-during-write rules.
 	logic [7:0] shared [0:15];
 	assign host_rdata = shared[host_addr];
 
@@ -146,30 +134,14 @@ module fg3_sound (
 	logic signed [15:0] opl4_l, opl4_r;
 
 	// ---- FM: the OPL3 on ports 0x40-0x43 ----
-	// UNDOING ITS DAC SHIFT, NOT SCALING TO THE FIELD WIDTH. dac_prep.sv
-	// emits sample_l = channel_l <<< DAC_LEFT_SHIFT, where channel_l is a
-	// CLAMPED 16-bit sample and DAC_LEFT_SHIFT is DAC_OUTPUT_WIDTH -
-	// SAMPLE_WIDTH - 3 = 24 - 16 - 3 = 5. So >>> 5 recovers exactly the
-	// sample the core clamped, at the same scale opl4_pcm works in, which is
-	// what the DO2 attenuators then balance.
+	// !a[2] covers all four ports; 0x42-0x43 carry bank 1, including 0x105
+	// (NEW/NEW2). en_fm also takes the OPL3 off the bus, not only out of the
+	// mix: Asura Buster's driver was seen to wedge on MiSTer with the OPL3 on
+	// the bus, so the switch separates "on the bus" from "in the design".
 	//
-	// It was >>> 8 first, reasoning from the field widths (24 -> 16) instead
-	// of from the shift. That is 8x -- 18 dB -- too quiet, and it measured
-	// as such: with PCM muted on Asura Blade and 31 FM key-ons, snd_peak
-	// read 1 where the correct shift predicts about 8.
-	// Ports 0x40-0x43, the YMF262 bus: address low, data, address high, data.
-	// This was a[2:1] == 2'b00, which is 0x40-0x41 ONLY -- the OPL3 never saw
-	// bank 1 at all, including register 0x105, the NEW/NEW2 pair that turns
-	// OPL3 mode on. a[2] == 0 is the whole of 0x40-0x43.
-	//
-	// en_fm ALSO takes it off the bus, not just out of the mix. That is
-	// deliberate and it is why the switch exists: bisecting on MiSTer
-	// showed Asura Buster's sound driver wedges with the OPL3 present and
-	// runs with it absent (pcm_keyons 9 vs 0, snd_peak 59 vs 0 over the same
-	// window), and nothing in the OPL3's connections explains how -- its
-	// dout, irq_n and led are all unconnected and it touches no memory. So
-	// the switch has to separate "on the bus" from "in the design", or the
-	// next step is a build per guess.
+	// >>> 5 undoes dac_prep.sv's DAC_LEFT_SHIFT (24 - 16 - 3) and recovers
+	// the clamped 16-bit sample at the scale opl4_pcm works in. Do not use
+	// >>> 8 (the field-width difference): 18 dB too quiet.
 	wire io_opl4_fm = io_opl4 && !a[2] && en_fm;
 	logic signed [23:0] opl3_l, opl3_r;
 
@@ -226,9 +198,8 @@ module fg3_sound (
 	always_ff @(posedge clk or posedge reset) begin
 		if (reset) begin
 			bank <= 4'd0;
-			// Byte 0 powers up at 0xCD only because the firmware writes it;
-			// clear the whole block so a reset cannot leave a stale command
-			// for the 68020 to act on.
+			// Clear so a reset leaves no stale command for the 68020; the
+			// firmware writes the 0xCD itself.
 			for (int i = 0; i < 16; i++) shared[i] <= 8'h00;
 		end else begin
 			if (mem_active_wr && is_ram)    ram[a[11:0]]    <= d_out;
@@ -249,9 +220,8 @@ module fg3_sound (
 		else       access_started <= access_now_nonrom;
 	end
 
-	// ROM: one request per M-cycle, and none after its answer has arrived --
-	// is_rom_read stays high for the rest of the clock-enable-stretched
-	// T-state, and without !rom_done a second request fires every fetch.
+	// ROM: one request per M-cycle. is_rom_read stays high for the rest of
+	// the clock-enable-stretched T-state, so !rom_done blocks a second one.
 	logic rom_pending;
 	always_ff @(posedge clk or posedge reset) begin
 		if (reset) rom_pending <= 1'b0;
@@ -288,6 +258,9 @@ module fg3_sound (
 	end
 	assign dbg_m1      = m1_active && !m1_d;
 	assign dbg_opl4_wr = opl4_wr_now && !oplwr_d;
+	assign dbg_int_n    = opl4_irq_n;
+	assign dbg_halt_n   = halt_n;
+	assign dbg_rom_wait = is_rom_read && !rom_done;
 
 	assign dbg_shared_data = shared[dbg_shared_addr];
 	always_ff @(posedge clk or posedge reset) begin

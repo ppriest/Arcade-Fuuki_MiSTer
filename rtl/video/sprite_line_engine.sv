@@ -1,56 +1,22 @@
 // Per-scanline sprite renderer.
 //
-// Renders only the sprites intersecting one scanline into a 320-pixel line
-// buffer. This is the shape real arcade hardware used and the shape the rest
-// of the MiSTer ecosystem uses (JTFRAME's line-buffer path, zoom included).
+// Draws the sprites intersecting one scanline into a 320-pixel line buffer.
+// sprite_line_list builds the candidate list once per frame; per line each
+// candidate costs one y-extent read plus real rendering.
 //
-// It works with sprite_line_list, which does the expensive part once per frame
-// so the per-line cost is one pipelined y-extent read per candidate plus real
-// rendering. Without that hoist a per-line renderer cannot fit: see that
-// module's header.
+// line_tick is a hard resync in every state, not a pulse consumed when idle.
+// Writes stop the same cycle. An in-flight graphics request is drained, not
+// abandoned: the transport delivers its response regardless and a later
+// request would collect it. An overrun clips at worst the tail sprites of one
+// line and raises ovr_ev.
 //
-// ---------------------------------------------------------------------------
-// THE LINE PULSE IS A HARD RESYNC, NOT SOMETHING CONSUMED WHEN IDLE.
+// Record format: sprite_line_list.sv. Sprites are 16x16x4 on both boards, so
+// one tile row is 8 bytes, one 64-bit granule.
 //
-// Psikyo's first line renderer consumed its line pulse only in the idle state,
-// so an engine still busy at a line boundary ATE the pulse: it finished the
-// previous line's sprites into the freshly swapped bank, then idled for a
-// whole line. One overrun corrupted every line below it, giving the
-// unmistakable "correct at the top, degrading downward" hardware signature.
-//
-// Here line_tick aborts immediately in every state. Writes stop the same
-// cycle; an in-flight graphics request is drained rather than abandoned,
-// because the transport will deliver its response regardless and a later
-// request would otherwise collect it. An overrun therefore clips at worst the
-// tail sprites of one line -- which are the ones furthest back in depth -- and
-// raises ovr_ev so it can be counted rather than guessed at.
-// ---------------------------------------------------------------------------
-//
-// Record format and geometry are documented in sprite_line_list.sv. Sprites
-// are 16x16x4 on both boards, so one tile row is 8 bytes -- exactly one
-// 64-bit granule, with no second fetch.
-//
-// ---------------------------------------------------------------------------
-// THE NEXT SUB-TILE'S GRANULE IS FETCHED WHILE THE CURRENT ONE DRAWS.
-//
-// Without that, every sub-tile paid the whole SDRAM round trip and THEN
-// drew its 16 pixels at one per clock: latency + ~20 clk per tile, in
-// series, and the latency is the larger term whenever the tilemap engines
-// and the CPU are on the memory too -- the controller serves the tilemap
-// port first, so a sprite fetch waits out their bursts. pbancho's attract
-// showed what that costs: where several large sprites' tile rows coincide,
-// about sixteen lines ran past the line budget every frame, and the
-// line_tick resync cut them off with the sprites drawn only as far as it
-// had got.
-//
-// So S_TILE also computes the address of sub-tile ix+1, S_PIX issues that
-// request on its first pixel, and the response lands in gfx_row_next while
-// the pixels go out. The next S_TILE then finds the row already here and
-// goes straight to S_PIX, or joins S_WAIT if the response is still in
-// flight. A tile now costs max(latency, ~20 clk) instead of their sum.
-// Still ONE request outstanding at any time, so the transport is unchanged;
-// a resync while a prefetch is in flight drains it exactly as before.
-// ---------------------------------------------------------------------------
+// The next sub-tile's granule is fetched while the current one draws: S_TILE
+// computes the address of sub-tile ix+1, S_PIX issues the request on its first
+// pixel, the response lands in gfx_row_next. A tile costs max(latency, ~20 clk)
+// instead of the sum. Still one request outstanding at a time.
 
 module sprite_line_engine (
 	input  logic clk,
@@ -112,29 +78,14 @@ module sprite_line_engine (
 	logic [7:0]  dst_w;       // drawn width of one sub-tile
 	logic signed [11:0] tile_x0;
 	logic [7:0]  dx;          // destination pixel within the sub-tile
-	// 16.16 source accumulator, with FOUR integer bits. At 18 bits it had
-	// two, so (xacc >> 16) could only ever be 0..3: a zoomed sprite sampled
-	// source columns 0,1,2,3 and then wrapped instead of walking 0..15, and
-	// Asura Blade's zoomed character shadows came out ragged rather than
-	// clean ovals. The vertical path escaped it by multiplying row_delta by
-	// the step instead of accumulating. Worst case is (dst_w-1) * step =
-	// 16 * 61680 = 986,880, which needs 20 bits.
+	// 16.16 source accumulator with four integer bits: worst case
+	// (dst_w-1) * step = 16 * 61680 = 986,880 needs 20 bits.
 	logic [19:0] xacc;
 	logic [63:0] gfx_row;
 
 	// ---- zoom lookups ----
-	//
-	// TIMING, and this is why the outputs are REGISTERED rather than used
-	// straight from the tables. The first synthesis of this core missed setup
-	// by 3.483 ns at 85.909091 MHz, and every one of the 400 worst paths ran
-	// through here: w2 -> table -> (iy * zyt) -> subtract -> (* stepy) -> ...
-	// two chained multipliers plus the lookup in a single 11.641 ns cycle,
-	// 14.593 ns of data delay.
-	//
-	// The tables depend only on w2, which is latched a whole state earlier in
-	// S_REC_W, so registering their outputs in S_DECODE costs no cycles at all
-	// and takes the lookup off the path. Splitting the two multipliers is the
-	// other half -- see S_ROWCALC.
+	// Outputs registered in S_DECODE for timing. w2 is latched in S_REC_W, so
+	// this costs no cycles and keeps the lookup off the chained-multiplier path.
 	wire [7:0]  zxt, zyt, dstx, dsty;
 	wire [17:0] stepx, stepy;
 	sprite_zoom_lut u_zx (.zoom_field(w2[15:12]), .zoom_t(zxt), .dst_size(dstx), .step(stepx));
@@ -144,63 +95,46 @@ module sprite_line_engine (
 	logic [17:0] stepx_r, stepy_r;
 	logic [7:0]  row_delta;   // line12 - row_origin, held for S_ROWCALC
 
-	// Origin of sub-tile row iy. The same expression covers both paths: at
-	// zoom 0 the zoom term is 128, and (iy * 128) >> 3 is exactly iy * 16.
-	//
-	// ACCUMULATED, not multiplied. Written as (iy * zyt_r) >> 3 this put a
-	// multiplier inside S_FINDROW's own loop -- iy -> multiply -> compare ->
-	// iy -- which was the design's critical path at -1.099 ns, 340 of the 400
-	// violating paths ending on iy. S_FINDROW steps iy by one each iteration,
-	// so yacc holds iy * zyt_r exactly by adding zyt_r per step, and
-	// (yacc >> 3) is bit-identical to the product it replaces.
+	// Origin of sub-tile row iy. One expression for both paths: at zoom 0 the
+	// zoom term is 128 and (iy * 128) >> 3 is iy * 16.
+	// yacc accumulates iy * zyt_r (S_FINDROW steps iy by one) instead of
+	// multiplying, to keep a multiplier out of S_FINDROW's loop.
 	logic [12:0] yacc;
 	wire signed [11:0] row_origin = 12'(sy) + 12'(yacc >> 3);
-	// Drawn height, which is where the two paths DIVERGE: the zoom path scales
-	// by the next larger integer step, making a nominally full-size sprite 17
-	// pixels tall rather than 16. MAME keeps a separate non-zoomed path for
-	// exactly this reason, so this one does too.
+	// The zoom path scales by the next larger integer step, so a nominally
+	// full-size sprite drawn through it is 17 pixels tall. MAME keeps a
+	// separate non-zoomed path; so does this.
 	wire [7:0] dst_h = nonzoom ? 8'd16 : dsty_r;
 
 	wire signed [11:0] line12 = 12'({3'd0, cur_line});
 
-	// EVERY OPERAND OF THIS TEST IS EXPLICITLY SIGNED, AND WIDE ENOUGH NOT TO
-	// WRAP. Written as `line12 < (row_origin + 12'(dst_h))`, the unsigned
-	// dst_h made the addition and the comparison unsigned: a sub-tile row
-	// lying entirely ABOVE the screen has a negative end, which wrapped to
-	// ~4092 and made row_hit true on every scanline. S_FINDROW then stopped
-	// at that row for the whole sprite and drew its tiles on every line --
-	// the same tiles repeated down the screen, on tall sprites only, and only
-	// while part of one was off the top. 13 bits so the sum cannot overflow.
+	// Every operand signed and 13 bits wide. With an unsigned dst_h the
+	// compare goes unsigned, and a row ending above the screen (negative end)
+	// wraps and hits every scanline.
 	wire signed [12:0] row_top = 13'(row_origin);
 	wire signed [12:0] row_end = row_top + $signed({5'd0, dst_h});
 	wire signed [12:0] line13  = 13'(line12);
 	wire row_hit = (line13 >= row_top) && (line13 < row_end);
 
 	// ---- code index ----
-	// MAME increments the tile code in LOOP order while positioning by the
-	// loop variable, so with flip the code that lands at a given screen
-	// position is counted from the far end. Iteration number, not position.
-	// ny is fixed once S_FINDROW has chosen the row, so it is REGISTERED in
-	// S_ROWCALC: leaving it inline put iy -> subtract -> multiply -> adds ->
-	// tile_no_r on the critical path at -0.305 ns. nx still varies per
-	// sub-tile and stays combinational.
+	// MAME increments the tile code in loop order and positions by the loop
+	// variable, so with flip the code is counted from the far end: iteration
+	// number, not position. ny is fixed once S_FINDROW has chosen the row and
+	// is registered in S_ROWCALC for timing; nx varies per sub-tile.
 	logic [4:0] ny_r;
 	wire [4:0] nx = flipx ? (xnum - 5'd1 - ix) : ix;
 	wire [9:0] code_index = {5'd0, ny_r} * {5'd0, xnum} + {5'd0, nx};
 
-	// FG-3 replaces the top two code bits with a 4-bit bank looked up in the
-	// buffered tilebank register (spr_tile_cb): code = (code & 0x3fff) +
-	// lookup * 0x4000.
+	// FG-3: code = (code & 0x3fff) + lookup * 0x4000, the lookup being a
+	// 4-bit field of the buffered tilebank register (spr_tile_cb).
 	wire [1:0]  bank_sel = base_code[15:14];
 	wire [3:0]  bank_val = tilebank[16 + 4*bank_sel +: 4];
-	// The board-dependent base -- including FG-3's variable bank select into
-	// tilebank -- depends only on base_code, which is fixed for the whole
-	// sprite. Registered in S_ROWCALC so the per-sub-tile path is the code
-	// multiply and ONE add, not a mux and two.
+	// Depends only on base_code, fixed per sprite. Registered in S_ROWCALC so
+	// the per-sub-tile path is the code multiply and one add.
 	logic [17:0] code_base_r;
 	wire [17:0] tile_no = code_base_r + {8'd0, code_index};
 
-	logic [12:0] xoff;        // ix * zxt_r, accumulated -- see row_origin
+	logic [12:0] xoff;        // ix * zxt_r, accumulated like yacc
 	logic [17:0] tile_no_r;   // tile_no, registered in S_TILE
 
 	// ---- prefetch of sub-tile ix+1 ----
@@ -216,11 +150,10 @@ module sprite_line_engine (
 
 	// Row within the tile, after the tile's own flip-Y.
 	wire [3:0] row_f = flipy ? (4'd15 - src_row) : src_row;
-	// 16x16x4: 128 bytes per tile, 8 bytes per row -- one granule, no second fetch.
-	// tile_no_r, not tile_no: the code_index multiply is done a state earlier,
-	// so S_REQ's path into gfx_addr is two adds rather than a multiply-add.
+	// 128 bytes per tile, 8 per row. tile_no_r, not tile_no: the code_index
+	// multiply is done a state earlier.
 	wire [25:0] row_addr = gfx_base + {tile_no_r, 7'd0} + {row_f, 3'd0};
-	// the same row of the next sub-tile: row_f is per sprite per line
+	// Same row of the next sub-tile: row_f is per sprite per line.
 	wire [25:0] row_addr_next = gfx_base + {tile_no_next_r, 7'd0} + {row_f, 3'd0};
 
 	// ---- pixel extraction, 4bpp packed, MSB nibble first ----
@@ -257,8 +190,8 @@ module sprite_line_engine (
 			lb_we   <= 1'b0;
 			ovr_ev  <= 1'b0;
 
-			// The prefetch response lands here whatever state the engine is
-			// in, EXCEPT S_WAIT and S_DRAIN, which consume it themselves.
+			// The prefetch response lands here in every state except S_WAIT
+			// and S_DRAIN, which consume it themselves.
 			if (pf_pending && gfx_valid && st != S_WAIT && st != S_DRAIN) begin
 				gfx_row_next <= gfx_data;
 				pf_pending   <= 1'b0;
@@ -266,10 +199,7 @@ module sprite_line_engine (
 			end
 
 			// ---- hard resync, checked before anything else ----
-			// An outstanding request is drained rather than abandoned: the
-			// transport will deliver its response regardless, and a later
-			// request would otherwise collect it and render the wrong tile.
-			// A prefetch in flight is such a request.
+			// A prefetch in flight is an outstanding request: drain it.
 			if (line_tick) begin
 				if (st != S_IDLE) ovr_ev <= (st != S_NEXT) && (st != S_SCAN);
 				pf_valid <= 1'b0;
@@ -322,8 +252,6 @@ module sprite_line_engine (
 					colour    <= w2[5:0];
 					base_code <= w3;
 					nonzoom   <= (w2[15:8] == 8'd0);
-					// w2 was latched in S_REC_W, so the tables are settled and
-					// this costs nothing. See the zoom-lookup timing note.
 					zxt_r <= zxt; zyt_r <= zyt;
 					dstx_r <= dstx; dsty_r <= dsty;
 					stepx_r <= stepx; stepy_r <= stepy;
@@ -332,15 +260,12 @@ module sprite_line_engine (
 					st        <= S_FINDROW;
 				end
 
-				// Exact per-sub-tile-row test, re-done here because the list's
-				// test was a coarse bounding box and may have let a miss
-				// through. At most 16 iterations.
+				// Exact per-sub-tile-row test; the list's test was a coarse
+				// bounding box. At most 16 iterations.
 				S_FINDROW: begin
 					if (row_hit) begin
-						// Subtract only. The multiply that turns this into
-						// src_row moves to S_ROWCALC, so the two multipliers
-						// are one per cycle instead of chained -- see the
-						// zoom-lookup timing note above.
+						// Subtract only. The multiply is in S_ROWCALC so the
+						// two multipliers are not chained in one cycle.
 						row_delta <= 8'(line12 - row_origin);
 						ix        <= 5'd0;
 						xoff      <= 13'd0;
@@ -353,16 +278,13 @@ module sprite_line_engine (
 					end
 				end
 
-				// One cycle, once per sprite per line -- not per pixel -- so
-				// the cost is invisible against the per-line budget.
+				// Once per sprite per line, not per pixel.
 				S_ROWCALC: begin
 					src_row <= nonzoom
 					         ? row_delta[3:0]
 					         : 4'((({10'd0, row_delta} * {8'd0, stepy_r}) >> 16));
 					dst_w   <= nonzoom ? 8'd16 : dstx_r;
-					// Both fixed for the rest of this sprite -- see their
-					// declarations. Computed here in parallel with src_row,
-					// not chained behind it.
+					// Fixed for the rest of this sprite; see their declarations.
 					ny_r        <= flipy ? (ynum - 5'd1 - iy) : iy;
 					code_base_r <= (board == BOARD_FG3)
 					             ? ({4'd0, base_code[13:0]} + {bank_val, 14'd0})
@@ -371,17 +293,13 @@ module sprite_line_engine (
 				end
 
 				S_TILE: begin
-					// xoff accumulates ix * zxt_r for the same reason yacc
-					// accumulates iy * zyt_r; tile_no is registered here so
-					// S_REQ's address add does not also carry the code
-					// multiply.
 					tile_x0        <= 12'(sx) + 12'(xoff >> 3);
 					tile_no_r      <= tile_no;
 					tile_no_next_r <= tile_no_next;
 					dx             <= 8'd0;
 					xacc           <= 20'd0;
-					// The row for THIS sub-tile: prefetched already, still
-					// in flight, or not requested (the sprite's first tile).
+					// This sub-tile's row: prefetched, in flight, or not yet
+					// requested (the sprite's first tile).
 					if (pf_valid) begin
 						gfx_row  <= gfx_row_next;
 						pf_valid <= 1'b0;
@@ -399,8 +317,8 @@ module sprite_line_engine (
 					st       <= S_WAIT;
 				end
 
-				// Waits for either the direct request or an in-flight
-				// prefetch: whichever it was, the response is this tile's row.
+				// Direct request or in-flight prefetch: either way the
+				// response is this tile's row.
 				S_WAIT: begin
 					if (gfx_valid) begin
 						gfx_row    <= gfx_data;
@@ -410,14 +328,13 @@ module sprite_line_engine (
 				end
 
 				S_PIX: begin
-					// First pixel: start the next sub-tile's fetch, so it
-					// overlaps the 16 pixels about to be drawn.
+					// First pixel: start the next sub-tile's fetch.
 					if (dx == 8'd0 && has_next && !pf_pending && !pf_valid) begin
 						gfx_req    <= 1'b1;
 						gfx_addr   <= {row_addr_next[25:3], 3'd0};
 						pf_pending <= 1'b1;
 					end
-					// Pen 15 is transparent for sprites (fuukispr's transpen).
+					// Pen 15 is transparent for sprites (fuukispr transpen).
 					if (on_screen && (pen != TRANS_PEN)) begin
 						lb_we   <= 1'b1;
 						lb_x    <= 9'(out_x);

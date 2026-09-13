@@ -5,7 +5,7 @@
 //
 //   sel 0   0x8C0000   16 words of scroll / offset / raster / flip
 //   sel 1   0x8D0000   "unknown, flipscreen related" (MAME's words)
-//   sel 2   0x8E0000   priority -- the layer ORDER
+//   sel 2   0x8E0000   priority: the layer order
 //
 // Register map (fuukitmap.cpp's own comment block):
 //
@@ -16,12 +16,9 @@
 //   08.w  Layer 2 Scroll Y            bit 6  Layer 2 VRAM buffer select
 //   0a.w  Layer 2 Scroll X
 //
-// EVERYTHING HERE IS LIVE. The scroll outputs are combinational from the
-// register file so that a mid-frame CPU write takes effect on the very next
-// scanline -- that is the entire point of the level-5 raster interrupt, and
-// latching these once per frame would silently discard the effects MAME's own
-// to-do list says it renders imperfectly (docs/ROADMAP.md, "Raster effects are
-// a first-class requirement").
+// The scroll outputs are combinational from the register file, so a mid-frame
+// CPU write takes effect on the next scanline. The level-5 raster interrupt
+// depends on that; do not latch them per frame.
 
 module vregs (
 	input  logic clk,
@@ -95,52 +92,31 @@ module vregs (
 	assign flip          = regs[4'hF][0];    // 0x1e.w bit 0
 	assign layer2_buffer = regs[4'hF][6];    // 0x1e.w bit 6
 
-	// ---- raster line: the LOW 8 BITS of regs[0x1c], as MAME ----
-	// MAME's fuukitmap.cpp hands every changed value to
-	// screen::time_until_pos(), which reduces it modulo the screen HEIGHT --
-	// and both boards declare a 256-line screen (fuukifg2.cpp set_size(320,
-	// 256); fuukifg3.cpp set_size(512, 256)). So the register is effectively
-	// 8 bits wide: 0..255 fire on that line, and gogomile's parked 0xFFFE
-	// fires on line 254, in vblank, every frame. The game needs that IRQ5
-	// each frame even with its raster chain parked -- its main loop spins on
-	// `btst #1,$403446 / beq` and only the level-5 handler sets the bit -- so
-	// on MiSTer the first RTL, which let 0xFFFE fire nothing, hung within
-	// seconds of the attract.
+	// ---- raster line: the low 8 bits of regs[0x1c], as MAME ----
+	// fuukitmap.cpp hands the value to screen::time_until_pos(), which reduces
+	// it modulo the screen height, 256 on both boards (fuukifg2.cpp
+	// set_size(320, 256); fuukifg3.cpp set_size(512, 256)). So gogomile's
+	// parked 0xFFFE fires on line 254, in vblank, every frame, and the game
+	// needs that: its main loop spins on `btst #1,$403446 / beq` and only the
+	// level-5 handler sets the bit. Do not reduce modulo this core's 262-line
+	// frame; that puts 0xFFFE on line 34, mid-picture.
 	//
-	// The intermediate version reduced modulo THIS core's 262-line frame,
-	// which put 0xFFFE on line 34, in the middle of the picture: the handler
-	// then ran mid-frame instead of in vblank. 262 is the RTL's own vertical
-	// total (the 28.64 MHz crystal, see video_timing.sv); the value the game
-	// was written against is the one MAME reduces by.
-	//
-	// The COMPARATOR stays 9 bits (video_timing.sv): an 8-bit compare against
-	// a 9-bit line counter aliases lines 256-261 onto 0-5 and fires five
-	// spurious interrupts a frame -- the captured gogomile chain 1..240 showed
-	// exactly that. Zero-extending the 8-bit value keeps lines 256-261 out of
-	// reach.
+	// Zero-extended to 9 bits so video_timing.sv's comparator cannot alias
+	// lines 256-261 onto 0-5.
 	always_ff @(posedge clk or posedge reset) begin
 		if (reset) raster_line <= 9'd0;
 		else       raster_line <= {1'b0, regs[4'hE][7:0]};
 	end
 
-	// =====================================================================
-	// Scroll offsets
-	//
-	// COPIED FROM fuukitmap.cpp::prepare() INCLUDING ITS OPERATORS, and that
-	// matters more than usual here because the expression looks wrong:
+	// ---- scroll offsets ----
+	// From fuukitmap.cpp::prepare(), operators included:
 	//
 	//     scrolly_offs = m_vregs[0xc/2] - (m_flip ? m_xoffs_flip : m_xoffs);
 	//     scrollx_offs = m_vregs[0xe/2] - (m_flip ? m_yoffs_flip : m_yoffs);
 	//
-	// The Y offset register is combined with the X constant and vice versa.
-	// That is not a transcription slip on this side: it is what the driver
-	// does, and the set_xoffs()/set_yoffs() values are what make the picture
-	// land correctly given that pairing. "Fixing" the apparent swap would
-	// move every layer by hundreds of pixels.
-	//
-	// LESSONS_LEARNED, "Copy a driver's register expression including its
-	// operators": a polarity or pairing error passes review because the names
-	// look right. Carry it across and comment it.
+	// The Y register pairs with the X constant and vice versa. That is what the
+	// driver does and the set_xoffs()/set_yoffs() values assume it. Do not
+	// "fix" the swap: it moves every layer by hundreds of pixels.
 	//
 	// Per-board constants, from each machine config:
 	//                     FG-2                        FG-3
@@ -149,10 +125,8 @@ module vregs (
 	//   set_layer2_xoffs  0x10                        (not set -> 0)
 	//   set_layer2_yoffs  (commented out -> 0)        (not set -> 0)
 	//
-	// Only the FLIPPED y offset and layer 2's x offset differ between boards.
-	// Note both drivers say the scroll values are wrong when flip is on, so
-	// the flip constants are inherited uncertainty, not verified behaviour.
-	// =====================================================================
+	// Both drivers say the scroll values are wrong with flip on, so the flip
+	// constants are unverified.
 	localparam logic [15:0] XOFFS       = 16'h01F3;
 	localparam logic [15:0] XOFFS_FLIP  = 16'h0103;
 	localparam logic [15:0] YOFFS       = 16'h03F6;
@@ -162,35 +136,26 @@ module vregs (
 	wire [15:0] yoffs_flip = (board == BOARD_FG3) ? YOFFS_FLIP_FG3 : YOFFS_FLIP_FG2;
 	wire [15:0] layer2_xoffs = (board == BOARD_FG3) ? 16'h0000 : 16'h0010;
 
-	// Deliberately paired the way the driver pairs them (see above).
+	// Paired as the driver pairs them (above).
 	wire [15:0] scrolly_offs = regs[4'h6] - (flip ? XOFFS_FLIP : XOFFS);
 	wire [15:0] scrollx_offs = regs[4'h7] - (flip ? yoffs_flip : YOFFS);
 
-	// All of this is 16-bit wrapping arithmetic in MAME (u16), so it must wrap
-	// here too -- the tilemap wraps on its own 64x32 geometry downstream.
+	// 16-bit wrapping arithmetic, as MAME's u16. The tilemap wraps on its own
+	// 64x32 geometry downstream.
 	assign layer0_scrolly = regs[4'h0] + scrolly_offs;
 	assign layer0_scrollx = regs[4'h1] + scrollx_offs;
 	assign layer1_scrolly = regs[4'h2] + scrolly_offs;
 	assign layer1_scrollx = regs[4'h3] + scrollx_offs;
 
-	// Layer 2 does NOT get the global offsets -- only its own constants.
+	// Layer 2 does not get the global offsets, only its own constants.
 	assign layer2_scrolly = regs[4'h4];
 	assign layer2_scrollx = regs[4'h5] + layer2_xoffs;
 
-	// =====================================================================
-	// Layer order
-	//
-	// "It's not independent bits causing layers to switch, that wouldn't make
-	// sense with 3 bits" -- fuukitmap.cpp. The low 4 bits of the priority
-	// register index a table of orderings.
-	//
-	// MAME indexes a SIX-entry table with `m_priority & 0x0f`, so values 6-15
-	// read out of bounds -- undefined in C++ and unknown on the real ASIC.
-	// This picks a defined behaviour rather than inheriting whatever MAME's
-	// stack happens to contain: values 6-15 fall through to entry 0. Flagged
-	// in docs/ROADMAP.md open item 5; if a game is ever seen writing one of
-	// those values, this is the line to revisit.
-	// =====================================================================
+	// ---- layer order ----
+	// The low 4 bits of the priority register index a table of orderings
+	// (fuukitmap.cpp: "not independent bits causing layers to switch"). MAME
+	// indexes a six-entry table with `& 0x0f`, so 6-15 read out of bounds
+	// there; here they fall through to entry 0 (docs/ROADMAP.md open item 5).
 	always_comb begin
 		case (priority_reg[3:0])
 			4'd0:    {tmap_front, tmap_middle, tmap_back} = {2'd0, 2'd1, 2'd2};

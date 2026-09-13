@@ -1,29 +1,25 @@
-// YMF278B (OPL4) top level -- docs/phase2_ymf278b.md.
+// YMF278B (OPL4) top level.
 //
-// Full bus protocol, status/ID/BUSY/LD, both timers with IRQ (the Z80
-// driver's sequencer heartbeat), and the 24-channel PCM wavetable engine
-// (opl4_pcm.sv). FM register writes are accepted here (timers/NEW flags
-// live in opl4_regs.sv) and the synthesis itself is done OUTSIDE this
-// module: the Fuuki core drives an OPL3 core from the same ports 0-3 --
-// which are the YMF262 bus, exactly what the real part has inside it --
-// and hands the result back on fm_l/fm_r for the DO2 mix below. Leave
-// fm_l/fm_r at zero and this behaves as it did before, FM term and all.
+// Bus protocol, status/ID/BUSY/LD, both timers with IRQ, and the
+// 24-channel PCM wavetable engine (opl4_pcm.sv). FM register writes are
+// accepted (timers and NEW flags in opl4_regs.sv) but FM synthesis is
+// outside: the core drives an OPL3 from ports 0-3, the YMF262 bus, and
+// returns the result on fm_l/fm_r for the DO2 mix. fm_l/fm_r at zero means
+// no FM.
 //
-// Clocking: one Bresenham enable reproduces the 33.8688 MHz chip clock
-// exactly from the 945/11 MHz clk_sys (33.8688M * 11 / 945M = 8624/21875,
-// zero error); the 44.1 kHz output-sample tick (/768) and the 49.515 kHz
-// FM-sample tick (/684, the timer time base) both divide it, keeping
-// audio and timers phase-locked like the real part.
+// Clocking: a Bresenham enable gives the 33.8688 MHz chip clock exactly
+// from the 945/11 MHz clk (33.8688M * 11 / 945M = 8624/21875). The
+// 44.1 kHz sample tick (/768) and the 49.515 kHz FM-sample tick (/684, the
+// timer time base) both divide it, keeping audio and timers phase-locked.
 //
-// Output: the reference's DO2 mix applies s_mix_scale attenuators (PCM
-// regs F8/F9) to the FM and PCM sums as (x * scale) >> 11. The PCM
-// engine sums both of its output pairs (opl4_pcm.sv's header explains
-// why), so the PCM attenuator here scales that combined sum.
+// Output: ymfm's DO2 mix applies s_mix_scale attenuators (PCM regs F8/F9)
+// to the FM and PCM sums as (x * scale) >> 11. The PCM engine sums both of
+// its output pairs (opl4_pcm.sv), so the PCM attenuator scales that sum.
 module opl4 (
 	input  logic        clk,
 	input  logic        reset,
 
-	// Z80-facing bus (from sound_cpu's I/O decode)
+	// Z80-facing bus, levels held for the whole I/O cycle
 	input  logic        cs,
 	input  logic        rd,
 	input  logic        wr,
@@ -38,32 +34,24 @@ module opl4 (
 	input  logic        mem_rd_valid,
 	input  logic [7:0] mem_rd_data,
 
-	// FM sample from the OPL3 core outside, already at PCM scale. Zero if
-	// no FM synthesis is attached.
+	// FM sample from the OPL3 outside, already at PCM scale
 	input  logic signed [15:0] fm_l,
 	input  logic signed [15:0] fm_r,
 
-	// Mute either half at runtime, to hear what each contributes and what
-	// is missing without a rebuild per experiment.
+	// Runtime mutes.
 	input  logic        en_fm,
 	input  logic        en_pcm,
 
 	output logic signed [15:0] snd_l,
 	output logic signed [15:0] snd_r,
 
-	// FM-usage instrumentation. Milestone 2 (FM synthesis) is only worth
-	// building if these games actually drive the FM half: the PCM engine
-	// alone already produces music, voices and effects on both s1945 and
-	// tengai. dbg_fm_keyon is the decisive one -- an FM channel that is
-	// never keyed on can never be heard, whatever else gets programmed.
-	// FM/PCM selection is ymfm's own: bit 9 of the register address
+	// Probes. FM/PCM selection is ymfm's: bit 9 of the register address
 	// (ymf278b::write_data vs write_data_pcm).
 	output logic        dbg_fm_wr,      // any write to an FM register
 	output logic        dbg_fm_keyon,   // FM key-on (regs B0-B8, bit 5)
-	output logic        dbg_pcm_keyon,  // PCM key-on, for comparison
-	// The two things that can silence PCM without stopping the driver:
-	// NEW2, which gates EVERY pcm_keyon_stb in opl4_regs, and the F9
-	// attenuator pair, whose value 7 is mix_scale 0 -- silence.
+	output logic        dbg_pcm_keyon,
+	// The two things that silence PCM without stopping the driver: NEW2
+	// gates every pcm_keyon_stb in opl4_regs; F9 value 7 is mix_scale 0.
 	output logic        dbg_new2,
 	output logic [5:0]  dbg_mix_pcm
 );
@@ -84,13 +72,9 @@ module opl4 (
 		end
 	end
 
-	// PCM engine enable: every other clk_sys cycle. opl4_pcm used to advance
-	// on every edge, which made its envelope rate chain the design's worst
-	// timing family with nothing legitimate to constrain -- unlike jt12's
-	// blocks it had no clock enable, so a multicycle would have been a lie.
-	// It has the cycles to spare: measured 553 busy cycles of the 1948
-	// between sample ticks with all 24 channels playing, so halving the rate
-	// takes a pass to about 1106 and still finishes with margin.
+	// PCM engine enable, clk/2, so build/Fuuki.sdc can state its internal
+	// paths as a multicycle. A pass with all 24 channels playing measured
+	// 553 clk of the 1948 between sample ticks, so about 1106 at half rate.
 	logic pcm_cen;
 	always_ff @(posedge clk or posedge reset) begin
 		if (reset) pcm_cen <= 1'b0;
@@ -118,10 +102,8 @@ module opl4 (
 	end
 
 	// ---- bus strobe shaping ----
-	// sound_cpu's ym_rd/ym_wr are LEVELS held for the whole Z80 I/O cycle
-	// (many clk_sys cycles at the Z80's 4 MHz enable); the register block
-	// needs one-cycle strobes or a data-port read would autoincrement
-	// once per clock instead of once per access.
+	// The register block needs one-cycle strobes, or a data-port read would
+	// autoincrement once per clock instead of once per access.
 	logic rd_d, wr_d;
 	always_ff @(posedge clk or posedge reset) begin
 		if (reset) {rd_d, wr_d} <= '0;
@@ -153,19 +135,17 @@ module opl4 (
 		.mem_rd_valid(rw_mem_valid), .mem_rd_data(mem_rd_data)
 	);
 
-	// wave-table-header bank bits live in PCM reg 02; the engine reads
-	// them through its own dedicated wire to avoid stealing the read port
+	// Wavetable bank bits (PCM reg 02[4:2]) are snooped from bus writes:
+	// opl4_regs exposes its register file only through the engine's read
+	// port.
 	logic [2:0] wave_bank;
 	logic reg02_sel;
 	logic [9:0] addr_shadow;
-	// (peek via the regfile read port during idle would race the engine's
-	// own sequencing; opl4_regs exposes the register file only through
-	// that port, so the bank is snooped from writes instead)
 	always_ff @(posedge clk or posedge reset) begin
 		if (reset) wave_bank <= 3'd0;
 		else if (wr_stb && addr == 3'd5 && new2 && reg02_sel) wave_bank <= din[4:2];
 	end
-	// address-register shadow purely for the bank snoop
+	// address-register shadow for the snoops and probes below
 	always_ff @(posedge clk or posedge reset) begin
 		if (reset) addr_shadow <= 10'd0;
 		else if (wr_stb) begin
@@ -179,10 +159,9 @@ module opl4 (
 	end
 	assign reg02_sel = addr_shadow[9] && (addr_shadow[7:0] == 8'h02);
 
-	// ---- FM-usage instrumentation (see the port comments) ----
-	// FM data ports are offsets 1 and 3; offset 5 is the PCM data port.
-	// addr_shadow[9] is set only by write_address_pcm (offset 4), so a
-	// clear bit 9 means the pending register is an FM one.
+	// ---- FM probes ----
+	// FM data ports are offsets 1 and 3. addr_shadow[9] is set only by a
+	// write to offset 4, so a clear bit 9 means an FM register.
 	wire fm_data_wr = wr_stb && ((addr == 3'd1) || (addr == 3'd3)) && !addr_shadow[9];
 	assign dbg_fm_wr    = fm_data_wr;
 	assign dbg_fm_keyon = fm_data_wr && (addr_shadow[7:0] >= 8'hB0)
@@ -206,31 +185,14 @@ module opl4 (
 		.pcm_l(pcm_l), .pcm_r(pcm_r)
 	);
 
-	// ---- wave ROM read arbitration (engine wins; one in flight) ----
+	// ---- wave ROM read arbitration (one in flight) ----
 	logic owner_rw;   // 0 = pcm engine owns the in-flight read, 1 = reg window
-	// MEMORY ARBITER -- REQUESTS ARE LATCHED, NOT SAMPLED WHEN IDLE.
-	//
-	// Both clients PULSE their request for one cycle and then wait for a
-	// valid: opl4_pcm clears mem_rd_req every cycle, and opl4_regs sets
-	// mem_pending and pulses once, taking the next request only when
-	// !mem_pending. Sampling those pulses only in `!busy_mem` therefore
-	// DROPS any request raised while the other client's fetch is in flight,
-	// and the loser then waits for a valid that can never come.
-	//
-	// For the register side that is fatal and permanent: mem_pending sticks
-	// at 1, so every later header or register read is dead too. It fires
-	// exactly when a one-shot sound effect starts -- a new wave selection
-	// loads its wavetable header at the moment the PCM engine is busiest --
-	// which is why on Asura Buster music played and single-shot effects and
-	// the coin chime never did, and why once it happened nothing recovered
-	// until a reset.
-	//
-	// So each side gets a pending flag with its address latched, and a
-	// request arriving in the same cycle one is consumed re-arms it (NBA
-	// last-assignment-wins). The register side is served FIRST when both
-	// are waiting: its reads are rare -- header loads and register reads,
-	// not a sample stream -- so it costs the PCM path almost nothing, and
-	// it makes starvation impossible rather than merely unlikely.
+	// Both clients pulse their request for one cycle and then wait for a
+	// valid, so requests are latched into pending flags, not sampled when
+	// idle: a pulse raised during the other client's fetch would otherwise
+	// be dropped, and opl4_regs's mem_pending would stick forever. The
+	// register side is served first when both wait: its reads are rare, so
+	// the PCM stream loses nothing and cannot starve it.
 	logic busy_mem;
 	logic        pcm_pend, rw_pend;
 	logic [21:0] pcm_addr_q, rw_addr_q;
@@ -265,8 +227,8 @@ module opl4 (
 				busy_mem <= 1'b0;
 			end
 
-			// AFTER the grant, so a pulse arriving on the cycle its pending
-			// flag is consumed is kept rather than lost.
+			// After the grant, so a pulse on the cycle its pending flag is
+			// consumed is kept.
 			if (pcm_mem_req) begin
 				pcm_pend   <= 1'b1;
 				pcm_addr_q <= pcm_mem_addr;
@@ -280,9 +242,8 @@ module opl4 (
 	assign pcm_mem_valid = busy_mem && !owner_rw && mem_rd_valid;
 	assign rw_mem_valid  = busy_mem &&  owner_rw && mem_rd_valid;
 
-	// ---- output mix (the reference's DO2 attenuators) ----
-	// s_mix_scale from the reference; F8 (FM) and F9 (PCM) both reset to 0,
-	// which is full scale.
+	// ---- output mix (DO2 attenuators) ----
+	// ymfm s_mix_scale; F8 (FM) and F9 (PCM) reset to 0, full scale.
 	function automatic [11:0] mix_scale(input [2:0] v);
 		case (v)
 			3'd0: mix_scale = 12'h7FA; 3'd1: mix_scale = 12'h5A4;
@@ -307,21 +268,15 @@ module opl4 (
 		end
 	end
 
-	// Two attenuated terms are summed, so the result can exceed 16 bits
-	// where one term alone could not. It saturates rather than wrapping: a
-	// wrap is a full-scale discontinuity, which is the loudest possible way
-	// to be wrong.
 	assign dbg_new2    = new2;
 	assign dbg_mix_pcm = mix_pcm;
 
+	// The two attenuated terms can sum past 16 bits: saturate, never wrap.
 	logic signed [27:0] pmix_l, pmix_r, fmix_l, fmix_r;
 	function automatic signed [15:0] sat16(input signed [28:0] v);
 		if      (v >  29'sd32767) sat16 =  16'sd32767;
-		// 16'sh8000, not -16'sd32768: 32768 does not fit a 16-bit SIGNED
-		// literal, so that form overflows it (Quartus warning 10259). It
-		// happens to give the right bits -- 0x8000 is -32768 and negating it
-		// wraps to itself -- but it is ill-formed, and a saturation limit is
-		// the last place to leave something that only works by accident.
+		// 16'sh8000, not -16'sd32768: 32768 overflows a 16-bit signed
+		// literal (Quartus warning 10259).
 		else if (v < -29'sd32768) sat16 = 16'sh8000;
 		else                      sat16 = 16'(v);
 	endfunction

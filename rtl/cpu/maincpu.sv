@@ -1,62 +1,40 @@
 // Fuuki main CPU: TG68KdotC_Kernel plus address decode and bus sequencing.
 //
-// ONE instance serves both boards. The kernel's CPU port selects the core
-// mode at runtime, so the .mra mod byte picks the CPU:
+// One instance serves both boards; the kernel's CPU port selects the mode
+// at runtime from the .mra mod byte:
 //
 //     FG-2   M68000    @ 16 MHz    CPU = 2'b00
 //     FG-3   M68EC020  @ 20 MHz    CPU = 2'b11
 //
-// See rtl/cpu/tg68k/PROVENANCE.md for why the kernel is instantiated
-// DIRECTLY rather than through TG68K.vhd. Short version: TG68K.vhd is an
-// async-68000-bus adapter full of falling-edge registers that assumes CLK is
-// the CPU clock, and rate-limiting it means fighting its design and then
-// writing multicycle constraints that are dangerous enough to fail only on
-// silicon. The kernel is all rising-edge and has clkena_in for exactly this.
+// The kernel is instantiated directly, not through TG68K.vhd (see
+// rtl/cpu/tg68k/PROVENANCE.md). Consequences:
+//   * busstate: 00 fetch code, 10 read data, 11 write data, 01 no access.
+//   * data_in and data_write are separate ports; no tri-state.
+//   * No DTACK. The CPU is stalled purely by holding clkena low.
+//   * IPL_autovector is tied high.
 //
-// Consequences of driving the kernel directly, all of which DELETE code:
-//   * busstate says what the CPU wants -- 00 fetch code, 10 read data,
-//     11 write data, 01 no memory access (the CPU free-runs).
-//   * data_in and data_write are SEPARATE ports. No bidirectional DATA net,
-//     so no tri-state, and none of the Quartus tri-state-resolution trouble
-//     documented in the vendored core's provenance.
-//   * There is no DTACK. The CPU is stalled purely by holding clkena low.
-//   * IPL_autovector is simply tied high; no VPA/E-clock games.
+// The data bus is 16 bits in both modes, so FG-3's 32-bit program ROM is
+// read as 16-bit words.
 //
-// The data bus is 16 bits wide in BOTH modes, so FG-3's 32-bit program ROM
-// is read as 16-bit words and the memory path does not change shape between
-// boards.
-//
-// ---------------------------------------------------------------------------
-// IPL IS INVERTED INSIDE THE KERNEL (`IPL_nr <= NOT IPL`), read from source,
-// not inferred from real-68000 pin naming. Requesting level 3 means driving
-// IPL = 3'b100. This module therefore drives `ipl = ~level`, and level 0
-// (no interrupt) becomes 3'b111.
-// ---------------------------------------------------------------------------
+// IPL is inverted inside the kernel (`IPL_nr <= NOT IPL`): level 3 is
+// IPL = 3'b100, so this module drives `ipl = ~level`.
 
 module maincpu (
 	input  logic clk,
 	input  logic reset,
 
-	// Board select: 0 = FG-2 (68000), 1 = FG-3 (68EC020)
 	input  logic board,   // BOARD_FG2 / BOARD_FG3
 
 	// Program ROM, via a req/valid transport (SDRAM).
-	//
-	// rom_req is a ONE-CYCLE PULSE, not a held level. That is the SDRAM
-	// bridge's contract, and getting it wrong does not hang -- it silently
-	// re-issues the same read, burning bandwidth and pulsing valid several
-	// times for one CPU access. LESSONS_LEARNED, "Deassert a request
-	// combinationally on valid" and "Hold every request until acknowledged",
-	// are the two halves of this: different transports want different
-	// shapes, so the transport's own state machine is the authority. Check
-	// it rather than assuming this one is still right.
+	// rom_req is a one-cycle pulse, the SDRAM bridge's contract. A held
+	// level does not hang; it re-issues the read and pulses valid repeatedly.
 	output logic         rom_req,
 	output logic [20:0]  rom_addr,     // word address, up to 2 MB (FG-3)
 	input  logic         rom_valid,
 	input  logic [15:0]  rom_data,
 
 	// Work RAM: FG-2 0x400000-0x40FFFF, FG-3 also 0x410000-0x41FFFF.
-	// One 128 KB array serves both; FG-2 simply never touches the top half.
+	// One 128 KB array serves both; FG-2 never touches the top half.
 	output logic [16:0]  workram_addr,
 	output logic         workram_wel, workram_weh,
 	output logic [15:0]  workram_wdata,
@@ -104,23 +82,22 @@ module maincpu (
 	input  logic [15:0]  dsw2_in,      // FG-3 only
 
 	// FG-2 only: sound command latch at 0x8A0001. The write pulses the
-	// Z80's NMI. Decoded for byte, word AND long writes -- see the decode.
+	// Z80's NMI. Decoded for byte, word and long writes.
 	output logic [7:0]   latch_data,
 	output logic         latch_write,
 
 	// FG-3 only: sprite tile bank, 0xA00000 (long).
 	output logic [31:0]  tilebank,
 
-	// Interrupt sources, all LEVELS held by the video timing, all matching
-	// MAME's HOLD_LINE.
+	// Interrupt sources: levels held by the video timing, MAME's HOLD_LINE.
 	input  logic         irq1_trig,    // scanline 248
 	input  logic         irq3_trig,    // vblank start
 	input  logic         irq5_trig,    // programmable raster line
 
 	input  logic         pause,
 
-	// Debug: the kernel's function code, so a trace can tell a program
-	// fetch (6) from a vector/data read (5) from an interrupt acknowledge (7).
+	// Debug: function code, so a trace can tell a program fetch (6) from a
+	// vector/data read (5) from an interrupt acknowledge (7).
 	output logic [2:0]   dbg_fc,
 	output logic [2:0]   dbg_irq_pending, // {irq5, irq3, irq1} pending
 	output logic         dbg_iack,        // interrupt-acknowledge access in progress
@@ -129,23 +106,12 @@ module maincpu (
 
 
 	localparam logic BOARD_FG2 = 1'b0, BOARD_FG3 = 1'b1;   // .mra mod byte bit 0
-	// =====================================================================
-	// CPU clock enable
-	//
-	// clk_sys is 14.318181...MHz x 6 = 945/11 MHz, the same as Psikyo's,
-	// because both cores run the same video timing (docs/ROADMAP.md,
-	// "Screen timing"). Both CPU rates land on that 1/11 MHz grid EXACTLY,
-	// so a Bresenham accumulator has zero frequency error and no integer
-	// divide is needed or wanted:
-	//
+	// ---- CPU clock enable ----
+	// clk_sys is 945/11 MHz. Both CPU rates sit on the 1/11 MHz grid exactly,
+	// so a Bresenham accumulator has zero frequency error:
 	//     FG-2  16 MHz = 176/11 MHz  -> 176/945
 	//     FG-3  20 MHz = 220/11 MHz  -> 220/945
-	//
-	// LESSONS_LEARNED, "Derive the clock-enable ratio exactly": the tempting
-	// integer divides are meaningfully wrong (/5 is 7.4% fast, /6 is 10.5%
-	// slow), and a wrong CPU rate is the kind of fault that looks like a
-	// game-logic bug for a week.
-	// =====================================================================
+	// Do not use an integer divide: /5 is 7.4% fast, /6 is 10.5% slow.
 	localparam int CE_DEN     = 945;
 	localparam int CE_NUM_FG2 = 176;   // 16 MHz
 	localparam int CE_NUM_FG3 = 220;   // 20 MHz
@@ -170,12 +136,9 @@ module maincpu (
 		end
 	end
 
-	// =====================================================================
-	// Kernel instance
-	// =====================================================================
-	// Declared ABOVE the instantiation that connects them: using a signal in
-	// a port connection before its declaration makes the tool create an
-	// implicit net and then reject the real declaration (vlog-2388).
+	// ---- kernel instance ----
+	// Declared before the instantiation: a port connection before the
+	// declaration creates an implicit net, then vlog-2388 on the real one.
 	logic [31:0] a32;
 	logic [15:0] cpu_din, cpu_dout;
 	logic [1:0]  busstate;
@@ -185,8 +148,8 @@ module maincpu (
 	logic        cpu_clkena;
 
 	TG68KdotC_Kernel #(
-		// All the 68020-only feature generics stay at 2 = "switchable with
-		// CPU", which is what makes one instance serve both boards.
+		// 68020-only feature generics at 2 = "switchable with CPU", so one
+		// instance serves both boards.
 		.SR_Read(2), .VBR_Stackframe(2), .extAddr_Mode(2),
 		.MUL_Mode(2), .DIV_Mode(2), .BitField(2),
 		.BarrelShifter(0), .MUL_Hardware(1)
@@ -211,16 +174,10 @@ module maincpu (
 		.regin_out(), .CACR_out(), .VBR_out()
 	);
 
-	// =====================================================================
-	// Address decode
-	//
-	// Every region is decoded on a RANGE, so word and long accesses land as
-	// well as byte ones. FG-3 reads its input and DIP ports as 16-bit values
-	// on a 32-bit bus and writes its sound latch through a 32-bit map with a
-	// byte mask; Psikyo lost real time to a sound latch that only decoded an
-	// exact byte address, so word and long writes vanished silently and the
-	// measured latch-write count was zero through real gameplay.
-	// =====================================================================
+	// ---- address decode ----
+	// Every region is decoded on a range, so word and long accesses land as
+	// well as byte ones: FG-3 reads its ports as 16-bit values on a 32-bit
+	// bus and writes the sound latch through a 32-bit map with a byte mask.
 	wire [23:0] addr24 = a32[23:0];
 
 	// ROM is 1 MB on FG-2, 2 MB on FG-3.
@@ -241,8 +198,8 @@ module maincpu (
 	wire is_dsw       = (addr24 >= 24'h880000) && (addr24 <= 24'h880003);
 	wire is_dsw2      =  (board == BOARD_FG3) && (addr24 >= 24'h890000) && (addr24 <= 24'h890003);
 
-	// FG-2 sound latch. MAME maps it at 0x8a0001 as a byte, reached by byte,
-	// word and long writes alike; decode the enclosing word.
+	// FG-2 sound latch: MAME maps a byte at 0x8a0001, reached by byte, word
+	// and long writes alike; decode the enclosing word.
 	wire is_latch     = (board == BOARD_FG2) && (addr24 >= 24'h8A0000) && (addr24 <= 24'h8A0003);
 
 	wire is_vregs     = (addr24 >= 24'h8C0000) && (addr24 <= 24'h8EFFFF);
@@ -250,13 +207,10 @@ module maincpu (
 	wire is_tilebank  =  (board == BOARD_FG3) && (addr24 >= 24'hA00000) && (addr24 <= 24'hA00003);
 
 	// FG-3's 0x508000-0x517FFF: MAME calls it "more tilemap, or linescroll?
-	// Seems to be empty all of the time". Decoded so accesses terminate
-	// rather than hanging the bus, but NOT backed by 64 KB of block RAM
-	// until something proves it is needed -- see docs/ROADMAP.md open item 7.
-	// Reads return zero.
+	// Seems to be empty all of the time". Decoded so accesses terminate, not
+	// backed by RAM; reads return zero. docs/ROADMAP.md open item 7.
 	wire is_unused_ram = (board == BOARD_FG3) && (addr24 >= 24'h508000) && (addr24 <= 24'h517FFF);
 
-	// Video-register sub-block, from the two address bits that separate them.
 	assign vregs_sel  = addr24[17:16];   // 0 = regs, 1 = unknown, 2 = priority
 	assign vregs_addr = addr24[5:1];
 
@@ -268,25 +222,16 @@ module maincpu (
 
 	assign rom_addr = addr24[21:1];
 
-	// =====================================================================
-	// Bus sequencing
+	// ---- bus sequencing ----
+	// acc_ready is a level, never a pulse: the CPU samples it once per
+	// cpu_ce, roughly every 4-5 clk, so a one-cycle pulse would be missed.
 	//
-	// The CPU is stalled purely by holding cpu_clkena low. acc_ready is a
-	// LEVEL, never a pulse: a CPU stepping at a clock enable looks at it
-	// roughly once every 4-5 clk cycles, so a one-cycle assertion would be
-	// missed on nearly every access and the bus cycle would hang forever
-	// (LESSONS_LEARNED, "DTACK/ready must be a held level, never a pulse").
-	//
-	// The phase counter exists because a32 is a registered kernel output
-	// that changes on a cpu_ce tick, and its downstream decode path is
-	// longer than one clk period, so it is NOT settled during the first
-	// cycle after a step:
-	//     acc_ph 0 : address still settling -- do nothing
-	//     acc_ph 1 : settled -- commit writes here
-	//     acc_ph 2 : BRAM has data for the settled address -- capture it
-	// Acting at phase 0 would commit a write to a half-settled address,
-	// which repeating the write later does not undo.
-	// =====================================================================
+	// a32 is a registered kernel output that changes on a cpu_ce tick, and
+	// its decode path is longer than one clk period:
+	//     acc_ph 0 : address still settling, do nothing
+	//     acc_ph 1 : settled, commit writes here
+	//     acc_ph 2 : BRAM has data for the settled address, capture it
+	// A write committed at phase 0 goes to a half-settled address.
 	logic        acc_ready;
 	logic [15:0] acc_data;
 	logic [1:0]  acc_ph;
@@ -305,8 +250,7 @@ module maincpu (
 	wire iack = mem_needed && (fc == 3'b111);
 
 	// ---- read mux ----
-	// Combinational select; the value is CAPTURED into acc_data at phase 2,
-	// because nothing in a BRAM read path latches it for you.
+	// Combinational; captured into acc_data at phase 2.
 	logic [15:0] rd_mux;
 	always_comb begin
 		if      (is_workram)   rd_mux = workram_rdata;
@@ -323,7 +267,7 @@ module maincpu (
 	end
 
 	// ---- writes ----
-	// Committed at phase 1 only, and only for the region actually selected.
+	// Committed at phase 1 only.
 	wire wr_now = (acc_ph == 2'd1) && is_write;
 
 	assign workram_wel   = wr_now && is_workram   && wr_l;
@@ -352,10 +296,8 @@ module maincpu (
 	always_ff @(posedge clk or posedge reset) begin
 		if (reset) tilebank <= 32'd0;
 		else if (wr_now && is_tilebank) begin
-			// A 32-bit register on a 16-bit bus: the 68020's move.l arrives
-			// as two word cycles, A00000 then A00002, selected by A1. The
-			// first version picked the half by byte lane instead, so a long
-			// write left {low, low}.
+			// A 32-bit register on a 16-bit bus: move.l arrives as two word
+			// cycles, A00000 then A00002, selected by A1, not by byte lane.
 			if (!addr24[1]) begin
 				if (wr_h) tilebank[31:24] <= cpu_dout[15:8];
 				if (wr_l) tilebank[23:16] <= cpu_dout[7:0];
@@ -375,23 +317,20 @@ module maincpu (
 			rom_req      <= 1'b0;
 			rom_req_sent <= 1'b0;
 		end else begin
-			rom_req <= 1'b0;   // a PULSE, never held
+			rom_req <= 1'b0;   // a pulse, never held
 
 			if (!mem_needed) begin
-				// No memory access this CPU cycle; the core free-runs.
 				acc_ph       <= 2'd0;
 				acc_ready    <= 1'b0;
 				rom_req_sent <= 1'b0;
 			end else if (acc_ready) begin
-				// Hold ready until the CPU actually steps and drops the
-				// request, then start the next access clean.
+				// Hold ready until the CPU steps, then start the next access clean.
 				if (cpu_clkena) begin
 					acc_ready    <= 1'b0;
 					acc_ph       <= 2'd0;
 					rom_req_sent <= 1'b0;
 				end
 			end else if (is_rom && !is_write) begin
-				// ROM read over the req/valid transport.
 				if (!rom_req_sent) begin
 					if (acc_ph == 2'd1) begin
 						// Issue only once the address has settled.
@@ -420,40 +359,22 @@ module maincpu (
 	assign cpu_din = acc_data;
 	assign dbg_fc  = fc;
 
-	// =====================================================================
-	// Interrupts
+	// ---- interrupts ----
+	// Three HOLD_LINE sources: set on the source's rising edge, hold until
+	// the CPU acknowledges. Acknowledge must win over set: each source is a
+	// level still asserted when the CPU responds (vblank lasts 22
+	// scanlines), so set-wins would never clear the flag and the ISR would
+	// re-enter after every RTE.
 	//
-	// Three sources, all HOLD_LINE in MAME: assert on the source's RISING
-	// edge and hold until the CPU acknowledges. The acknowledge MUST win
-	// over the set, because every one of these sources is a level that is
-	// still asserted when the CPU responds -- vblank lasts 22 scanlines and
-	// the CPU acknowledges within microseconds. Give set priority instead
-	// and the pending flag never clears, ipl stays asserted, and the ISR
-	// re-enters after every RTE. That exact bug hid in Psikyo for the whole
-	// project because its testbench pulsed vblank for ONE CLOCK, so the
-	// acknowledge always landed after the source fell and the test passed
-	// every time (LESSONS_LEARNED, "Ask of every stimulus whether it is the
-	// shape the real system produces").
+	// The level to clear is the one the kernel latched when it took the
+	// interrupt (rIPL_nr), driven onto A3..A1 during the acknowledge cycle
+	// (TG68KdotC_Kernel.vhd, "memaddr_a(4 downto 0) <= '1' & rIPL_nr & '0'").
+	// Do not clear the highest pending level instead: a higher interrupt
+	// arriving between decision and acknowledge is then dropped untaken.
 	//
-	// The level being acknowledged is the one the kernel LATCHED when it
-	// took the interrupt (rIPL_nr), and it drives that level onto A3..A1
-	// during the acknowledge cycle (TG68KdotC_Kernel.vhd, "memaddr_a(4
-	// downto 0) <= '1' & rIPL_nr & '0'"), exactly as a 68000 does. That is
-	// the flag to clear. The first version cleared the HIGHEST level pending
-	// at the acknowledge instead; a higher interrupt arriving between the
-	// kernel's decision and its acknowledge cycle was then cleared without
-	// ever being taken, and the lower one it displaced was left pending and
-	// taken twice.
-	//
-	// Why set-wins-on-the-same-cycle is correct HERE, where it was fatal in
-	// Psikyo: Psikyo set from the LEVEL (`if (vblank) set; else if (iack)
-	// clear;`), so across a 2.4 ms vblank the set re-fired every cycle and
-	// permanently starved the acknowledge. This module sets from a one-cycle
-	// RISING EDGE, so a set can never starve anything. If an edge and an
-	// acknowledge genuinely coincide, that is a NEW interrupt arriving as an
-	// older one is acknowledged, and latching it is the correct outcome --
-	// clearing it instead would silently drop an interrupt.
-	// =====================================================================
+	// Set from a one-cycle edge, so a set cannot starve the acknowledge. A
+	// coincident edge and acknowledge is a new interrupt arriving as an old
+	// one is acknowledged; latching it is correct.
 	logic irq1_pending, irq3_pending, irq5_pending;
 	logic irq1_d, irq3_d, irq5_d;
 
@@ -476,7 +397,7 @@ module maincpu (
 			irq3_d <= irq3_trig;
 			irq5_d <= irq5_trig;
 
-			// Acknowledge, then set: a coincident edge must survive (above).
+			// Acknowledge, then set: a coincident edge must survive.
 			if (iack) begin
 				case (addr24[3:1])
 					3'd5: irq5_pending <= 1'b0;
@@ -492,8 +413,8 @@ module maincpu (
 		end
 	end
 
-	// Debug taps, after the declarations they read: ModelSim rejects a use
-	// before the declaration where Quartus tolerates it (LESSONS_LEARNED).
+	// Debug taps, after the declarations they read: vlog rejects
+	// use-before-declare.
 	assign dbg_irq_pending = {irq5_pending, irq3_pending, irq1_pending};
 	assign dbg_iack        = iack;
 	assign dbg_iack_level  = addr24[3:1];

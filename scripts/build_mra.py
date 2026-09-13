@@ -25,6 +25,12 @@ mra-tools-c itself rather than against this file -- see mra.py's
 `pattern_from_map()` and its selftest. Two implementations sharing one wrong
 assumption would agree with each other and still be wrong on MiSTer.
 
+EVERY <part> CARRIES ITS CRC32
+------------------------------
+Taken from the zip's own central directory (the CRC MAME checks against its
+ROM_LOAD entry), so mra-tools can refuse a wrong or corrupt ROM by name
+rather than load it and let the core fail somewhere downstream.
+
 THE ADDRESS MAP IS NOT DEFINED HERE
 -----------------------------------
 It is parsed out of rtl/memory/fuuki_sdram_top.sv, which is the authority. A
@@ -463,6 +469,11 @@ def read_sdram_map():
     return bases
 
 
+def crc_attr(z, names, part):
+    """The zip member's CRC32, as mra-tools expects it: 8 lower-case hex digits."""
+    return f'{z.getinfo(names[part]).CRC:08x}'
+
+
 def build_group(z, names, g):
     k, p = g["kind"], g["parts"]
     if k == "gap":          return bytearray(g["size"])
@@ -650,12 +661,12 @@ def emit(setname, game, bases, zip_dir, out_dir, check_only):
                 if g["kind"] == "gap":
                     body.append(f'\t\t<part repeat="0x{g["size"]:X}">00</part>')
                 elif maps is None:
-                    body.append(f'\t\t<part name="{g["parts"][0]}"/>')
+                    body.append(f'\t\t<part name="{g["parts"][0]}" crc="{crc_attr(z, names, g["parts"][0])}"/>')
                 else:
                     bits = OUTPUT_BITS[g["kind"]]
                     body.append(f'\t\t<interleave output="{bits}">')
                     for p, m in zip(g["parts"], maps):
-                        body.append(f'\t\t\t<part name="{p}" map="{m}"/>')
+                        body.append(f'\t\t\t<part name="{p}" crc="{crc_attr(z, names, p)}" map="{m}"/>')
                     body.append("\t\t</interleave>")
                 truth_image += truth
                 cursor += len(truth)

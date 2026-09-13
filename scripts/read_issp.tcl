@@ -27,12 +27,12 @@ set fields {
     {ioctl_download  49  49 bit}
     {pause_latched   50  50 bit}
     {ring_frozen     51  51 bit}
-    {spr_max8        53  62 dec}
-    {tm_max8         63  72 dec}
+    {snd_state       53  56 hex}
+    {snd_peak        57  64 dec}
+    {snd_int_edges   65  72 dec}
     {spr_overruns    73  80 dec}
-    {tm2_overruns    81  88 dec}
-    {tm1_overruns    89  96 dec}
-    {tm0_overruns    97 104 dec}
+    {ym_writes       81  88 dec}
+    {z80_fetches     89  104 dec}
     {smp_maxlat      105 107 dec}
     {opl4_port       108 110 dec}
     {opl4_reg        111 118 hex}
@@ -68,17 +68,21 @@ set fields {
 # "silently shifted field reads as plausible nonsense" this file warns about.
 #
 # The sound chain, read in this order, says where a silence begins:
-#   z80_fetches  the sound CPU is executing at all
-#   ym_writes    it is reaching the sound chips
-#   pcm_keyons   FG-3: the OPL4 is being asked to start PCM voices
-#   fm_keyons    FG-3: ... and FM voices, which NOTHING PLAYS YET -- the
-#                OPL4's FM half is not built, so a non-zero count here is
-#                the game asking for something this core cannot make.
-#                Asura Blade does; Asura Buster does not.
-#   snd_peak     the largest |audio_l| seen since the last clear, bits 14:7.
-#                Zero with key-ons counting is a silent chip; non-zero is
-#                audio genuinely leaving the mix.
-# All saturate; clear first and read again for a rate.
+#   z80_fetches    the sound CPU is executing at all (16 bits, wraps)
+#   ym_writes      it is reaching the sound chips (8 bits, wraps)
+#   snd_int_edges  its interrupt time base ticks: on FG-2 the YM3812 timer
+#                  that sequences the music, on FG-3 the OPL4 IRQ (8 bits,
+#                  wraps). Fetches with no edges is a driver that lost its
+#                  clock, not its CPU.
+#   snd_peak       the largest |audio_l| seen since the last clear, bits 14:7.
+#                  Zero with the chips being written is a silent chip;
+#                  non-zero is audio genuinely leaving the mix.
+#   snd_state      {halt_n, rom_wait, int_n, nmi_n} at this instant. 0xB
+#                  (1011) is a CPU running with INT high; bit 3 clear is
+#                  HALT; bit 2 set is a ROM fetch the SDRAM has not answered;
+#                  bit 1 clear is INT asserted -- held low across two reads
+#                  is an interrupt never acknowledged.
+# The wrapping counters give a rate between two reads without a clear.
 #
 # NOTE the counters SATURATE at 65535 and several of them count per-cycle
 # events, so they pin almost immediately. Always `clear` first and read again

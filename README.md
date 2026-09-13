@@ -5,6 +5,7 @@ platforms, built with Quartus Prime 17.0.2 Lite for the DE10-nano.
 
 ## Contents
 
+- [Games](#games)
 - [History](#history)
 - [Screenshots](#screenshots)
 - [Installation](#installation)
@@ -62,6 +63,38 @@ Some links discussing the games and hardware:
   * Includes fast DDR loading
   * No HDMI rotate/flip yet
 
+## Screenshots
+
+### Susume! Mile Smile / Go Go! Mile Smile
+
+![gogomile 20260912_182928-screen](docs/screenshots/gogomile/20260912_182928-screen.png)
+![gogomile 20260912_182933-screen](docs/screenshots/gogomile/20260912_182933-screen.png)
+![gogomile 20260912_182939-screen](docs/screenshots/gogomile/20260912_182939-screen.png)
+![gogomile 20260912_182946-screen](docs/screenshots/gogomile/20260912_182946-screen.png)
+![gogomile 20260912_182950-screen](docs/screenshots/gogomile/20260912_182950-screen.png)
+![gogomile 20260912_183006-screen](docs/screenshots/gogomile/20260912_183006-screen.png)
+![gogomile 20260912_183032-screen](docs/screenshots/gogomile/20260912_183032-screen.png)
+![gogomile 20260912_183204-screen](docs/screenshots/gogomile/20260912_183204-screen.png)
+
+### Gyakuten!! Puzzle Bancho
+
+![pbancho 20260912_182647-screen](docs/screenshots/pbancho/20260912_182647-screen.png)
+![pbancho 20260912_182648-screen](docs/screenshots/pbancho/20260912_182648-screen.png)
+![pbancho 20260912_182649-screen](docs/screenshots/pbancho/20260912_182649-screen.png)
+![pbancho 20260912_182651-screen](docs/screenshots/pbancho/20260912_182651-screen.png)
+![pbancho 20260912_182652-screen](docs/screenshots/pbancho/20260912_182652-screen.png)
+![pbancho 20260912_182655-screen](docs/screenshots/pbancho/20260912_182655-screen.png)
+![pbancho 20260912_182657-screen](docs/screenshots/pbancho/20260912_182657-screen.png)
+
+### Asura Blade - Sword of Dynasty
+
+![asurabld 20260905_235348-screen](docs/screenshots/asurabld/20260905_235348-screen.png)
+
+### Asura Buster - Eternal Warriors
+
+![asurabus 20260905_234625-screen](docs/screenshots/asurabus/20260905_234625-screen.png)
+![asurabus 20260912_183340-screen](docs/screenshots/asurabus/20260912_183340-screen.png)
+
 ## Installation
 
 * Take the latest `*.rbf` from `releases/` and put it in `_Arcade/cores`
@@ -90,16 +123,20 @@ Known issues:
   layer 2. The per-line display record measured the band boundaries one line above MAME's with
   the raster interrupt two lines early, and exactly on MAME's with it one line early; the core
   now fires it one line early, and the picture confirms it.
-* **gogomile's sound drops out on later stages, from stage 3 on** (reported, not yet measured).
+* **gogomile's music stops minutes into play** — the OKI's sample fetch deadlocked against the
+  sample cache when the chip moved its address on the clock the fetch completed. Measured with
+  the probe, reproduced in simulation, fixed in the OKI ROM bridge; to be confirmed by ear.
 * (Fixed) pbancho's attract-mode black bands ending partway across the screen were sprite-engine
   overrun, not a compositor fault; the sprite engine now prefetches the next sub-tile while drawing.
 
 See `docs/ROADMAP.md` for the measurements behind each, and what has been ruled out.
+`docs/RELEASE_PROCESS.md` says how a build becomes a release: two Quartus revisions, `Fuuki_stp`
+(debug: JTAG probe, Debug OSD page) and `Fuuki` (release), and the timing gate between them.
 
 ### Todo
 
 - [x] gogomile's title-cloud raster line
-- [ ] gogomile's stage-3 sound dropout
+- [x] gogomile's music stopping mid-play (OKI fetch deadlock; to be confirmed by ear)
 - [x] Sound: Z80, and the FG-2 chip set (YM2203, YM3812, OKI M6295)
 - [x] Sound: OPL4 PCM and the FG-3 Z80 — built, and measured playing on MiSTer
 - [x] Sound: the OPL4's FM half — [gtaylormb/opl3_fpga](https://github.com/gtaylormb/opl3_fpga),

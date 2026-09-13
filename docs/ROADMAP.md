@@ -129,15 +129,22 @@ after 100 ms. Confirmed by ear on MiSTer: sound effects at full level.
 
 **Still open:**
 
-- **gogomile's sound drops out on later stages, from stage 3 on (reported, unmeasured).** FG-2
-  audio (Z80 + YM2203 + YM3812 + OKI M6295) plays correctly on the early stages, so the dropout is
-  something the later stages exercise that the earlier ones do not. Candidates, in order of
-  suspicion: an OKI sample-ROM bank or a Z80 program bank the later stages select, landing in an
-  SDRAM range the earlier stages never read (the sample cache or the narrow bridge for `base_oki`
-  / `base_audiocpu`); a sound command later stages send that wedges the driver; or a mix/gate
-  path. The FG-2 probe chain (Z80 fetches, YM writes, OKI reads, `snd_peak`) can localise it —
-  clear at a working stage, then at stage 3 — the same way the FG-3 chime was tracked. Not yet
-  measured.
+- **gogomile's music stops minutes into play (first reported from stage 3, then seen on
+  stage 1): the OKI's ROM fetch deadlocked against the sample cache. Fixed in
+  `rtl/sound/oki_rom_bridge.sv`; to be confirmed by ear.** Measured on the paused game with the
+  probe's sample-fetch watch, twice, 46 s apart: a fetch outstanding, the sticky stall flag set,
+  worst completed latency 0 — a lost fetch, not a slow one. A memory dump through the same
+  port-2 arbiter's CPU client returned 256/256 words, so the arbiter was alive and the wedge was
+  in the sample path alone. Reading that path: the bridge in `fg2_sound.sv` derived its held
+  request from the OKI's *live* address and tagged the returned byte with it. jt6295 rotates its
+  ROM address every ~350 clk whatever we do, so when it moved on the clock edge that registered a
+  valid, the request never fell; `sample_cache` waits in `S_DRAIN` for a held request to drop
+  before it looks again. Each waited on the other. It needs a cache miss whose SDRAM round trip
+  meets the slot boundary to the clock, which is why it took minutes and showed first on busier
+  stages. `sim/oki_bridge_tb` runs the old logic and the new against the real cache across a
+  latency sweep: the old deadlocks at the two latencies that meet the 344 and 430 clk slots, the
+  new never, and every byte it marks ok is the byte for that address. The bridge now registers
+  the address with the request and drops the request after every valid.
 - **FIXED: gogomile's title-cloud stray line. The level-5 lead is fixed at one line, measured
   exact, and the picture confirms it (build 10000023).** The clouds are a five-band layer-2
   X-scroll chain driven from the raster interrupt,
@@ -769,6 +776,13 @@ the log. It was originally left unported, and the cost was paid in full on 2026-
 edit that session had to wait for a build, and one build died mid-Fitter with a source edit in
 flight. `scripts/build.sh` still builds in-tree for the case where the compile must see
 uncommitted work.
+
+**Two revisions, one source.** `Fuuki_stp` (the default) defines `DEBUG_ISSP`: the JTAG probe is
+built, and the Debug OSD page and the Sound FM/PCM mute switches show. `Fuuki` is the release:
+the probe compiles out, those OSD lines are hidden (`H1` prefix, `status_menumask` bit 1) and the
+status bits behind them are forced to zero, so a `.CFG` written by the debug build cannot leave a
+layer hidden or a chip muted. `python scripts/build_staged.py --rev Fuuki`. Modelled on Psikyo's
+`Psikyo_stp` / `Psikyo` pair.
 
 `scripts/deploy.py` carries the other half of the protection: it refuses to copy a `.rbf` unless
 the build log says the compile succeeded, the `.rbf` is not older than that log, and the timing

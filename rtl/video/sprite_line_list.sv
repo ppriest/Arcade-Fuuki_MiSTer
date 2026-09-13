@@ -1,36 +1,17 @@
 // Once-per-frame sprite candidate list.
 //
-// THIS MODULE IS WHY A PER-SCANLINE SPRITE RENDERER IS AFFORDABLE.
+// 1024 records x 4 words tested on every scanline would be 4096 sprite-RAM
+// reads per line against a 5,472-cycle budget. So the walk, fetch and coarse
+// rejection happen once per frame in vblank (about 7K cycles against
+// 120,384), and the per-line cost is one y-extent read per candidate.
 //
-// Fuuki has 1024 sprite records of 4 words each. Testing them all on every
-// scanline means 4096 sprite-RAM reads per line against a 5,472-cycle budget,
-// before a single pixel is drawn -- it does not fit, and it is not close.
-// Psikyo's first line-renderer attempt did exactly that (re-walking and
-// re-fetching every record every line, ~10 cycles per sprite per line), blew
-// the budget on busy scenes, and was parked.
-//
-// The fix is to do the walking, fetching and coarse rejection ONCE per frame,
-// during vblank, and leave the per-line cost at one cycle per surviving
-// candidate: a pipelined read of a small y-extent word. Budget here is about
-// 1024 records x ~4 cycles = 4K cycles against vblank's 120,384 -- 3%.
-//
-// ---------------------------------------------------------------------------
-// DEPTH ORDER: THE HIGHEST-NUMBERED RECORD IS DRAWN ON TOP.
-//
-// The scan runs from record 0 upwards and appends, so record 1023 lands last
-// in the list; the per-line engine renders the list in order with later writes
-// overwriting earlier ones, so the last one stored wins.
-//
-// THIS IS THE ORDER MEASURED ON MISTER, and it is the opposite of what
-// reading fuukispr.cpp suggests. That file walks the list from the last record
-// to the first when a colpri callback is installed ("Draw them backwards, for
-// pdrawgfx"), which both Fuuki drivers do -- so record 0 is drawn last there
-// and should be on top. Built that way, asurabld drew its high-score table,
-// its in-game sprites and its character-name flashes wrongly, and flipping the
-// order fixed all three (Fuuki.sv's "Sprite order" switch was added to make
-// that an A/B on one frozen frame rather than a rebuild). The discrepancy with
-// the driver is NOT explained; do not "correct" this back to match a reading
-// of fuukispr.cpp without re-running that comparison on MiSTer.
+// Depth order: the highest-numbered record is drawn on top. The scan runs
+// from record 0 upwards and appends; the engine renders in list order with
+// later writes winning. This is the order measured on MiSTer (asurabld
+// high-score table, in-game sprites, character-name flashes) and the opposite
+// of what fuukispr.cpp's backwards walk for pdrawgfx suggests. The
+// discrepancy is not explained. Do not reverse it without re-running that
+// comparison on MiSTer; Fuuki.sv's "Sprite order" switch is the A/B.
 //
 // Record format (docs/ROADMAP.md, "Sprites"):
 //   word0  15-12 xnum-1   11 flipX  10 DISABLE   9-0 X (signed)
@@ -38,9 +19,8 @@
 //   word2  15-12 zoomX  11-8 zoomY  7-6 priority  5-0 colour
 //   word3  tile code (FG-3: 15-14 select a tile bank)
 //
-// The y test stored here is deliberately COARSE -- a whole bounding box. The
-// engine re-does the exact per-sub-tile-row arithmetic on every hit, so a
-// conservative false hit costs a few cycles and never a wrong pixel.
+// The stored y test is a coarse bounding box. The engine re-does the exact
+// per-sub-tile-row test, so a false hit costs cycles, never a wrong pixel.
 
 module sprite_line_list (
 	input  logic clk,
@@ -62,15 +42,15 @@ module sprite_line_list (
 	output logic [63:0] rec_data       // the four raw words
 );
 
-	// 1024 entries is the worst case: every record visible. The y-extent RAM
-	// is the one read every line, so it is kept narrow on purpose.
+	// 1024 entries: every record visible. The y-extent RAM is the one read
+	// every line, so it is kept narrow.
 	logic [18:0] yt  [0:1023];
 	logic [63:0] rec [0:1023];
 
 	always_ff @(posedge clk) yt_data  <= yt[yt_addr];
 	always_ff @(posedge clk) rec_data <= rec[rec_addr];
 
-	logic [9:0]  idx;        // record being examined, counts DOWN
+	logic [9:0]  idx;        // record being examined
 	logic [9:0]  wr_idx;     // next free list slot
 	logic [15:0] w0, w1, w2, w3;
 
@@ -79,22 +59,21 @@ module sprite_line_list (
 	} state_t;
 	state_t st;
 
-	// ---- geometry, computed at S_EVAL from the four latched words ----
-	// Signed 10-bit positions, exactly MAME's (v & 0x1ff) - (v & 0x200).
+	// ---- geometry, from the four latched words ----
+	// Signed 10-bit positions, MAME's (v & 0x1ff) - (v & 0x200).
 	wire signed [9:0] sx = $signed(w0[9:0]);
 	wire signed [9:0] sy = $signed(w1[9:0]);
 
 	wire [4:0] xnum = 5'(w0[15:12]) + 5'd1;    // 1..16 tiles
 	wire [4:0] ynum = 5'(w1[15:12]) + 5'd1;
 
-	// Zoom: xzoom = 128 - 4*field, giving 128 (full size) down to 68 (~53%).
+	// Zoom: xzoom = 128 - 4*field, 128 (full size) down to 68 (~53%).
 	wire [7:0] xz = 8'd128 - {2'd0, w2[15:12], 2'd0};
 	wire [7:0] yz = 8'd128 - {2'd0, w2[11:8],  2'd0};
 
-	// MAME takes a separate NON-ZOOMED path when both zoom fields are zero,
-	// and it is not equivalent: the zoomed path scales by the next larger
-	// integer step "to avoid holes", so a nominally full-size sprite drawn
-	// through it comes out 17 pixels tall rather than 16.
+	// MAME takes a separate non-zoomed path when both fields are zero. The
+	// zoom path scales by the next larger integer step "to avoid holes", so a
+	// full-size sprite drawn through it is 17 pixels tall, not 16.
 	wire nonzoom = (w2[15:8] == 8'd0);
 
 	// Distance between sub-tile origins, and the drawn size of one sub-tile.
@@ -108,20 +87,13 @@ module sprite_line_list (
 	wire [9:0] span_x = nonzoom ? {1'b0, xnum, 4'd0}
 	                            : (10'(x_step >> 3) + 10'((xz + 8'd8) >> 3));
 
-	// TIMING: the spans are REGISTERED in S_GEOM, one state before they are
-	// used. Computed inline, the chain ran w2 -> yz -> the y_step multiply ->
-	// span_y -> y_bot -> visible -> the candidate RAMs' WRITE ENABLE, all in
-	// the single S_EVAL cycle -- which was the critical path of the whole
-	// design at -1.313 ns once sprite_line_engine was pipelined.
-	//
-	// The extra state costs one clock per record examined: 1024 records go
-	// from 6144 to 7168 clocks, against roughly 120,000 clocks of vblank
-	// before anything is drawn, so it is not close to the budget.
+	// Registered in S_GEOM for timing: inline, w2 -> multiply -> span ->
+	// visible -> the list RAMs' write enable was one cycle. Costs one clock
+	// per record.
 	logic [9:0] span_y_r, span_x_r;
 
-	// Coarse visibility. Rejecting here is what keeps the per-line scan short;
-	// being conservative costs only cycles, so the test is a plain bounding
-	// box with no per-sub-tile refinement.
+	// Coarse visibility: a plain bounding box. Being conservative costs only
+	// cycles.
 	wire signed [11:0] y_top  = 12'(sy);
 	wire signed [11:0] y_bot  = 12'(sy) + 12'(span_y_r);
 	wire signed [11:0] x_left = 12'(sx);
@@ -142,7 +114,7 @@ module sprite_line_list (
 			case (st)
 			S_IDLE: begin
 				if (build_start) begin
-					idx        <= 10'd0;       // scan forwards -- see header
+					idx        <= 10'd0;       // scan forwards: see header
 					wr_idx     <= 10'd0;
 					n_entries  <= 11'd0;
 					build_busy <= 1'b1;
@@ -151,15 +123,13 @@ module sprite_line_list (
 			end
 
 			// Four reads, one address per cycle, each result taken one cycle
-			// after its address is presented. The RAM's read latency is spent
-			// rather than assumed.
+			// after its address.
 			S_A0: st <= S_A1;
 			S_A1: begin w0 <= sr_data; st <= S_A2; end
 			S_A2: begin w1 <= sr_data; st <= S_A3; end
 			S_A3: begin w2 <= sr_data; st <= S_LAT3; end
 			S_LAT3: begin w3 <= sr_data; st <= S_GEOM; end
 
-			// Geometry only -- see the timing note at span_y_r.
 			S_GEOM: begin
 				span_y_r <= span_y;
 				span_x_r <= span_x;
@@ -167,10 +137,8 @@ module sprite_line_list (
 			end
 
 			S_EVAL: begin
-				// The list can hold every record, so the cap can only be hit
-				// by a frame in which all 1024 are visible. Guarding on
-				// n_entries rather than on wr_idx wrapping keeps the intent
-				// obvious and cannot alias at the boundary.
+				// The list holds every record; the cap is reached only when
+				// all 1024 are visible.
 				if (visible && (n_entries < 11'd1024)) begin
 					yt[wr_idx]  <= {y_top[9:0], span_y_r[8:0]};
 					rec[wr_idx] <= {w0, w1, w2, w3};

@@ -1,21 +1,15 @@
-// A counter for debug instrumentation, with the two properties that make one
-// trustworthy: it SATURATES rather than wrapping, and it has NO RESET.
+// Debug counter: saturates rather than wrapping, and has no reset.
 //
-// Saturating, because a wrapped counter is ambiguous -- 3 could mean "three
-// times" or "65,539 times", and those lead to opposite conclusions.
+// Saturating, because a wrapped count is ambiguous: 3 could be 65,539.
 //
-// No reset, because of the trap in docs/LESSONS_LEARNED.md: "Never reset a
-// debug counter with the reset you are investigating." On the Psikyo core two
-// measurements read zero and were reported as findings before anyone noticed
-// the counters were being cleared by a reset that was asserted for the entire
-// measured window. Quartus powers registers to zero, so a counter with no
-// reset shows what genuinely happened since the FPGA was configured -- which
-// is the question being asked. The optional `clear` is driven from the JTAG
-// source bus, i.e. by the person watching, never by core logic.
+// No reset, so it cannot be cleared by the reset being investigated
+// (docs/LESSONS_LEARNED.md, "Never reset a debug counter with the reset
+// you are investigating"). Quartus powers registers to zero, so the count
+// is what happened since configuration. `clear` comes from the JTAG source
+// bus, never from core logic.
 //
-// Pair every "bad event" counter with a "total events" counter. A zero here
-// means "never happened" only if you can also see that the thing was given
-// the chance to happen.
+// Pair every "bad event" counter with a "total events" counter; a zero
+// means "never happened" only if the thing was seen to get the chance.
 
 module debug_counter #(
 	parameter int W = 16
@@ -26,11 +20,8 @@ module debug_counter #(
 	output logic [W-1:0] count = '0
 );
 
-	// The declaration initialiser (on the port) is what gives the power-up
-	// value. It must NOT be an `initial` block: that counts as a second
-	// process driving the same variable and Quartus/ModelSim reject it
-	// (vlog-7061). Quartus powers registers to zero regardless, so this is
-	// belt and braces for simulation.
+	// The power-up value is the port initialiser. Do not use an `initial`
+	// block: it is a second driver and vlog-7061 rejects it.
 	always_ff @(posedge clk) begin
 		if (clear)                 count <= '0;
 		else if (ev && ~&count)    count <= count + 1'b1;   // saturate at all-ones
@@ -39,13 +30,8 @@ module debug_counter #(
 endmodule
 
 
-// Latch that a thing happened at least once. Same reset discipline: sticky
-// from configuration until explicitly cleared over JTAG.
-//
-// Useful for the questions that are genuinely yes/no ("did the download ever
-// start", "did any read return non-zero"), where a count would be noise. Note
-// a sticky flag cannot distinguish once from constantly -- if that matters,
-// use a counter.
+// Sticky flag: set once an event has happened, until cleared over JTAG.
+// Cannot distinguish once from constantly; use a counter if that matters.
 module debug_sticky (
 	input  logic clk,
 	input  logic clear,
