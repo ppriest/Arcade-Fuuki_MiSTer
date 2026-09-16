@@ -4,23 +4,18 @@
 // Needs debug/hw/opm_u6.bin -- the real 4 MB wave ROM, extracted from
 // roms/asurabus.zip (scripts/opl4_log.py's WAVE_ROM). Gitignored.
 //
-// The register sequence is the one the sound driver sent for the chime,
-// captured from MAME with scripts/opl4_log.py (coin at frame 2400, channel
-// 23 written at frame 2402), in the same order and with Z80-like pacing.
-// The wavetable header the wave number points at -- wave 289: 8-bit,
-// AR=15 DR=2 SL=14 SR=0 RC=0 RR=1 -- is loaded by the chip from the ROM
-// exactly as in the FPGA build.
+// Register sequence captured from MAME with scripts/opl4_log.py (coin at
+// frame 2400, channel 23 written at frame 2402), in order, Z80-paced. The
+// chip loads wave 289's header from the ROM (8-bit, AR=15 DR=2 SL=14 SR=0
+// RC=0 RR=1).
 //
-// What it decides. The voice plays at oct=-1 with the header's RC=0, so the
-// reference's rate correction is (oct+RC)*2 + fnum[9] = -2 and the decay
-// rate 2*4-2 = 6: slow, from full level. A correction handled as unsigned
-// turns -2 into 62, clamps the rate to 63 and drops the envelope to SL=14
-// (0x1C0, about -42 dB) in its first clock. Rate 6 steps the envelope about
-// once every 2048 samples, so after 100 ms of samples it has barely moved:
+// At oct=-1, RC=0 the rate correction is (oct+RC)*2 + fnum[9] = -2, so the
+// decay rate is 2*4-2 = 6. A correction handled as unsigned becomes 62,
+// clamps the rate to 63 and parks the envelope at SL=14 (0x1C0) at once.
+// Rate 6 steps about once per 2048 samples:
 //   PASS  envelope at 100 ms  <  0x040  (decaying slowly from full)
 //   FAIL  envelope at 100 ms  >= 0x180  (already parked at SL=14)
-// The output peak per 10 ms is printed alongside, and it should sit near
-// its first-bin value throughout rather than collapsing after the first.
+// The per-10 ms output peak should stay near its first-bin value.
 `timescale 1ns/1ps
 module tb_opl4_chime;
 	logic clk = 0;
@@ -43,7 +38,7 @@ module tb_opl4_chime;
 		.cs(cs), .rd(rd), .wr(wr), .addr(addr), .din(din), .dout(dout), .irq_n(irq_n),
 		.mem_rd_req(mem_rd_req), .mem_rd_addr(mem_rd_addr),
 		.mem_rd_valid(mem_rd_valid), .mem_rd_data(mem_rd_data),
-		.fm_l(16'sd0), .fm_r(16'sd0), .en_fm(1'b1), .en_pcm(1'b1),
+		.fm_l(16'sd0), .fm_r(16'sd0),
 		.snd_l(snd_l), .snd_r(snd_r),
 		.dbg_fm_wr(dbg_fm_wr), .dbg_fm_keyon(dbg_fm_keyon), .dbg_pcm_keyon(dbg_pcm_keyon),
 		.dbg_new2(dbg_new2), .dbg_mix_pcm(dbg_mix_pcm)
@@ -87,9 +82,8 @@ module tb_opl4_chime;
 	end
 
 	// ---- bus helpers, Z80-paced ----
-	// The driver's OUT instructions are a few microseconds apart; each write
-	// here is followed by 300 clk (3 us) so the header load between the
-	// wave-number write and the key-on gets the time it gets on the board.
+	// 300 clk (3 us) after each write, as the driver's OUTs are spaced, so the
+	// header load between wave-number write and key-on gets realistic time.
 	task automatic bwrite(input [2:0] a, input [7:0] d);
 		@(posedge clk);
 		addr = a; din = d; cs = 1; wr = 1;

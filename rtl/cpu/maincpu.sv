@@ -85,6 +85,9 @@ module maincpu (
 	// Z80's NMI. Decoded for byte, word and long writes.
 	output logic [7:0]   latch_data,
 	output logic         latch_write,
+	// The sound board's latch is not yet safe to write again: the access that
+	// wrote it is held until this falls. See fg2_sound.sv, latch pacing.
+	input  logic         latch_busy,
 
 	// FG-3 only: sprite tile bank, 0xA00000 (long).
 	output logic [31:0]  tilebank,
@@ -180,7 +183,6 @@ module maincpu (
 	// bus and writes the sound latch through a 32-bit map with a byte mask.
 	wire [23:0] addr24 = a32[23:0];
 
-	// ROM is 1 MB on FG-2, 2 MB on FG-3.
 	wire is_rom = (board == BOARD_FG3) ? (addr24 <= 24'h1FFFFF)
 	                        : (addr24 <= 24'h0FFFFF);
 
@@ -198,9 +200,11 @@ module maincpu (
 	wire is_dsw       = (addr24 >= 24'h880000) && (addr24 <= 24'h880003);
 	wire is_dsw2      =  (board == BOARD_FG3) && (addr24 >= 24'h890000) && (addr24 <= 24'h890003);
 
-	// FG-2 sound latch: MAME maps a byte at 0x8a0001, reached by byte, word
-	// and long writes alike; decode the enclosing word.
-	wire is_latch     = (board == BOARD_FG2) && (addr24 >= 24'h8A0000) && (addr24 <= 24'h8A0003);
+	// FG-2 sound latch: MAME maps the one byte at 0x8a0001. That is the low
+	// lane of the word at 0x8A0000 (a byte write to 0x8A0001, or a word
+	// write to 0x8A0000); 0x8A0002-3 are unmapped there, so a long write's
+	// second word is not a command. latch_write also requires wr_l.
+	wire is_latch     = (board == BOARD_FG2) && (addr24[23:1] == 23'h450000);
 
 	wire is_vregs     = (addr24 >= 24'h8C0000) && (addr24 <= 24'h8EFFFF);
 	wire is_sharedram =  (board == BOARD_FG3) && (addr24 >= 24'h903FE0) && (addr24 <= 24'h903FFF);
@@ -242,7 +246,6 @@ module maincpu (
 
 	assign cpu_clkena = cpu_ce && (!mem_needed || acc_ready);
 
-	// Byte lane enables, only meaningful for writes.
 	wire wr_l = is_write && !nLDS;
 	wire wr_h = is_write && !nUDS;
 
@@ -250,7 +253,7 @@ module maincpu (
 	wire iack = mem_needed && (fc == 3'b111);
 
 	// ---- read mux ----
-	// Combinational; captured into acc_data at phase 2.
+	// Captured into acc_data at phase 2.
 	logic [15:0] rd_mux;
 	always_comb begin
 		if      (is_workram)   rd_mux = workram_rdata;
@@ -267,7 +270,6 @@ module maincpu (
 	end
 
 	// ---- writes ----
-	// Committed at phase 1 only.
 	wire wr_now = (acc_ph == 2'd1) && is_write;
 
 	assign workram_wel   = wr_now && is_workram   && wr_l;
@@ -317,7 +319,7 @@ module maincpu (
 			rom_req      <= 1'b0;
 			rom_req_sent <= 1'b0;
 		end else begin
-			rom_req <= 1'b0;   // a pulse, never held
+			rom_req <= 1'b0;
 
 			if (!mem_needed) begin
 				acc_ph       <= 2'd0;
@@ -348,7 +350,8 @@ module maincpu (
 				// unmapped hole all complete in a fixed three phases.
 				if (acc_ph == 2'd2) begin
 					acc_data  <= rd_mux;
-					acc_ready <= 1'b1;
+					// a sound latch write completes only once the Z80 has taken it
+					if (!(is_latch && is_write && latch_busy)) acc_ready <= 1'b1;
 				end else begin
 					acc_ph <= acc_ph + 2'd1;
 				end
@@ -360,21 +363,15 @@ module maincpu (
 	assign dbg_fc  = fc;
 
 	// ---- interrupts ----
-	// Three HOLD_LINE sources: set on the source's rising edge, hold until
-	// the CPU acknowledges. Acknowledge must win over set: each source is a
-	// level still asserted when the CPU responds (vblank lasts 22
-	// scanlines), so set-wins would never clear the flag and the ISR would
-	// re-enter after every RTE.
+	// HOLD_LINE: pending sets on the source's rising edge and holds until
+	// acknowledged. Set on the edge, not the level: the sources are still
+	// asserted when the CPU responds (vblank lasts 22 scanlines), so a level
+	// set would never clear and the ISR would re-enter after every RTE.
 	//
-	// The level to clear is the one the kernel latched when it took the
-	// interrupt (rIPL_nr), driven onto A3..A1 during the acknowledge cycle
-	// (TG68KdotC_Kernel.vhd, "memaddr_a(4 downto 0) <= '1' & rIPL_nr & '0'").
-	// Do not clear the highest pending level instead: a higher interrupt
-	// arriving between decision and acknowledge is then dropped untaken.
-	//
-	// Set from a one-cycle edge, so a set cannot starve the acknowledge. A
-	// coincident edge and acknowledge is a new interrupt arriving as an old
-	// one is acknowledged; latching it is correct.
+	// Clear the level on A3..A1 during the acknowledge (the kernel's latched
+	// rIPL_nr, TG68KdotC_Kernel.vhd "memaddr_a(4 downto 0) <= '1' & rIPL_nr &
+	// '0'"), not the highest pending: a higher interrupt arriving between
+	// decision and acknowledge would be dropped.
 	logic irq1_pending, irq3_pending, irq5_pending;
 	logic irq1_d, irq3_d, irq5_d;
 

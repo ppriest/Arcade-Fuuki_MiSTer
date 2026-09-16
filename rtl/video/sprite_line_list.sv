@@ -71,9 +71,8 @@ module sprite_line_list (
 	wire [7:0] xz = 8'd128 - {2'd0, w2[15:12], 2'd0};
 	wire [7:0] yz = 8'd128 - {2'd0, w2[11:8],  2'd0};
 
-	// MAME takes a separate non-zoomed path when both fields are zero. The
-	// zoom path scales by the next larger integer step "to avoid holes", so a
-	// full-size sprite drawn through it is 17 pixels tall, not 16.
+	// MAME's separate non-zoomed path when both fields are zero; the zoom path
+	// draws 17 pixels at full size (sprite_zoom_lut.sv).
 	wire nonzoom = (w2[15:8] == 8'd0);
 
 	// Distance between sub-tile origins, and the drawn size of one sub-tile.
@@ -87,13 +86,11 @@ module sprite_line_list (
 	wire [9:0] span_x = nonzoom ? {1'b0, xnum, 4'd0}
 	                            : (10'(x_step >> 3) + 10'((xz + 8'd8) >> 3));
 
-	// Registered in S_GEOM for timing: inline, w2 -> multiply -> span ->
-	// visible -> the list RAMs' write enable was one cycle. Costs one clock
-	// per record.
+	// Registered in S_GEOM for timing: w2 -> multiply -> span -> visible ->
+	// RAM write enable does not fit one cycle. Costs one clock per record.
 	logic [9:0] span_y_r, span_x_r;
 
-	// Coarse visibility: a plain bounding box. Being conservative costs only
-	// cycles.
+	// Coarse visibility: a plain bounding box (see header).
 	wire signed [11:0] y_top  = 12'(sy);
 	wire signed [11:0] y_bot  = 12'(sy) + 12'(span_y_r);
 	wire signed [11:0] x_left = 12'(sx);
@@ -137,8 +134,6 @@ module sprite_line_list (
 			end
 
 			S_EVAL: begin
-				// The list holds every record; the cap is reached only when
-				// all 1024 are visible.
 				if (visible && (n_entries < 11'd1024)) begin
 					yt[wr_idx]  <= {y_top[9:0], span_y_r[8:0]};
 					rec[wr_idx] <= {w0, w1, w2, w3};

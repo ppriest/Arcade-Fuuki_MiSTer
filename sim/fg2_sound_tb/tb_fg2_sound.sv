@@ -5,18 +5,14 @@
 // RUN FROM THE REPOSITORY ROOT (scripts/run_sim.sh fg2_sound_tb), after
 //     python scripts/prep_sound_tb.py
 //
-// What it checks, in order of how much it proves:
-//   1. the Z80 runs -- opcode fetches keep coming, and a watchdog fails the
-//      run if none arrives for 2 ms of simulated time (a wedged WAIT_n or a
-//      lost ROM handshake looks exactly like that);
-//   2. the firmware's own initialisation reaches the FM chips (writes seen
-//      on the YM ports) without any command from the main CPU;
-//   3. the two commands the captured main-CPU trace sends at boot
-//      (0x87, then 0x03: debug/gogomile_vregs.tr) are taken -- the NMI
-//      handler reads the latch;
-//   4. after them the board makes sound: the mix leaves zero, and the OKI
-//      fetches sample bytes.
-// It does not judge what the sound IS. That is for the ear, on MiSTer.
+// Checks:
+//   1. the Z80 runs: a watchdog fails if no opcode fetch arrives for 2 ms
+//      (a wedged WAIT_n or lost ROM handshake);
+//   2. firmware init reaches the FM chips with no main-CPU command;
+//   3. the NMI handler reads the boot commands 0x87 then 0x03 (from
+//      debug/gogomile_vregs.tr);
+//   4. after them the mix leaves zero.
+// It does not judge what the sound is.
 `timescale 1ns/1ps
 module tb_fg2_sound;
 	localparam real HALF = 5.8207;      // 85.909 MHz
@@ -49,20 +45,15 @@ module tb_fg2_sound;
 	fg2_sound dut (
 		.clk(clk), .reset(reset),
 		.cen_z80(cen_z80), .cen_ym(cen_ym), .cen_oki(cen_oki),
-		.latch_data(latch_data), .latch_write(latch_write),
-		// Both halves on: this bench asks whether the board makes sound at
-		// all, not what each half contributes.
-		.en_fm(1'b1), .en_pcm(1'b1),
+		.latch_data(latch_data), .latch_write(latch_write), .latch_busy(),
 		.rom_req(rom_req), .rom_addr(rom_addr), .rom_valid(rom_valid), .rom_data(rom_data),
 		.oki_req(oki_req), .oki_addr(oki_addr), .oki_valid(oki_valid), .oki_data(oki_data),
 		.audio(audio), .dbg_m1(dbg_m1), .dbg_ym_wr(dbg_ym_wr)
 	);
 
 	// ---- ROM models ----
-	// Z80 program: req pulses, valid after a latency that varies 4..160 clk
-	// -- a narrow-bridge hit at one end, and at the other more than the
-	// 149 clk worst SDRAM round trip the Psikyo core measured behind the
-	// same fixed priority chain.
+	// Z80 program: req pulses; latency 4..160 clk, from a narrow-bridge hit to beyond
+	// the 149 clk worst SDRAM round trip measured on the Psikyo core.
 	logic [7:0] z80_rom [0:131071];
 	logic [7:0] oki_rom [0:1048575];
 	int         rom_lat = 0;
@@ -80,8 +71,8 @@ module tb_fg2_sound;
 			rom_lat    <= 4 + ($urandom % 157);
 		end
 	end
-	// OKI samples: req is held until valid; latency 3..170 clk, past the
-	// same worst case, against the chip's ~8 us fixed deadline.
+	// OKI samples: req held until valid; latency 3..170 clk, against the
+	// chip's ~8 us deadline.
 	int oki_lat = 0;
 	logic oki_busy = 0;
 	always_ff @(posedge clk) begin

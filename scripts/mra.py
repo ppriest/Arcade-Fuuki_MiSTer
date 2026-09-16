@@ -1,19 +1,10 @@
 #!/usr/bin/env python3
 """Build the SDRAM image an `.mra` describes, the way mra-tools-c would.
 
-Used by scripts/build_mra.py to CHECK its own output: the image an `.mra`
-produces must be byte-identical to the one built directly from each driver's
-ROM_START by scripts/build_maincpu_hex.py and scripts/prep_tilemap_tb.py --
-which are independently verified against MAME's disassembly and against
-rendered frames.
-
-That check is the whole point. LESSONS_LEARNED is blunt about this: every
-interleave on the Psikyo core that was DERIVED by reasoning about byte order
-was wrong, and the one that worked came from copying a shipped core's idiom.
-"It boots" is weak evidence, because a wrong map can boot far enough to look
-plausible. So nothing here reasons about the map digits -- the semantics are
-implemented once, and build_mra.py picks each region's map by testing which
-one reproduces a known-good image.
+scripts/build_mra.py uses it to check that each `.mra` reproduces the image
+built directly from the driver's ROM_START, and to pick each region's map by
+testing which one does (LESSONS_LEARNED: derived interleaves were wrong on
+Psikyo).
 
 Semantics implemented:
 
@@ -47,9 +38,8 @@ def _literal_bytes(text):
 def pattern_from_map(m):
     """Decode a `map` attribute the way mra-tools-c does.
 
-    THIS IS THE ONE THING IN THIS FILE THAT MUST NOT BE REASONED ABOUT, so it
-    is transcribed from the tool that actually consumes the `.mra` rather than
-    derived. From mra-tools-c `src/mra.c`, `get_pattern_from_map()`:
+    Transcribed, not derived, from mra-tools-c `src/mra.c`,
+    `get_pattern_from_map()`:
 
         for (i = n - 1, j = 0; i >= 0; i--) {
             if (map[i] != '0') {
@@ -58,18 +48,14 @@ def pattern_from_map(m):
             }
         }
 
-    The string is scanned RIGHT TO LEFT. `map_index` is the output-byte offset
-    at which this part's contribution starts, and `pattern[j]` is the source
-    byte that lands at output byte `map_index + j`. So:
+    The string is scanned right to left. `map_index` is the output-byte offset
+    where this part starts, and `pattern[j]` is the source byte that lands at
+    output byte `map_index + j`:
 
         map="12"  ->  pattern [1,0]  ->  out[0]=src[1], out[1]=src[0]  SWAP
         map="21"  ->  pattern [0,1]  ->  out[0]=src[0], out[1]=src[1]  verbatim
 
-    which is what docs/LESSONS_LEARNED.md records, established the hard way on
-    the Psikyo core: six `.mra` files emitted tile ROMs with the wrong form and
-    rendered the tile layers as garbage while the sprites looked fine.
-
-    Returns (map_index, pattern).
+    as docs/LESSONS_LEARNED.md records. Returns (map_index, pattern).
     """
     pattern = []
     map_index = None
@@ -148,13 +134,8 @@ def mod_byte(mra_path):
 
 
 def _selftest():
-    """Pin the map convention. This is the check that matters in this file.
-
-    If these ever disagree with mra-tools-c, every generated `.mra` is wrong on
-    hardware while still passing any self-consistency check built on this
-    module -- both sides would share the same wrong assumption, which
-    LESSONS_LEARNED calls out as undetectable by comparison alone.
-    """
+    """Pin the map convention to mra-tools-c. A self-consistency check built
+    on this module cannot catch a wrong convention here."""
     src = bytes([0xAA, 0xBB, 0xCC, 0xDD])
 
     got = interleave([(src, "12")], 16)
@@ -163,19 +144,11 @@ def _selftest():
     got = interleave([(src, "21")], 16)
     assert got == bytes([0xAA, 0xBB, 0xCC, 0xDD]), f'map="21" must be verbatim, got {got.hex()}'
 
-    # Two parts each supplying one byte of a 16-bit word: the classic
-    # ROM_LOAD16_BYTE pairing.
-    #
-    # NOTE THE DIRECTION, because it is easy to get backwards and this test
-    # originally asserted the opposite. The map is indexed from the RIGHT for
-    # the output offset as well as for the pattern, so:
+    # ROM_LOAD16_BYTE pairing. The digit's position counted from the right is
+    # the output byte it feeds:
     #
     #     map="01"  ->  map_index 0  ->  the part lands at output byte 0
     #     map="10"  ->  map_index 1  ->  the part lands at output byte 1
-    #
-    # i.e. the digit's position counted from the right IS the output byte it
-    # feeds. Which is why build_mra.py picks each region's map by testing it
-    # against a known-good image rather than by reasoning it out.
     a = bytes([0x11, 0x22])
     b = bytes([0x33, 0x44])
     got = interleave([(a, "01"), (b, "10")], 16)

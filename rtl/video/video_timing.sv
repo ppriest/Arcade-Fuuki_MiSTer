@@ -80,13 +80,11 @@ module video_timing (
 	//     8-bit:  fires at 240, 257, 258, 259, 260, 261, 6, 7, 8 ...
 	//     9-bit:  fires at 240,   1,   2,   3,   4,   5, 6, 7, 8 ...
 	//
-	// so the effect loses its first five lines and takes five spurious
-	// interrupts a frame. Measured against captured MAME traces (debug/).
-	// Set to 8 to reproduce the aliasing; tb_video_timing pins the difference.
+	// losing the effect's first five lines and adding five spurious interrupts
+	// a frame (checked against MAME traces in debug/). tb_video_timing pins it.
 	localparam int RASTER_CMP_BITS = 9;
 
 	// ---- raster counters ----
-	// Advance on ce_pix, hold otherwise: the framework's CE_PIXEL convention.
 	always_ff @(posedge clk or posedge reset) begin
 		if (reset) begin
 			hcnt <= 9'd0;

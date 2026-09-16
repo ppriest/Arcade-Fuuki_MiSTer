@@ -17,9 +17,8 @@
 // channels regardless, and tagging at completion stores one granule's data
 // under another's tag.
 //
-// req may be held until valid or pulsed; S_DRAIN handles both. The request
-// is captured on the rising edge of req in every state, so a held req
-// presents one edge and cannot re-trigger.
+// req may be held until valid or pulsed; it is captured on its rising edge
+// in every state, so a held req cannot re-trigger.
 module sample_cache #(
 	parameter int ENTRIES = 8
 ) (
@@ -66,8 +65,7 @@ module sample_cache #(
 	logic [25:0] pend_addr;
 
 	// ---- fully-associative lookup ----
-	// One comparator array, time-shared: the requested granule in S_IDLE,
-	// the prefetch target in S_DRAIN.
+	// One comparator array, time-shared with the prefetch target in S_DRAIN.
 	wire [22:0] look_tag = (st == S_DRAIN) ? pf_tag : pend_addr[25:3];
 	logic          hit;
 	logic [IW-1:0] hit_idx;

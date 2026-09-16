@@ -3,31 +3,17 @@
 
     python scripts/parse_mame_trace.py <trace.tr> <out.txt> [--past-loops]
 
-MAME's trace lists one INSTRUCTION START per line. The RTL testbench records
-every instruction FETCH, extension words included -- `clr.w $4067ec.l` is one
-MAME line and three fetches. So the two are not directly comparable.
+MAME's trace has one line per instruction; the testbench records every fetch,
+extension words included. PCs a small positive distance apart are expanded to
+cur, cur+2 .. next-2; after a branch the length is unknown, so only the PC is
+emitted. The testbench matches the list as an in-order subsequence of its own
+fetch trace.
 
-This expands MAME's PCs into the words actually fetched. Where two consecutive
-PCs are a small positive distance apart, the instruction occupies exactly that
-many words and they are emitted: cur, cur+2, ... next-2. Where the distance is
-negative or large (a branch, jump or call), only the PC itself is emitted,
-because its length is not knowable from the trace alone.
-
-The testbench then matches this list as an in-order SUBSEQUENCE of its own
-fetch trace, which tolerates the few unexpanded branch instructions while
-still failing loudly on a real divergence.
-
-Two markers bound the usable region:
-
-  "(loops for N instructions)"  MAME collapses loops unless traced with
-      `noloop`. Parsing STOPS here by default: gogomile's boot delay loop runs
-      131,068 instructions, which the RTL would need ~5M clk cycles to grind
-      through, so a routine regression cannot reach past it. --past-loops
-      continues anyway, for a deliberately long run.
-
-  "(interrupted at ..., IRQ n)" always stops it. Past this point MAME is
-      executing an ISR, and the testbench's boot case runs with no interrupts
-      asserted -- they are no longer the same program.
+  "(loops for N instructions)"  parsing stops here unless --past-loops: a
+      collapsed loop (gogomile's boot delay is 131,068 instructions) is too
+      long for a routine regression.
+  "(interrupted at ..., IRQ n)"  always stops: MAME is now in an ISR and the
+      testbench's boot case runs with no interrupts.
 """
 import re, sys
 

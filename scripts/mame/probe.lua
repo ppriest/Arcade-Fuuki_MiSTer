@@ -1,6 +1,5 @@
--- Probe the Lua API actually present in this MAME build, so the capture
--- scripts can be written against what exists rather than what the current
--- online docs describe (this build is 0.286; docs.mamedev.org serves 0.289).
+-- Probe the Lua API present in this MAME build (0.286), which can differ
+-- from docs.mamedev.org.
 local function has(t, k)
     local ok, v = pcall(function() return t[k] end)
     return ok and v ~= nil

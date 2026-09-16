@@ -8,26 +8,16 @@ For each set: launch it, let it settle, clear the probe counters, let it run a
 measured interval, read the probe back over JTAG, and take a screenshot. Then
 print one row per game so the sets can be compared side by side.
 
-WHY A SWEEP RATHER THAN ONE GAME
---------------------------------
-A single black screen says almost nothing -- it is consistent with a dead CPU,
-an empty ROM, a broken palette or a dead output stage. Comparing sets separates
-those, because the sets differ in known ways:
+Comparing sets separates systemic faults (memory path, output stage) from
+game-specific ones, because the sets differ in known ways:
 
-  gogomile vs gogomileo   program ROM only. Same board, same graphics, same
-                          mod byte, same image size.
-  gogomile vs pbancho     different program ROM, different graphics, different
-                          image SIZE, and mod byte 0x02 instead of 0x00
-                          (pbancho swaps SERVICE1 and COIN2 in the SYSTEM
-                          port).
+  gogomile vs gogomileo   program ROM only.
+  gogomile vs pbancho     program ROM, graphics, image size, and mod byte
+                          0x02 vs 0x00 (pbancho swaps SERVICE1 and COIN2).
 
-Identical numbers across all of them point at something systemic -- the memory
-path or the output stage -- and rule out anything game-specific. Numbers that
-track image size say the download is faithful.
-
-The counters are CLEARED and then read after a measured interval, because
-several of them count per-cycle events and saturate at 65535 almost
-immediately; an uncleared read only ever says "lots".
+Identical numbers across sets point at something systemic; numbers that track
+image size say the download is faithful. Counters are cleared before the
+measured interval because several saturate at 65535 almost immediately.
 """
 import argparse
 import json
@@ -115,8 +105,8 @@ def main():
             print(f"  launch failed, skipping"); continue
 
         time.sleep(4)                       # let the core come up and settle
-        read_probe(clear=True)              # zero the counters
-        time.sleep(a.measure)               # measured interval
+        read_probe(clear=True)
+        time.sleep(a.measure)
         p = read_probe()
 
         png = outdir / f"{name}.png"
@@ -129,7 +119,6 @@ def main():
         print(f"    picture          {pic}")
         rows.append((name, p, pic))
 
-    # ---- side by side ----
     if len(rows) > 1:
         keys = ["frames", "z80_fetches", "ym_writes", "pcm_keyons",
                 "fm_keyons", "snd_peak"]

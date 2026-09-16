@@ -9,10 +9,9 @@ The interleave is taken from each driver's ROM_START, not guessed:
   FG-3  ROM_LOAD32_BYTE  pgm3->0, pgm2->1, pgm1->2, pgm0->3
         => big-endian long N = { pgm3[N], pgm2[N], pgm1[N], pgm0[N] }
 
-Output is one 16-bit big-endian word per line, which is what the testbench's
-$readmemh expects. LESSONS_LEARNED, "Prove the interleave against MAME's
-disassembly offline, before building": run --check to score the reset vector
-and the first instructions before trusting any of this.
+Output is one 16-bit big-endian word per line, for the testbench's $readmemh.
+Run --check to score the reset vector and first opcode (LESSONS_LEARNED,
+"Prove the interleave against MAME's disassembly offline, before building").
 """
 import argparse, zipfile, sys
 
@@ -59,8 +58,7 @@ def check(img):
         print("    PC is not a sane ROM address       FAIL")
     words = [int.from_bytes(img[pc+2*i:pc+2*i+2], 'big') for i in range(8)]
     print("  first words at PC: " + " ".join(f"{w:04X}" for w in words))
-    # A 68k program almost never starts with an odd/illegal opcode; 0xFFFF
-    # and 0x0000 both indicate a wrong interleave.
+    # 0x0000 or 0xFFFF as the first opcode indicates a wrong interleave.
     if words[0] not in (0x0000, 0xFFFF):
         print("    first opcode is not 0000/FFFF      OK"); ok += 1
     else:

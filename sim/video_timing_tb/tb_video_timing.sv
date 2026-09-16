@@ -1,9 +1,7 @@
-// video_timing checks. RUN FROM THE REPOSITORY ROOT (scripts/run_sim.sh).
+// video_timing checks. RUN FROM THE REPOSITORY ROOT (scripts/run_sim.sh video_timing_tb).
 //
-// The interesting checks here are the ones that would otherwise only show up
-// as "the picture is one line off" on MiSTer weeks later: the wrap of
-// vcnt_next/vcnt_next2 at the frame boundary, and each interrupt firing
-// EXACTLY once per frame at the right raster position.
+// Pins the vcnt_next/vcnt_next2 wrap at the frame boundary and each interrupt
+// firing exactly once per frame at the right raster position.
 
 `timescale 1ns/1ps
 
@@ -77,10 +75,8 @@ module tb_video_timing;
 
 			if (ce_pix && h_active && v_active) active_px <= active_px + 1;
 
-			// vcnt_next/vcnt_next2 must ALWAYS be vcnt+1 / vcnt+2 modulo
-			// V_TOTAL. This is the check that catches a raw truncation at the
-			// frame boundary, which on MiSTer looks like the top line of the
-			// screen fetching the wrong row.
+			// vcnt+1 / vcnt+2 modulo V_TOTAL; a raw truncation makes the top
+			// line fetch the wrong row.
 			if (vcnt_next  != 9'((int'(vcnt) + 1) % V_TOTAL)) wrap_bad <= wrap_bad + 1;
 			if (vcnt_next2 != 9'((int'(vcnt) + 2) % V_TOTAL)) wrap_bad <= wrap_bad + 1;
 		end
@@ -121,9 +117,7 @@ module tb_video_timing;
 		check(n_irq5 == 2 && irq5_v == 99 && irq5_h == H_ACTIVE,
 		      "level 5 fires once per frame, one line before the programmed line, at hblank");
 
-		// A raster line outside the frame must produce NO interrupt -- the
-		// game can point it anywhere, and inventing an interrupt the hardware
-		// would not produce is worse than missing one.
+		// A raster line outside the frame must produce no interrupt.
 		$display("\n--- level 5 pointed off-screen ---");
 		begin
 			int n_before;              // NOT `before` -- a SystemVerilog keyword
@@ -134,28 +128,17 @@ module tb_video_timing;
 		end
 
 		// =============================================================
-		// Comparator width: exactly ONE fire per frame for a low line.
-		//
-		// This is the case that pins RASTER_CMP_BITS. gogomile drives an
-		// interrupt on every scanline, cycling 240 -> 1 -> 2 -> ... , so
-		// values 1..5 are in real use. With an 8-bit comparator against
-		// vtotal = 262 those alias onto lines 257..261 and fire a SECOND
-		// time in vblank, which walks the whole effect five lines down the
-		// screen and costs five spurious interrupts a frame. At 9 bits each
-		// value matches exactly one line.
-		//
-		// Set RASTER_CMP_BITS to 8 in video_timing.sv and this check fails
-		// with 4 fires instead of 2 -- which is the point of having it.
+		// Comparator width (pins RASTER_CMP_BITS). gogomile uses raster lines
+		// 1..5; an 8-bit comparator aliases them onto 257..261 and fires twice
+		// per frame. With RASTER_CMP_BITS = 8 this check sees 4 fires, not 2.
 		// =============================================================
 		$display("
 --- raster line 2: one fire per frame (comparator width) ---");
 		begin
 			int n_before;
 			raster_line = 9'd2;
-			// Resynchronise to a frame boundary FIRST, then take the baseline.
-			// Sampling n_irq5 before the sync counts any fire that happens
-			// between changing raster_line and the boundary, which showed up
-			// as 3 fires in 2 frames -- a testbench fault, not aliasing.
+			// Sync to a frame boundary BEFORE taking the baseline, or a fire
+			// between the raster_line change and the boundary is counted.
 			@(posedge frame_start);
 			n_before = n_irq5;
 			repeat (2 * H_TOTAL * V_TOTAL * 12) @(posedge clk);

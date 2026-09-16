@@ -8,9 +8,9 @@
 //   Port 1   sprite graphics (1 client)     rendered a line ahead, so a line of margin
 //   Port 2   main CPU, Z80, samples, and the ROM download   starving the CPU only slows the game
 //
-// Rough demand at 5,472 clk per scanline, ~7 clk per granule: tilemaps ~83
-// granules (11%), CPU ~65 misses behind the granule cache (8%), sprites
-// scene-dependent. Measure rather than trust this.
+// Unmeasured estimate at 5,472 clk per scanline, ~7 clk per granule:
+// tilemaps ~83 granules (11%), CPU ~65 cache misses (8%), sprites
+// scene-dependent.
 //
 // Address map. This module is the authority: every .mra loads to these
 // offsets, and scripts/build_mra.py parses the FG2_BASE_* / FG3_BASE_*
@@ -25,7 +25,7 @@ module fuuki_sdram_top (
 	// toggle from sdram.sv's ack, so a later write is acknowledged unperformed.
 	input  logic reset,
 
-	// SDRAM init sequence. Pass ~pll_locked; never a core reset or download.
+	// Starts the SDRAM init sequence. Same rule as reset.
 	input  logic init,
 
 	// ---- SDRAM pins ----
@@ -110,7 +110,7 @@ module fuuki_sdram_top (
 	// Sizes are the ROM_REGION declarations in fuukifg3.cpp, not the ROMs
 	// loaded: asurabld leaves the first 4 MB of its 32 MB sprite region empty
 	// and the sprite tile bank can address it, so the hole is part of the map.
-	// 56.5 MB end to end needs 26 address bits; sdram.sv drives bit 25 onto A9.
+	// Ends at 0x388_0000, 56.5 MB: 26 address bits; sdram.sv drives bit 25 onto A9.
 	localparam logic [25:0] FG3_BASE_MAINCPU  = 26'h000_0000;   // 2 MB
 	localparam logic [25:0] FG3_BASE_AUDIOCPU = 26'h020_0000;   // 512 KB
 	localparam logic [25:0] FG3_BASE_TILES_L0 = 26'h028_0000;   // 8 MB
@@ -118,7 +118,6 @@ module fuuki_sdram_top (
 	localparam logic [25:0] FG3_BASE_TILES_L2 = 26'h128_0000;   // 2 MB  (MAME "tiles_bg")
 	localparam logic [25:0] FG3_BASE_SPRITES  = 26'h148_0000;   // 32 MB
 	localparam logic [25:0] FG3_BASE_OKI      = 26'h348_0000;   // 4 MB  (MAME "ymf", OPL4 samples)
-	// end 0x388_0000 = 56.5 MB
 
 	localparam logic BOARD_FG2 = 1'b0, BOARD_FG3 = 1'b1;   // .mra mod byte bit 0
 	wire [25:0] base_maincpu  = (board == BOARD_FG3) ? FG3_BASE_MAINCPU  : FG2_BASE_MAINCPU;
@@ -205,9 +204,7 @@ module fuuki_sdram_top (
 	);
 
 	// ---- port 1: sprite graphics, a single client ----
-	// Still through an arbiter: sdram_phy returns to idle on its valid cycle,
-	// so a held request wired straight to it is re-sampled as a second
-	// transaction. The arbiter's registered c_valid gives a cycle of margin.
+	// Still through an arbiter; see sdram_arbiter.sv on N = 1.
 	logic [0:0] spr_req_v, spr_valid_v;
 	assign spr_req_v = spr_req;
 	assign spr_valid = spr_valid_v[0];
@@ -243,8 +240,7 @@ module fuuki_sdram_top (
 		.dl_we16(dl_we16), .dl_busy(dl_busy)
 	);
 
-	// The bridge caches one granule, so three of four sequential CPU fetches
-	// never touch the chip.
+	// The bridge caches one granule (sdram_narrow_bridge.sv).
 	logic        cpu_g_req, cpu_g_valid;
 	logic [25:0] cpu_g_addr;
 	logic [63:0] cpu_g_data;

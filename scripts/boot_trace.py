@@ -5,17 +5,14 @@ compare the program fetches with MAME's boot trace.
     python scripts/boot_trace.py capture gogomile
     python scripts/boot_trace.py compare gogomile
 
-`capture` loads the game twice -- once with trace source 1 ({FC, word addr})
-and once with source 2 ({data, addr[7:0]}) -- because a source is an OSD bit
-and the .CFG is only read at load. Both captures are first-N from the moment
-the download finishes (the sources are gated on dl_done in fuuki_core.sv), so
-entry k of each is the same access, and the low address byte carried by the
-data capture is checked against the address capture to prove it.
+`capture` loads the game twice, with trace source 1 ({FC, word addr}) and
+source 2 ({data, addr[7:0]}), because the source is an OSD bit read only at
+load. Both start at dl_done (fuuki_core.sv), so entry k is the same access in
+each; the data capture's low address byte checks that.
 
-`compare` extracts the FC=6 program fetches in order and matches MAME's
-expected fetch list (scripts/parse_mame_trace.py) as an in-order subsequence
--- the same check sim/maincpu_tb passes 84/84 -- and prints the accesses
-around the first divergence with the data the CPU actually consumed.
+`compare` matches the FC=6 program fetches against MAME's expected list
+(scripts/parse_mame_trace.py) as an in-order subsequence, as sim/maincpu_tb
+does, and prints the accesses around the first divergence.
 """
 import json
 import struct
@@ -98,10 +95,7 @@ def capture(game, window=0, fc_only=False, trig=False):
             print("    ", p)
         result[tag] = ents
     if trig:
-        # Ring order -> time order. The trigger entry (the vector read) is
-        # the newest, so the entry after it in buffer order is the oldest.
-        # Both captures rotate by the ADDRESS capture's trigger position: the
-        # data capture cannot see FC, but the two loads are the same boot.
+        # Ring order -> time order: the trigger entry is the newest.
         A = result["fc_addr"]
         hits = [i for i, a in enumerate(A) if is_vector_read(a)]
         if len(hits) != 1:
@@ -110,10 +104,9 @@ def capture(game, window=0, fc_only=False, trig=False):
             k = hits[0] + 1
             result["fc_addr"] = A[k:] + A[:k]
             print(f"  rotated: trigger was at ring index {hits[0]}; it is now entry 255")
-            # The data capture is a separate load whose interrupt timing
-            # relative to the boot need not match, so its ring position of
-            # the trigger is unknown. Rotate it to best agree with the
-            # address capture's low address bytes, and report how well.
+            # The data capture is a separate load (no FC, interrupt timing may
+            # differ), so rotate it to best match the address capture's low
+            # address bytes.
             D = result.get("data_addr")
             if D:
                 def score(k):
@@ -191,7 +184,6 @@ def compare(game, suffix="", tail=0):
             print(f"  {i:3d}  {FC.get(fc, str(fc)):5s}  {2*wa:06X}  {ds}  {es}  {note}")
     print(f"\n  address/data captures misaligned on {misalign} entries (0 = the two loads line up)")
 
-    # in-order subsequence match against MAME
     j = 0
     for k, f in enumerate(fetches):
         if j < len(expected) and f == expected[j]:
@@ -201,17 +193,14 @@ def compare(game, suffix="", tail=0):
         print(f"  first expected fetch NOT seen: 0x{expected[j]:06X} "
               f"(after matching up to 0x{expected[j-1]:06X})" if j else
               f"  the very first expected fetch 0x{expected[0]:06X} never appeared")
-        # show what the MiSTer did instead, around that point
         seen = [f"{f:06X}" for f in fetches[:40]]
         print(f"  MiSTer's first program fetches: {' '.join(seen)}")
 
 
 def hang(game, wait, fc_only=False):
-    """Catch a hung CPU: run the game for `wait` seconds, PAUSE the CPU over
-    JTAG (probe source bit 5 -> pause_control.ext_pause), and let the trace
-    ring freeze on the last 256 ROM reads before the pause -- the loop the
-    CPU is spinning in. The ring is not rotated (there is no trigger entry to
-    rotate on); a loop reads the same either way."""
+    """Run the game `wait` seconds, pause the CPU over JTAG (probe source bit
+    5 -> pause_control.ext_pause), and read the ring's last 256 ROM reads.
+    Not rotated: there is no trigger entry, and a loop reads the same."""
     OUT.mkdir(parents=True, exist_ok=True)
     result = {}
     srcs = ((1, "fc_addr"),) if fc_only else ((1, "fc_addr"), (2, "data_addr"))

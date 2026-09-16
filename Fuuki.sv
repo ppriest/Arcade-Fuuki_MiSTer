@@ -19,17 +19,16 @@
 //
 // Framework glue only. Everything Fuuki lives in rtl/fuuki_core.sv, the
 // module sim/ drives; this file wires it to hps_io, the PLL, the SDRAM pins
-// and arcade_video, and assembles the input port words.
+// and the video chain, and assembles the input port words.
 //
 // One .rbf serves both boards, selected from the .mra's mod byte
 // (`<rom index="1">`, ioctl_index == 1):
 //     bit 0   0 = FG-2 (M68000)   1 = FG-3 (M68EC020)
 //     bit 1   SYSTEM ($800000) layout, see `sysport_alt`
 //
-// Not in this build: hiscore save. Output chain: crt_adjust -> arcade_video
-// (scandoubler, gamma) -> video_freak (crop, integer scale, aspect) -> the
-// framework, with screen_rotate_two tapping the final output into a rotated
-// or 180-flipped HDMI framebuffer.
+// Video: crt_vsize -> crt_adjust -> arcade_video -> video_freak, with
+// screen_rotate_two tapping the output into a rotated HDMI framebuffer.
+// No hiscore save.
 
 module emu
 (
@@ -45,13 +44,6 @@ assign USER_OUT = '1;
 assign {UART_RTS, UART_TXD, UART_DTR} = 0;
 assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 
-// DDR3 has two owners that never overlap: the fast ROM loader (core in
-// reset) and the HDMI rotator. The pins are muxed on ldr_active, not
-// shared: the rotator has no reset and infers acceptance from DDRAM_BUSY, so
-// on a shared bus it takes phantom writes as accepted and leaves a permanent
-// stale band in the frame buffer. Its DDRAM_BUSY is held high for the
-// loader's whole run.
-
 assign VGA_F1 = 0;
 assign VGA_SCALER  = 0;
 assign VGA_DISABLE = 0;
@@ -64,7 +56,6 @@ wire signed [15:0] core_audio_l, core_audio_r;
 assign AUDIO_S   = 1;
 assign AUDIO_L   = core_audio_l;
 assign AUDIO_R   = core_audio_r;
-assign AUDIO_MIX = 0;
 
 assign LED_DISK  = 0;
 assign LED_POWER = 0;
@@ -73,9 +64,8 @@ assign BUTTONS   = 0;
 
 //////////////////////////////////////////////////////////////////
 
-// All Fuuki boards are ROT0: 4:3, or 3:4 once rotated. ar != 0 selects Full
-// Screen / ARC1 / ARC2, where ARY 0 means "stretch" in the framework's
-// convention. video_freak turns these into VIDEO_ARX/ARY.
+// All Fuuki games are ROT0: 4:3, or 3:4 once rotated. ARY 0 means "stretch"
+// to video_freak.
 wire [1:0] ar = status[122:121];
 wire [1:0] rotate_sel = status[64:63];
 wire       rotate_en  = |rotate_sel;
@@ -91,10 +81,10 @@ assign FB_FORCE_BLANK = 0;
 
 // ---------------------------------------------------------------------------
 // Debug build or release. The Fuuki_stp revision defines DEBUG_ISSP; Fuuki
-// does not. In the release: every H1-prefixed OSD line (the Debug page and
-// the sound mutes) is hidden by status_menumask bit 1, the status bits
-// behind them are forced off so a debug .CFG cannot hide a layer or mute a
-// chip, and the JTAG probe compiles out with everything that only fed it.
+// does not. In the release: every H1-prefixed OSD line (the Debug page) is
+// hidden by status_menumask bit 1, the status bits behind them are forced
+// off so a debug .CFG cannot hide a layer, and the JTAG probe compiles out
+// with everything that only fed it.
 // ---------------------------------------------------------------------------
 `ifdef DEBUG_ISSP
 localparam DEBUG_BUILD = 1'b1;
@@ -111,15 +101,18 @@ localparam CONF_STR = {
 	"O[65],Flip 180,Off,On;",
 	"O[46:44],Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
 	"-;",
-	"H1O[90],Sound: FM,On,Off;",
-	"H1O[91],Sound: PCM,On,Off;",
 	"O[68:66],Scale,Normal,V-Integer,Narrower HV-Integer,Wider HV-Integer,HV-Integer;",
 	"O[70:69],Vertical crop,Disabled,216p (5x),224p;",
 	"O[75:71],Crop offset,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
 	"-;",
-	"O[76],CRT offset,Off,On;",
-	"O[83:77],CRT H-Position,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,+16,+17,+18,+19,+20,+21,+22,+23,+24,+25,+26,+27,+28,+29,+30,+31,+32,+33,+34,+35,+36,+37,+38,+39,+40,+41,+42,+43,+44,+45,+46,+47,+48,-48,-47,-46,-45,-44,-43,-42,-41,-40,-39,-38,-37,-36,-35,-34,-33,-32,-31,-30,-29,-28,-27,-26,-25,-24,-23,-22,-21,-20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
-	"O[89:84],CRT V-Shift,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,+16,+17,+18,+19,+20,+21,+22,+23,+24,+25,+26,+27,+28,+29,+30,+31,-32,-31,-30,-29,-28,-27,-26,-25,-24,-23,-22,-21,-20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
+	"O[76],CRT Adjust,Off,On;",
+	"H2O[96:92],CRT H-Size,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
+	"H2O[83:77],CRT H-Position,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,+16,+17,+18,+19,+20,+21,+22,+23,+24,+25,+26,+27,+28,+29,+30,+31,+32,+33,+34,+35,+36,+37,+38,+39,+40,+41,+42,+43,+44,+45,+46,+47,+48,-48,-47,-46,-45,-44,-43,-42,-41,-40,-39,-38,-37,-36,-35,-34,-33,-32,-31,-30,-29,-28,-27,-26,-25,-24,-23,-22,-21,-20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
+	"H2O[89:84],CRT V-Shift,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,+16,+17,+18,+19,+20,+21,+22,+23,+24,+25,+26,+27,+28,+29,+30,+31,-32,-31,-30,-29,-28,-27,-26,-25,-24,-23,-22,-21,-20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
+	"H2O[100:97],CRT V-Size,0,+1,+2,+3,+4,+5,+6,+7,-8,-7,-6,-5,-4,-3,-2,-1;",
+	"H2O[101],CRT V-Size Mode,PVM,Cabinet;",
+	"-;",
+	"O[103:102],Audio mix,Mono,None,25%,50%;",
 	"-;",
 	"DIP;",
 	"-;",
@@ -130,7 +123,6 @@ localparam CONF_STR = {
 	"H1P1O[42],Tilemap 2,On,Off;",
 	"H1P1O[43],Sprites,On,Off;",
 	"H1P1-;",
-	// Trace to screen, live from the OSD so the capture moves without a rebuild.
 	"H1P1O[50],Trace overlay,Off,On;",
 	"H1P1O[52:51],Trace source,Download addr,CPU FC+addr,CPU data+addr,SDRAM dump;",
 	"H1P1O[56:53],Trace window,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15;",
@@ -140,20 +132,15 @@ localparam CONF_STR = {
 	"H1P1O[60],Line markers,Off,On;",
 	"-;",
 	"R[0],Reset;",
-	// Must agree with the .mra <buttons> positions, which assign the joystick
-	// bits. scripts/build_mra.py pads every game to four button slots so
-	// Start, Coin and Pause land on bits 8, 9, 10 (pause_control.sv's
-	// PAUSE_BIT = 10).
+	// Must match the .mra <buttons> list, which assigns the joystick bits
+	// (see INPUTS and pause_control.sv's PAUSE_BIT).
 	"J1,Button 1,Button 2,Button 3,Button 4,Start,Coin,Pause;",
 	"V,v",`BUILD_DATE
 };
 
-// Declared before first use. A signal first seen in a port connection
-// becomes an implicit 1-bit net and the later declaration is a second
-// driver; Quartus reports "cannot be assigned more than one value" against
-// the declaration.
+// Declared before first use: a signal first seen in a port connection becomes
+// an implicit 1-bit net and the later declaration a second driver.
 wire clk_sys, clk_sdram_shifted, pll_locked;
-// Fast ROM loader; core_reset below reads ldr_active.
 wire        ldr_active, ldr_req, ldr_we16, ldr_busy;
 wire [25:0] ldr_addr;
 wire [15:0] ldr_data;
@@ -161,19 +148,23 @@ wire [31:0] probe_src;  // ISSP source bits: [7:0] controls (see the PLL block),
 
 wire        forced_scandoubler;
 wire [21:0] gamma_bus;
-// Gamma is forced off under the debug overlay: the framework applies the
-// user's gamma LUT before the scaler and screenshots, which remaps trace
-// pixels (lossy). Bit 19 is gamma_en (sys/gamma_corr.sv); bit 21 is driven
-// back by the consumer.
+// Gamma is forced off under the debug overlay: the framework's gamma LUT is
+// applied before the scaler and screenshots and remaps trace pixels. Bit 19
+// is gamma_en (sys/gamma_corr.sv); bit 21 is driven back by the consumer.
 wire [21:0] gamma_bus_video;
 assign gamma_bus_video[20:0] = {gamma_bus[20], gamma_bus[19] & ~status[50], gamma_bus[18:0]};
 assign gamma_bus[21]         = gamma_bus_video[21];
 wire  [1:0] buttons;
-// Debug settings (layer masks [43:40], trace controls [60:50], sound mutes
-// [91:90]) read as zero in the release whatever the .CFG holds.
-localparam [127:0] DEBUG_STATUS_MASK = (128'hF << 40) | (128'h7FF << 50) | (128'h3 << 90);
+// Debug settings (layer masks [43:40], trace [60:50]) read as zero in the
+// release whatever the .CFG holds.
+localparam [127:0] DEBUG_STATUS_MASK = (128'hF << 40) | (128'h7FF << 50);
 wire [127:0] status_raw;
 wire [127:0] status = DEBUG_BUILD ? status_raw : (status_raw & ~DEBUG_STATUS_MASK);
+
+// Both boards drive one speaker (fuukifg2.cpp / fuukifg3.cpp), so the
+// default, status value 0, is mono. OSD order: Mono, None, 25%, 50%.
+wire [1:0] audio_mix_sel = status[103:102];
+assign AUDIO_MIX = (audio_mix_sel == 2'd0) ? 2'd3 : audio_mix_sel - 2'd1;
 wire [10:0] ps2_key;
 
 wire [31:0] joystick_0, joystick_1;
@@ -196,7 +187,7 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 
 	.buttons(buttons),
 	.status(status_raw),
-	.status_menumask({14'd0, debug_menu_hide, 1'b0}),   // H1: the Debug page and the sound mutes
+	.status_menumask({13'd0, ~status[76], debug_menu_hide, 1'b0}),   // H1: the Debug page; H2: CRT Adjust's settings while it is off
 
 	.joystick_0(joystick_0),
 	.joystick_1(joystick_1),
@@ -213,13 +204,12 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 
 ///////////////////////   CLOCKS   ///////////////////////////////
 
-// 85.909091 MHz = 14.318181 MHz (the video crystal, 28.640 / 2) x 6. FG-2's
-// 16 MHz is 176/945 of it and FG-3's 20 MHz is 220/945, hence maincpu.sv's
-// Bresenham enable.
-// outclk_1 is SDRAM_CLK, shifted 180 degrees (5820 ps of 11641), driving the
-// pin directly. PLL taken unchanged from the Psikyo core. Do not judge the
-// phase by simulation: the chip model has no notion of clock phase, and a
-// wrong phase (266 degrees) shows on MiSTer as a frozen pattern.
+// 85.909091 MHz = 14.318181 MHz (video crystal 28.640 / 2) x 6; the CPU rates
+// are exact fractions of it (maincpu.sv).
+// outclk_1 is SDRAM_CLK, shifted 180 degrees (5820 ps of 11641). PLL taken
+// unchanged from the Psikyo core. Simulation cannot check the phase (the chip
+// model ignores it); a wrong phase (266 degrees) shows on MiSTer as a frozen
+// pattern.
 pll pll
 (
 	.refclk(CLK_50M),
@@ -232,12 +222,10 @@ pll pll
 );
 
 // ---------------------------------------------------------------------------
-// Runtime SDRAM_CLK phase stepping over JTAG, through the framework's
-// pll_cfg (altera_pll_reconfig) on the core PLL, clocked from CLK_50M so it
-// runs whatever the PLL does. A write to the dynamic-phase-shift register
-// (address 6) moves one counter by N steps of VCO/8, ~132 ps (VCO 945 MHz),
-// ~88 steps per period. Counter 3 is C1, SDRAM_CLK; C0 (clk_sys) is left
-// alone. Disabled at present: dps_up / dps_dn are tied to 0.
+// SDRAM_CLK phase stepping through pll_cfg, clocked from CLK_50M so it runs
+// whatever the PLL does. Register 6 (dynamic phase shift) moves counter 3
+// (C1, SDRAM_CLK) by N steps of VCO/8, ~132 ps at VCO 945 MHz. Disabled:
+// dps_up / dps_dn are tied to 0.
 //
 // ISSP source bits [7:0]:
 //     bit 0     clear the debug counters
@@ -301,11 +289,10 @@ always @(posedge clk_sys) ce_pix_cnt <= (ce_pix_cnt == 11) ? 4'd0 : ce_pix_cnt +
 // Reset domains: see rtl/fuuki_core.sv's header.
 wire reset      = RESET | status[0] | buttons[1] | ~pll_locked;
 
-// Hold the CPU and video in reset until the ROM has been loaded once. MiSTer
-// only asserts RESET when the .mra load begins; before that the core would
-// run on whatever SDRAM holds. rom_loaded is sticky with no reset: set when
-// the first index-0 transfer ends (byte path) or the loader's copy ends
-// (fast path, which has no ioctl_wr pulses), never cleared.
+// Hold the CPU and video in reset until the ROM has been loaded once: MiSTer
+// asserts RESET only when the .mra load begins, and before that SDRAM holds
+// garbage. rom_loaded is sticky: set when the first index-0 transfer ends
+// (byte path) or the loader's copy ends (fast path, no ioctl_wr pulses).
 reg rom_loaded = 1'b0, dl_index0_seen = 1'b0, ldr_active_d = 1'b0;
 always @(posedge clk_sys) begin
 	ldr_active_d <= ldr_active;
@@ -318,15 +305,12 @@ end
 // itself.
 wire core_reset = reset | ioctl_download | ~rom_loaded | ldr_active;
 
-// The memory path is reset by PLL lock only. Do not use `reset`: MiSTer
-// holds RESET for the whole download and the download FSM would write
-// nothing. Do not use `reset & ~ioctl_download` either: it pulses the phy's
-// reset at every ioctl_download edge while RESET is held, including the end
-// of the ROM stream, and a request whose req toggle crosses that reset is
-// acknowledged without being performed (a dropped write, differing from
-// load to load). Nothing in the memory path needs a runtime reset: the
-// download FSM and arbiters return to idle on their own, and the bridge's
-// cache is invalidated per download through `inval`. The FPGA is
+// The memory path is reset by PLL lock only. `reset` is held for the whole
+// download, so the download FSM would write nothing. `reset & ~ioctl_download`
+// pulses the phy's reset at each download edge, and a request whose req
+// toggle crosses that reset is acknowledged but not performed (a dropped
+// write). No runtime reset is needed: the FSM and arbiters return to idle,
+// the bridge cache is invalidated per download (`inval`), and the FPGA is
 // reconfigured on every .mra launch.
 wire sdram_reset = ~pll_locked;
 wire sdram_init  = ~pll_locked;
@@ -366,7 +350,7 @@ wire [15:0] p1p2_in = ~{
 // SYSTEM ($800000). The two layouts differ only in bits 1 and 8:
 //   gogomile          bit 1 = SERVICE1   bit 8 = COIN2
 //   pbancho / asura   bit 1 = COIN2      bit 8 = SERVICE1
-// SERVICE1 has no joystick slot. Service mode is DSW bit 0, from the OSD.
+// SERVICE1 has no joystick slot; service mode is DSW bit 0.
 wire coin1    = joystick_0[9];
 wire coin2    = joystick_1[9];
 wire start1   = joystick_0[8];
@@ -424,12 +408,11 @@ wire [25:0] dbg_dl_addr;
 
 // ---------------------------------------------------------------------------
 // Fast ROM loading. scripts/build_mra.py puts address="0x30000000" on
-// <rom index="0">, so the HPS DMAs the ROM into DDR3 and the core sees
+// <rom index="0">, so the HPS copies the ROM into DDR3 and the core sees
 // ioctl_download with no ioctl_wr pulses; rom_loader then copies DDR3 ->
 // SDRAM with the core in reset. An .mra without the attribute streams
-// through ioctl (scripts/sdram_pattern_test.py depends on this), so the two
-// paths are told apart by whether any byte arrived during the download. The
-// copy length is the whole board map.
+// through ioctl (scripts/sdram_pattern_test.py relies on it); the paths are
+// told apart by whether any byte arrived during the download.
 // ---------------------------------------------------------------------------
 reg  dl_active_d = 1'b0, ldr_pending = 1'b0, ldr_start = 1'b0;
 reg  ldr_done    = 1'b0, dl_seen_wr  = 1'b0;
@@ -512,13 +495,9 @@ fuuki_core u_core (
 
 	.pause_cpu(pause_cpu),
 
-	// Runtime A/B switches for bisecting a rendering fault. Menu sense is
-	// On,Off, so the enable is the inverse of the status bit.
+	// Menu sense is On,Off, so the enable is the inverted status bit.
 	.en_l0(~status[40]), .en_l1(~status[41]),
 	.en_l2(~status[42]), .en_spr(~status[43]),
-	// FM is the YM2203+YM3812 pair on FG-2 and the OPL3 on FG-3; PCM is the
-	// OKI and the OPL4's wavetable engine.
-	.en_fm(~status[90]), .en_pcm(~status[91]),
 
 	.video_r(core_r), .video_g(core_g), .video_b(core_b),
 	.video_hs(core_hs), .video_vs(core_vs),
@@ -545,28 +524,73 @@ fuuki_core u_core (
 	.dbg_opl4_state(dbg_opl4_state),
 	.dbg_z80_m1(dbg_z80_m1), .dbg_ym_wr(dbg_ym_wr),
 	.dbg_snd_int(dbg_snd_int), .dbg_snd_state(dbg_snd_state),
+	.dbg_clear(probe_src[0]), .dbg_fg2_chips(dbg_fg2_chips),
+	.dbg_fg2_oki(dbg_fg2_oki), .dbg_fg2_z80(dbg_fg2_z80), .dbg_fg2_cmd(dbg_fg2_cmd), .dbg_fg2_cmd_hist(dbg_fg2_cmd_hist), .dbg_fg2_cmd_frz(dbg_fg2_cmd_frz),
 	.dbg_pcm_keyon(dbg_pcm_keyon), .dbg_fm_keyon(dbg_fm_keyon),
 	.dbg_frozen(dbg_frozen)
 );
 
 ///////////////////////   VIDEO   /////////////////////////////////
 
-// CLK_VIDEO and CE_PIXEL are outputs of arcade_video; do not assign them
-// here (a second driver on CLK_VIDEO is reported against clk_sys).
+// CLK_VIDEO and CE_PIXEL are driven by arcade_video; do not assign them here.
 //
-// ---- CRT offset (rtl/video/crt_adjust.sv) ----
-// Slides the picture inside a line buffer while HSync/VSync stay native, so
-// a CRT keeps lock while adjusting. It sits before arcade_video, so HDMI
-// follows it too. hsize is 0, the module's no-scaling case.
-// H-Position: the OSD stores the index into a 97-entry list (0, +1..+48,
-// -48..-1), so the negative half wraps at 97. V-Shift's 64-entry list is
-// two's complement.
-wire crt_adj_on = status[76];
+// ---- CRT Adjust (rtl/video/crt_vsize.sv, rtl/video/crt_adjust.sv) ----
+// Vendored from Arcade-Raiden_MiSTer and wired as Raiden.sv wires them. Sync
+// stays native in position, so a CRT keeps lock while adjusting.
+// H-Position's OSD index covers 97 entries (0, +1..+48, -48..-1), so the
+// negative half wraps at 97. V-Shift and the sizes are two's complement.
+// The sizes retime the core's pixel enable and do not survive the
+// scandoubler, so both are forced to 0 while it is on.
+wire crt_adj_on   = status[76];
+wire scandoubled  = (status[46:44] != 3'd0) | forced_scandoubler;
+wire crt_size_en  = crt_adj_on & ~scandoubled;
 wire  [6:0] crt_hpos_idx = crt_adj_on ? status[83:77] : 7'd0;
 wire signed [8:0] crt_hoffset = (crt_hpos_idx <= 7'd48)
 	? $signed({2'b00, crt_hpos_idx})
 	: $signed({2'b00, crt_hpos_idx}) - 9'sd97;
 wire signed [5:0] crt_voffset = crt_adj_on ? $signed(status[89:84]) : 6'sd0;
+
+// One OSD step of V-Size is 3 lines; negated so "+" is taller.
+reg signed [4:0] crt_hsize = 5'sd0;
+reg signed [5:0] crt_vsize = 6'sd0;
+reg              crt_vsmode = 1'b0;
+wire signed [5:0] crt_vsz_step = $signed({{2{status[100]}}, status[100:97]});
+always @(posedge clk_sys) if (core_ce) begin
+	crt_hsize  <= crt_size_en ? $signed(status[96:92]) : 5'sd0;
+	crt_vsize  <= crt_size_en ? -(crt_vsz_step + (crt_vsz_step <<< 1)) : 6'sd0;
+	crt_vsmode <= status[101];
+end
+
+// V-Size ring: 52 lines of 320 pixels covers |vsize| <= 24, the OSD's +-8 x 3.
+wire [7:0] vz_r, vz_g, vz_b;
+wire       vz_hs, vz_vs, vz_de, vz_vb, vz_ce;
+crt_vsize #(.RING_LINES(52), .LINE_PX(320)) u_crt_vsize (
+	.clk(clk_sys), .pxl_cen(core_ce),
+	.active(crt_adj_on), .tube_mode(crt_vsmode), .vsize(crt_vsize),
+	.r_in(core_r), .g_in(core_g), .b_in(core_b),
+	.hs_in(core_hs), .vs_in(core_vs), .de_in(~(core_hb | core_vb)), .vb_in(core_vb),
+	.r_out(vz_r), .g_out(vz_g), .b_out(vz_b),
+	.hs_out(vz_hs), .vs_out(vz_vs), .de_out(vz_de), .vb_out(vz_vb),
+	.ce_out(vz_ce)
+);
+
+// H-Size read enable: 12 clk per pixel is 48 quarter-clocks, so a step is
+// 1/48 of the width. The accumulator restarts on crt_adjust's hs_ref_out,
+// never on the raw HSync: the module's read counter restarts on that edge.
+wire hs_ref;
+reg  hs_ref_d = 1'b0;
+always @(posedge clk_sys) hs_ref_d <= hs_ref;
+wire hs_ref_rise = hs_ref & ~hs_ref_d;
+wire [7:0] rd_period = 8'd48 + {{3{crt_hsize[4]}}, crt_hsize};
+reg  [7:0] rd_acc = 8'd0;
+wire rd_tick = (rd_acc + 8'd4) >= {1'b0, rd_period};
+always @(posedge clk_sys) begin
+	if      (hs_ref_rise) rd_acc <= 8'd0;
+	else if (rd_tick)     rd_acc <= rd_acc + 8'd4 - {1'b0, rd_period};
+	else                  rd_acc <= rd_acc + 8'd4;
+end
+wire rd_ce  = (crt_hsize == 5'sd0) ? vz_ce : rd_tick;
+wire crt_ce = crt_adj_on ? rd_ce : core_ce;
 
 wire [7:0] crt_r, crt_g, crt_b;
 wire       crt_hs, crt_vs, crt_hb, crt_vb;
@@ -576,14 +600,14 @@ crt_adjust #(
 	// CONTENTSHIFT keeps HSync byte-for-byte native; SYNCSHIFT moves the sync.
 	.HPOS_MODE(1)
 ) u_crt_adjust (
-	.clk(clk_sys), .pxl_cen(core_ce), .pxl2_cen(core_ce),
-	.active(crt_adj_on), .hsize(5'sd0),
+	.clk(clk_sys), .pxl_cen(vz_ce), .pxl2_cen(rd_ce),
+	.active(crt_adj_on), .hsize(crt_hsize),
 	.hoffset(crt_hoffset), .voffset(crt_voffset),
-	.r_in(core_r), .g_in(core_g), .b_in(core_b),
-	.hs_in(core_hs), .vs_in(core_vs), .hb_in(core_hb), .vb_in(core_vb),
+	.r_in(vz_r), .g_in(vz_g), .b_in(vz_b),
+	.hs_in(vz_hs), .vs_in(vz_vs), .hb_in(~vz_de), .vb_in(vz_vb),
 	.r_out(crt_r), .g_out(crt_g), .b_out(crt_b),
 	.hs_out(crt_hs), .vs_out(crt_vs), .hb_out(crt_hb), .vb_out(crt_vb),
-	.hs_ref_out()
+	.hs_ref_out(hs_ref)
 );
 
 wire vga_de_raw;
@@ -591,7 +615,7 @@ wire vga_de_raw;
 arcade_video #(.WIDTH(320), .DW(24), .GAMMA(1)) arcade_video
 (
 	.clk_video(clk_sys),
-	.ce_pix(core_ce),
+	.ce_pix(crt_ce),
 
 	.RGB_in({crt_r, crt_g, crt_b}),
 	.HBlank(crt_hb),
@@ -641,14 +665,13 @@ video_freak video_freak
 );
 
 // ---- HDMI rotation and flip (rtl/video/screen_rotate_two.sv) ----
-// A tap, not a filter: the analog output keeps the native raster while a
-// rotated or 180-flipped copy goes into DDR3 and the HPS framebuffer points
-// at it. The DIP "Flip Screen" is different (the game redrawing itself,
-// which both MAME drivers get wrong) and stays commented out of the .mra
-// files.
-// DDR3 is muxed against the ROM loader on ldr_active; DDRAM_BUSY is ORed
-// with ldr_active so the rotator cannot take the loader's transactions as
-// its own accepted writes.
+// A tap: the analog output keeps the native raster; a rotated or flipped copy
+// goes to the HPS framebuffer via DDR3. The DIP "Flip Screen" (which both MAME
+// drivers get wrong) stays commented out of the .mra files.
+// DDR3 is muxed with the ROM loader on ldr_active, not shared: the rotator
+// has no reset and infers acceptance from DDRAM_BUSY, so it would take the
+// loader's transactions as its own writes and leave a stale band in the
+// frame. DDRAM_BUSY is held high for the loader's whole run.
 wire        rot_DDRAM_CLK, rot_DDRAM_WE, rot_DDRAM_RD;
 wire [7:0]  rot_DDRAM_BURSTCNT, rot_DDRAM_BE;
 wire [28:0] rot_DDRAM_ADDR;
@@ -698,9 +721,7 @@ assign DDRAM_RD       = ldr_active ? ldr_DDRAM_RD       : rot_DDRAM_RD;
 // step with it: a shifted field reads as plausible nonsense.
 wire       ctr_clear = probe_src[0];
 
-// Interrupt state, for a hung game: is irq1 still generated, is it stuck
-// pending, or is it taken (level-1 acknowledges advance) and the handler
-// never sets its flag.
+// Interrupt state for a hung game: irq1 generated, stuck pending, or taken.
 wire [2:0] dbg_irq_pending, dbg_iack_level;
 wire       dbg_iack, dbg_irq1_trig;
 wire [15:0] dbg_smp;   // sample fetch watch, see fuuki_core.sv
@@ -709,6 +730,27 @@ wire [7:0]  dbg_opl4_state;  // {0, new2, mix_pcm}: what can silence PCM
 wire        dbg_z80_m1, dbg_ym_wr, dbg_pcm_keyon, dbg_fm_keyon;
 wire        dbg_snd_int;           // sound CPU INT falling edges
 wire [3:0]  dbg_snd_state;         // {halt_n, rom_wait, int_n, nmi_n}
+wire [151:0] dbg_fg2_chips;        // fg2_sound.sv per-chip probe, read as instance S
+wire [87:0]  dbg_fg2_oki;          // fg2_sound.sv phrase-start probe, instance S above the chips
+wire [95:0]  dbg_fg2_z80;          // fg2_sound.sv Z80 probe, instance S above the OKI probe
+wire [143:0] dbg_fg2_cmd;
+wire [255:0] dbg_fg2_cmd_hist;
+wire [327:0] dbg_fg2_cmd_frz;          // fg2_sound.sv command transport probe, top of instance S
+
+// Which input of core_reset rises: rising edges of each, counted on clk_sys,
+// and every assertion of core_reset itself long enough to clock a flop.
+reg  [6:0] rsrc_d = 7'd0;
+wire [6:0] rsrc = {RESET, status[0], buttons[1], ~pll_locked, ioctl_download, ~rom_loaded, ldr_active};
+reg  [7:0] c_rsrc [0:6];
+initial for (int i = 0; i < 7; i++) c_rsrc[i] = 8'd0;
+always @(posedge clk_sys) begin
+	rsrc_d <= rsrc;
+	for (int i = 0; i < 7; i++)
+		if (ctr_clear) c_rsrc[i] <= 8'd0;
+		else if (rsrc[i] && !rsrc_d[i] && ~&c_rsrc[i]) c_rsrc[i] <= c_rsrc[i] + 8'd1;
+end
+reg [7:0] c_core_reset_async = 8'd0;
+always @(posedge core_reset) c_core_reset_async <= c_core_reset_async + 8'd1;
 reg  [7:0] c_irq1  = 8'd0;   // irq1_trig pulses (one per frame when healthy)
 reg  [4:0] c_iack1 = 5'd0;   // level-1 acknowledge cycles
 reg        iack_d  = 1'b0;
@@ -757,15 +799,16 @@ debug_counter #(.W(16)) u_c_gfx    (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_gf
 wire dl_seen;
 debug_sticky u_dl_seen (.clk(clk_sys), .clear(ctr_clear), .ev(ioctl_wr && ioctl_index == 16'd0), .seen(dl_seen));
 
-// Sound chain, read in order: Z80 opcode fetches, writes to the chips,
-// key-ons (FG-3's OPL4), and the mix moving (snd_peak). Fetches with no
-// writes is an I/O or latch fault; writes with no key-ons a driver that
-// never starts a voice; key-ons with no peak a synthesis or sample-path
-// fault. The counters saturate; clear and read again for a rate.
-wire [15:0] c_z80_m1, c_ym_wr;
+// Sound chain, in order: Z80 fetches, chip writes, key-ons, mix peak. The
+// first that stays at zero locates the fault. Counters saturate.
+// Fetches count in units of 1024: at ~1.5 M/s a plain 16-bit counter
+// saturates within 50 ms; scaled it holds 45 s.
+wire [15:0] c_z80_k, c_ym_wr;
 wire [7:0]  c_pcm_kon;
 wire [4:0]  c_fm_kon;
-debug_counter #(.W(16)) u_c_z80m1 (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_z80_m1), .count(c_z80_m1));
+reg  [9:0]  z80_m1_pre = 10'd0;
+always @(posedge clk_sys) if (ctr_clear) z80_m1_pre <= 10'd0; else if (dbg_z80_m1) z80_m1_pre <= z80_m1_pre + 10'd1;
+debug_counter #(.W(16)) u_c_z80k  (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_z80_m1 && &z80_m1_pre), .count(c_z80_k));
 debug_counter #(.W(16)) u_c_ymwr  (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_ym_wr),  .count(c_ym_wr));
 debug_counter #(.W(8))  u_c_pcmkon(.clk(clk_sys), .clear(ctr_clear), .ev(dbg_pcm_keyon), .count(c_pcm_kon));
 debug_counter #(.W(5))  u_c_fmkon (.clk(clk_sys), .clear(ctr_clear), .ev(dbg_fm_keyon),  .count(c_fm_kon));
@@ -798,30 +841,55 @@ end
 // pruned with it.
 assign probe_src = 32'd0;
 `else
+// Explicit slices, so a field of the wrong width cannot shift its neighbours
+// (a concatenation is truncated silently by the port).
+// scripts/read_issp.tcl decodes exactly these positions.
+wire [127:0] probe_bus;
+assign probe_bus[15:0]    = c_frames;
+assign probe_bus[31:16]   = c_rst;           // core_reset rising edges
+assign probe_bus[39:32]   = dbg_opl4_state;  // {0, new2, mix_pcm[5:0]}
+assign probe_bus[44:40]   = c_iack1;         // level-1 acknowledges
+assign probe_bus[47:45]   = dbg_irq_pending; // {irq5, irq3, irq1}
+assign probe_bus[48]      = dl_seen;
+assign probe_bus[49]      = ioctl_download;
+assign probe_bus[50]      = pause_latched;
+assign probe_bus[51]      = dbg_frozen;      // ring mode: buffer stopped moving
+assign probe_bus[52]      = 1'b0;
+assign probe_bus[56:53]   = dbg_snd_state;   // {halt_n, rom_wait, int_n, nmi_n}
+assign probe_bus[64:57]   = snd_peak;        // peak |audio_l| since clear, bits 14:7
+assign probe_bus[72:65]   = c_snd_int;       // sound CPU INT falling edges
+assign probe_bus[88:73]   = c_ym_wr;         // writes to the sound chips
+assign probe_bus[104:89]  = c_z80_k;         // Z80 opcode fetches / 1024
+assign probe_bus[120:105] = dbg_smp;         // {stalled, outstanding, opl4 sel[7:0], port[2:0], worst latency[2:0]}
+assign probe_bus[121]     = pll_unlock;
+assign probe_bus[127:122] = c_dl_edges;      // ioctl_download rising edges
+
+// Instance D: fg2_sound.sv's command history frozen at the first pair slip.
+issp_probe #(.INSTANCE_ID("D"), .PROBE_W(344), .SOURCE_W(1)) u_probe_frz (
+	.clk(clk_sys),
+	.probe({dbg_fg2_cmd_frz, c_frames}),
+	.source()
+);
+
+// Instance C: fg2_sound.sv's command transport probe.
+issp_probe #(.INSTANCE_ID("C"), .PROBE_W(416), .SOURCE_W(1)) u_probe_cmd (
+	.clk(clk_sys),
+	.probe({dbg_fg2_cmd_hist, dbg_fg2_cmd, c_frames}),
+	.source()
+);
+
+// Instance S: the FG-2 sound board per chip (fg2_sound.sv). Cleared by the
+// F instance's source bit 0.
+issp_probe #(.INSTANCE_ID("S"), .PROBE_W(416), .SOURCE_W(1)) u_probe_snd (
+	.clk(clk_sys),
+	.probe({c_core_reset_async, c_rsrc[6], c_rsrc[5], c_rsrc[4], c_rsrc[3], c_rsrc[2], c_rsrc[1], c_rsrc[0],
+	        dbg_fg2_z80, dbg_fg2_oki, dbg_fg2_chips, c_frames}),
+	.source()
+);
+
 issp_probe #(.INSTANCE_ID("F"), .PROBE_W(128), .SOURCE_W(32)) u_probe (
 	.clk(clk_sys),
-	.probe({
-		c_dl_edges,          // 127..122  ioctl_download rising edges, any index
-		pll_unlock,          // 121
-		dbg_smp,             // 120..105  sample fetch: {stalled, outstanding, opl4 sel[7:0], port[2:0], worst latency[2:0]}
-		// Must total 128 bits exactly: the probe port truncates the top silently.
-		c_z80_m1,            // 104..89  Z80 opcode fetches (wraps)
-		c_ym_wr,             //  88..81  writes to the sound chips (wraps)
-		c_ovr[7:0],          //  80..73  sprite engine overruns (lines)
-		c_snd_int,           //  72..65  sound CPU INT falling edges (wraps)
-		snd_peak,            //  64..57  peak |audio_l| since clear, bits 14:7
-		dbg_snd_state,       //  56..53  {halt_n, rom_wait, int_n, nmi_n}
-		1'b0,                //  52
-		dbg_frozen,          //  51  ring mode: has the buffer stopped moving
-		pause_latched,       //  50
-		ioctl_download,      //  49
-		dl_seen,             //  48
-		dbg_irq_pending,     //  47..45  {irq5, irq3, irq1} pending
-		c_iack1,             //  44..40  level-1 acknowledges (wraps)
-		dbg_opl4_state,      //  39..32  {0, new2, mix_pcm[5:0]}
-		c_rst,               //  31..16  core_reset rising edges
-		c_frames             //  15..0
-	}),
+	.probe(probe_bus),
 	.source(probe_src)
 );
 `endif

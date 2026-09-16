@@ -4,21 +4,16 @@
     from tracer_readout import read_buffer
     entries, problems = read_buffer(tag="boot_fc")      # list of 256 (int | None)
 
-The overlay (rtl/fuuki_core.sv, "BANDED, SELF-CHECKING READOUT") shows each
-entry on six scanlines -- three of the value, three of its bitwise inverse --
-40 entries per screen, seven JTAG-selected pages. This walks the pages, takes
-a screenshot of each, and recovers entries by CONTENT rather than by row
-number. The inverse band is the self-check: v and ~v are read from the same
-BRAM entry, so they must XOR to 0xFFFFFF whatever the memory holds, and any
-transform in the capture path shows up as an unpaired run instead of being
-read as data. That is how the framework's gamma LUT was caught (see
-docs/LESSONS_LEARNED.md); the earlier one-row-per-entry overlays had read
-its output as SDRAM corruption.
+The overlay (rtl/fuuki_core.sv, "Banded readout") shows each entry on six
+scanlines -- three of the value, three of its bitwise inverse -- 40 entries
+per screen over seven JTAG-selected pages. Entries are recovered by content,
+not row number: v and ~v come from the same BRAM entry, so any capture-path
+transform (e.g. the framework's gamma LUT, docs/LESSONS_LEARNED.md) shows up
+as an unpaired run instead of being read as data.
 
-Recovery per screen: split the rows into runs of identical value; a run is a
-band half if it is 2..4 rows long (blended edge rows differ and are excluded
-naturally); pair consecutive runs (v, ~v) where v ^ ~v == 0xFFFFFF; that pair
-is one entry, in order. Anything that does not pair is reported, not guessed.
+Per screen: split rows into runs of identical value; runs of 2..5 rows are
+band halves (blended edge rows are excluded); consecutive runs with
+v ^ w == 0xFFFFFF are one entry. Anything unpaired is reported, not guessed.
 """
 import re
 import subprocess
@@ -39,10 +34,8 @@ PAGE_BITS = {0: 0x00, 1: 0x08, 2: 0x10, 3: 0x18, 4: 0x80, 5: 0x88, 6: 0x90}   # 
 
 
 def issp(*args):
-    # Guarded: JTAG concurrent with a Quartus compile has bugchecked this PC
-    # three times (scripts/hwlock.py). memdump.py, sweep.py, soak.py,
-    # wait_scene.py and sdram_pattern_test.py all reach JTAG through here, so
-    # one guard covers them.
+    # Guarded by scripts/hwlock.py; every script that reads the probe
+    # through here shares the guard.
     from hwlock import jtag_session
     with jtag_session("tracer_readout.issp"):
         p = subprocess.run([str(QUARTUS_STP), "-t", str(ISSP), *map(str, args)],
@@ -51,9 +44,8 @@ def issp(*args):
 
 
 def shot(png):
-    # The buffer is static while being read (first-N mode holds it, ring mode
-    # is only used frozen), so the core's default 4 s settle per shot is not
-    # needed; seven pages per buffer makes that worth trimming.
+    # The buffer is static while read (first-N holds it; ring mode is read
+    # frozen), so the default 4 s settle is not needed.
     subprocess.run([sys.executable, str(HW), "shot", "--out", str(png), "--settle", "1"],
                    capture_output=True, cwd=str(REPO))
     return png.exists()
@@ -65,16 +57,9 @@ CORE_LINES = 240
 def rows_of(png):
     """One value per CORE scanline, whatever size the screenshot is.
 
-    The decoder was written for the MiSTer's native 320x240 capture, one image
-    row per scanline. With MISTER_FB in the core (rotation), the screenshot is
-    the framebuffer -- 810x1080 with rotation on -- and every scanline spans
-    4.5 image rows. Reading the first 240 rows then saw only the top 53 lines,
-    and the run-length pairing rejected every band as too tall, so the dump
-    returned 0/256 words on every region from the moment rotation went in.
-
-    So: decode every row, then take the row at the centre of each scanline's
-    span. Blended rows at band edges fall between centres and are skipped,
-    which is what the run-length filter relied on at 1:1 too.
+    With MISTER_FB (rotation) the screenshot is the framebuffer, e.g.
+    810x1080, so a scanline spans several image rows. Take the row at the
+    centre of each scanline's span; blended edge rows fall between centres.
     """
     out = subprocess.run([sys.executable, str(DECODE), str(png), "--mode", "scanline",
                           "--limit", "0"], capture_output=True, text=True).stdout

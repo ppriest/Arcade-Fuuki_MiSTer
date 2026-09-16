@@ -47,12 +47,12 @@ module line_buffer #(
 
 	localparam int W = 320;
 
-	// Two banks, each one write port and one read port. Two reads plus a
-	// write on one array makes Quartus silently duplicate the memory.
+	// Two banks, each one write and one read port: two reads plus a write on
+	// one array makes Quartus silently duplicate the memory.
 	logic [WIDTH-1:0] bank0 [0:W-1];
 	logic [WIDTH-1:0] bank1 [0:W-1];
 
-	logic        render_bank;      // which bank the engine writes into
+	logic        render_bank;
 	logic [8:0]  clr_x;
 	logic        clearing;
 

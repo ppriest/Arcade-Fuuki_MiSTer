@@ -3,11 +3,9 @@
 
     python scripts/tilemap_png.py 2
 
-Unlike scripts/gfx_sheet.py, this uses the game's REAL colours: the palette
-came from the same captured MAME frame as the VRAM, so the output is directly
-comparable to the screenshot MAME produced. Transparent pixels are drawn as a
-checkerboard, because a single layer on its own is mostly transparent and a
-black background would hide the difference between "transparent" and "black".
+The palette comes from the same MAME capture as the VRAM, so the output is
+comparable to MAME's screenshot. Transparent pixels are a checkerboard, so
+they are distinguishable from black.
 """
 import sys
 from pathlib import Path

@@ -3,20 +3,13 @@
 // RUN FROM THE REPOSITORY ROOT (scripts/run_sim.sh tilemap_tb), after
 //     python scripts/prep_tilemap_tb.py debug/gogomile-title gogomile
 //
-// Renders all 240 scanlines of one layer from the captured VRAM, scroll
-// registers and real tile ROM, and writes the palette indices out for
-// scripts/tilemap_png.py to turn into an image. The image is then compared by
-// eye against the screenshot MAME produced from exactly the same state.
+// Renders 240 scanlines of one layer and writes palette indices for
+// scripts/tilemap_png.py, compared by eye with MAME's screenshot of the same
+// state. VRAM, scroll and screenshot come from MAME; the gfx image comes from
+// the ROM via an independent script (LESSONS_LEARNED, "A hardware-vs-image
+// comparison cannot detect a wrong image").
 //
-// This is a rendering test, not a self-consistency test: every input comes
-// from outside the RTL, and the expected output is a picture somebody else
-// drew. LESSONS_LEARNED, "A hardware-vs-image comparison cannot detect a wrong
-// image" -- the guard against that here is that the VRAM, the scroll values
-// and the screenshot all came from MAME, while the gfx image came from the ROM
-// via an independent script.
-//
-// The layer is chosen with +LAYER=n on the vsim command line; it defaults to 2
-// (the 8x8 text layer), which is the easiest to judge by eye.
+// +LAYER=n selects the layer; default 2 (the 8x8 text layer).
 
 `timescale 1ns/1ps
 
@@ -68,15 +61,13 @@ module tb_tilemap;
 	);
 
 	// ---- VRAM: 16384 words, REGISTERED read ----
-	// Registered, not combinational, so a consumer that fails to spend the
-	// read-latency wait state is caught here rather than on MiSTer.
+	// Registered so a consumer that skips the read-latency wait is caught.
 	logic [15:0] vram [0:16383];
 	always_ff @(posedge clk) vram_data <= vram[vram_addr];
 
 	// ---- graphics ROM with realistic latency ----
-	// 12 cycles, not 1: a short-latency model returns its response while an
-	// FSM is between states and hides exactly the protocol bugs this is meant
-	// to catch (LESSONS_LEARNED).
+	// 12 cycles, not 1: a short-latency model answers while the FSM is between
+	// states and hides protocol bugs (LESSONS_LEARNED).
 	localparam int GFX_LAT = 12;
 	localparam int GFX_BYTES = 34*1024*1024;   // FG-3 sprite region is 32 MB
 
@@ -100,8 +91,7 @@ module tb_tilemap;
 		end else if (gfx_ctr > 1) begin
 			gfx_ctr <= gfx_ctr - 1;
 		end else begin
-			// Bytes in ASCENDING ADDRESS order, byte 0 in bits [7:0] --
-			// the SDRAM controller's packing, matching the engine's contract.
+			// Ascending address, byte 0 in bits [7:0]: the SDRAM controller's packing.
 			for (int b = 0; b < 8; b++)
 				gfx_data[8*b +: 8] <= gfx[gfx_lat_addr + b];
 			gfx_valid <= 1'b1;
@@ -114,9 +104,8 @@ module tb_tilemap;
 	localparam int W = 320, H = 240;
 	logic [13:0] frame [0:H-1][0:W-1];
 
-	// Plain `always`, not `always_ff`: the initial block also clears this
-	// array, and a variable driven inside always_ff may not be driven anywhere
-	// else (vlog-7061). In a testbench the looser form is the right call.
+	// Plain `always`: the initial block also clears this array, and an
+	// always_ff variable may not be driven elsewhere (vlog-7061).
 	int cur_line = 0;
 	always @(posedge clk)
 		if (lb_we) frame[cur_line][lb_x] <= lb_data;
@@ -131,10 +120,8 @@ module tb_tilemap;
 	int fd, r;
 	int worst_cycles = 0;
 
-	// A free-running cycle counter. Deriving cycles from $time arithmetic got
-	// this wrong: $time is in the TIMESCALE unit (1 ns here), not ps, so
-	// dividing by a picosecond period reported ~2 cycles per line for work
-	// that plainly took hundreds. Count edges instead of computing them.
+	// Count edges rather than dividing $time: $time is in the timescale unit
+	// (1 ns), not ps.
 	int cyc = 0;
 	always @(posedge clk) cyc <= cyc + 1;
 
@@ -199,8 +186,6 @@ module tb_tilemap;
 		$display("  gfx fetches: %0d", gfx_reads);
 		check(worst_cycles < 5472, "a scanline renders inside its cycle budget");
 
-		// Something must have been drawn: an all-transparent frame would
-		// pass a budget check and prove nothing.
 		begin
 			int opaque_px;
 			opaque_px = 0;
@@ -208,12 +193,8 @@ module tb_tilemap;
 				for (int x = 0; x < W; x++)
 					if (frame[y][x][13]) opaque_px++;
 			$display("  opaque pixels: %0d of %0d", opaque_px, W*H);
-			// NOT an assertion that the layer drew something. A layer whose
-			// VRAM bank is all zeroes is legitimately blank -- asurabld's title
-			// screen leaves banks 0, 2 and 3 entirely zero and draws everything
-			// on layer 1. Asserting "something was drawn" turns correct
-			// behaviour into a failure and hides the real question, which is
-			// whether what IS drawn matches.
+			// Not asserted: a layer with an all-zero VRAM bank is legitimately
+			// blank (asurabld's title draws only on layer 1).
 			if (opaque_px == 0)
 				$display("  (layer is blank on this frame -- check its VRAM bank)");
 		end
@@ -232,9 +213,8 @@ module tb_tilemap;
 		$finish;
 	end
 
-	// $fread on a binary file: far faster than converting megabytes to hex,
-	// and it keeps the SDRAM image definition in exactly one place (the prep
-	// script) rather than duplicating the interleave here.
+	// $fread on binaries: faster than hex, and the image layout stays defined
+	// only in the prep script.
 	task automatic load_bin_words(input string path);
 		int f, n;
 		byte unsigned vbuf [];   // NOT `buf` -- a Verilog gate primitive

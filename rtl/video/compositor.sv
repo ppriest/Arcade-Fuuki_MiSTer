@@ -16,12 +16,6 @@
 // Do not AND the mask with the value: that lets priority-1 sprites beat a
 // layer unconditionally.
 //
-// Example, sprite priority 1, mask 0xf0:
-//     pri_value 0 (nothing drew)      bit 0 = 0   sprite shows
-//     pri_value 1 (back drew)         bit 1 = 0   sprite shows
-//     pri_value 4 (front drew)        bit 4 = 1   sprite hidden
-//     pri_value 5 (back + front)      bit 5 = 1   sprite hidden
-//
 // Layer role is not layer number. Front, middle and back come from the
 // priority register's table (vregs.sv) and games change it. The inputs are
 // by number and assigned to roles by the tmap_* selectors.
@@ -44,7 +38,7 @@ module compositor (
 	input  logic [1:0]  tmap_middle,
 	input  logic [1:0]  tmap_back,
 
-	// ---- per-layer enable, for debugging: an A/B without a rebuild ----
+	// ---- per-layer enable, debug A/B ----
 	input  logic        en_l0,
 	input  logic        en_l1,
 	input  logic        en_l2,
@@ -90,7 +84,6 @@ module compositor (
 	wire [2:0] pri_value = {front[13], middle[13], back[13]};
 	assign dbg_pri = pri_value;
 
-	// Front-most opaque layer wins; otherwise the backdrop.
 	wire [12:0] layer_pal = front[13]  ? front[12:0]
 	                      : middle[13] ? middle[12:0]
 	                      : back[13]   ? back[12:0]
@@ -100,10 +93,10 @@ module compositor (
 	logic [7:0] pri_mask;
 	always_comb begin
 		case (spr[14:13])
-			2'd0:    pri_mask = 8'h00;                     // above all
-			2'd1:    pri_mask = 8'hf0;                     // behind front
-			2'd2:    pri_mask = 8'hf0 | 8'hcc;             // behind front+middle
-			default: pri_mask = 8'hf0 | 8'hcc | 8'haa;     // behind all
+			2'd0:    pri_mask = 8'h00;
+			2'd1:    pri_mask = 8'hf0;
+			2'd2:    pri_mask = 8'hf0 | 8'hcc;
+			default: pri_mask = 8'hf0 | 8'hcc | 8'haa;
 		endcase
 	end
 

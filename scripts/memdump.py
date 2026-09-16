@@ -9,16 +9,14 @@
 Regions (rtl/fuuki_core.sv, "MEMORY DUMP"): sdram (512-byte pages of the
 64 MB), vram (64 pages), palette (32), spriteram (16, the live RAM), vregs (1:
 words 0-15 registers, 16-17 unknown, 18 priority, 19-20 the sprite tile bank), workram (256),
-linecap (8: the per-line display record, EIGHT words per line -- see
-fuuki_core.sv's PER-LINE DISPLAY RECORD; words 5-7 are layer 2's latched X
-scroll, layer 0's latched Y scroll and the reduced raster register).
+linecap (8: eight words per line, see fuuki_core.sv's PER-LINE DISPLAY RECORD;
+words 5-7 are layer 2's latched X scroll, layer 0's latched Y scroll and the
+reduced raster register).
 
-The core must be running with the trace overlay on and source 3 (the walker)
-selected: `cfg.py <game> --set overlay=1 src=3 ring=0` before the launch. The
-walker pauses the CPU while it runs, so the game freezes for the dump and
-resumes afterwards. Each page is one 256-word walk re-armed over JTAG source
-bit 6 and read back through the banded screenshot readout; that is about 40 s
-per page, so ask for what you need.
+Launch with `cfg.py <game> --set overlay=1 src=3 ring=0` (or use --live). The
+walker pauses the CPU during each page. Each page is a 256-word walk re-armed
+over JTAG source bit 6 and read back through the screenshot readout; it is
+slow (the time per page is printed), so ask only for what you need.
 """
 import argparse
 import struct

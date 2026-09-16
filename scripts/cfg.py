@@ -5,28 +5,17 @@
     python scripts/cfg.py gogomile --set overlay=1 src=0 ring=1
     python scripts/cfg.py gogomile --clear-debug
 
-WHY READ-MODIFY-WRITE, ALWAYS
------------------------------
-/media/fat/config/<setname>.CFG is the WHOLE 128-bit status word, little
-endian (byte N holds status[8N+7:8N]). Anything else the core keeps in that
-word -- aspect ratio, scandoubler FX, and on some cores the DIP switches --
-lives in the same bytes. Writing a fresh 16 bytes with only a debug bit set
-therefore silently clears everything else. The sibling Psikyo core did exactly
-that twice, the second time zeroing two .CFG files during debug pokes and
-booting the games into their RAM-check screen because a cleared DIP byte turns
-Service Mode ON.
+/media/fat/config/<setname>.CFG is the whole 128-bit status word, little
+endian (byte N holds status[8N+7:8N]), shared with aspect, scandoubler and
+other settings. Writing fresh bytes clears all of them (on the Psikyo core it
+zeroed DIPs and turned Service Mode on), so this pulls the file, flips only
+the named bits, and pushes it back. A missing file starts from all-zero, as
+MiSTer does.
 
-So this tool never builds a CFG from nothing: it pulls the existing file,
-flips only the named bits, and pushes it back. If the file does not exist it
-starts from all-zero, which is what MiSTer itself uses for a first run, and
-says so.
+BIT MAP -- keep in step with Fuuki.sv's CONF_STR.
 
-BIT MAP -- keep in step with Fuuki.sv's CONF_STR. A bit that moves in one and
-not the other reads as a plausible setting doing nothing.
-
-The debug fields (DEBUG_BITS below) reach the core only in the instrumented
-Fuuki_stp build. The release revision hides them from the OSD and forces
-them to zero whatever this file sets -- Fuuki.sv, "DEBUG BUILD OR RELEASE".
+DEBUG_BITS reach the core only in the Fuuki_stp build; the release forces
+them to zero (Fuuki.sv, "DEBUG BUILD OR RELEASE").
 """
 import argparse
 import os
@@ -58,14 +47,15 @@ BITS = {
     "scale":    (66, 3),   # video_freak scale mode
     "vcrop":    (69, 2),   # 0 off, 1 216p, 2 224p
     "crop_off": (71, 5),   # crop window offset, two's complement
-    "crt":      (76, 1),   # CRT offset on
-    "no_fm":    (90, 1),   # mute FM  (YM2203+YM3812 / OPL3)
-    "no_pcm":   (91, 1),   # mute PCM (OKI / OPL4 wavetable)
+    "crt":      (76, 1),   # CRT Adjust on
+    "hsize":    (92, 5),   # CRT H-Size, two's complement -16..+15
+    "vsize":    (97, 4),   # CRT V-Size, two's complement -8..+7 (x3 lines)
+    "vsmode":   (101, 1),  # CRT V-Size mode: 0 PVM, 1 Cabinet
+    "audio_mix": (102, 2), # 0 mono (default), 1 none, 2 25%, 3 50%
     "aspect":   (121, 2),
 }
 DEBUG_BITS = ("overlay", "src", "window", "ring", "rearm", "trig",
-              "no_l0", "no_l1", "no_l2", "no_spr", "marker",
-              "no_fm", "no_pcm")
+              "no_l0", "no_l1", "no_l2", "no_spr", "marker")
 
 
 def env():

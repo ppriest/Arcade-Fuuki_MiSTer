@@ -6,10 +6,7 @@
 
 Reads debug/hw/dump/linecap_0.bin -- eight words per display line, written
 by rtl/fuuki_core.sv's PER-LINE DISPLAY RECORD -- and prints the display
-line each scroll value first appears on. That is the whole question behind
-gogomile's cloud fault: the chain's arithmetic is known from a MAME capture,
-so what matters is WHICH LINE GOT WHICH SCROLL, not what the picture looks
-like.
+line each scroll value first appears on.
 
 gogomile's title clouds, from debug/gogo-vreglog/fg2_vregs.log, are five
 bands whose scrolls move at 2, 1, 1/2, 0 and 0 pixels per frame:
@@ -24,9 +21,8 @@ MAME puts a band's first line at (raster line + 1), because update_partial()
 draws through the interrupt's own line with the old registers. The engines
 run two lines ahead of the display and an ISR's write is caught at the
 hblank after the interrupt, so where the boundary lands depends on how early
-level 5 fires (video_timing.sv, irq5_cmp). Measured on gogomile's clouds:
-two lines early put every boundary at -1, one line early put every boundary
-at +0, and that is what the RTL now does.
+level 5 fires (video_timing.sv, irq5_cmp). On gogomile's clouds, two lines
+early measured -1 on every boundary and one line early +0; the RTL uses one.
 """
 import struct
 import sys
@@ -82,10 +78,9 @@ def main():
                   % (want, name, near[0], d))
     print("\n+0 on every boundary is correct. A constant offset is the level-5 lead")
     print("(video_timing.sv, irq5_cmp): one line early measured +0, two lines early -1.")
-    # RENDER OVERRUN WATCH (fuuki_core.sv): the engines caught still busy at
-    # the swap that presented each line. A flagged line was displayed half
-    # drawn by that engine -- tiles from the left as far as it got, then
-    # transparent.
+    # Render overrun watch (fuuki_core.sv): engines still busy at the swap
+    # that presented the line, so that engine's part of it was displayed
+    # partly drawn.
     print("\nlines whose engines overran (word 7 bits 12:9 = spr tm2 tm1 tm0):")
     if not overruns:
         print("  none")

@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
 """Render Fuuki graphics ROM tiles to a PNG tile sheet.
 
-Companion to scripts/decode_gfx.py, which prints ASCII. This one produces an
-image, which is a far better way to judge whether a layout is right.
+Image companion to scripts/decode_gfx.py.
 
-IMPORTANT -- these are NOT the game's real colours. The palette lives in RAM
-at 0x700000 and is written by the game at runtime; it is not in the ROM. What
-is in the ROM is a PEN INDEX per pixel. This tool therefore renders pen index
-as false colour (a fixed hue ramp) so structure is visible, and draws the
-layer's TRANSPARENT pen as a grey checkerboard.
-
-Note the transparent pen is the LAST pen, not pen 0:
+Colours are false: the ROM holds pen indices (the palette is written to RAM at
+0x700000 at runtime), rendered as a hue ramp. The transparent pen is drawn as
+a grey checkerboard; it is the last pen, not pen 0:
     FG-2  L0 0x0f   L1 0xff   L2 0x0f      sprites 15
     FG-3  L0 0xff   L1 0xff   L2 0x0f      sprites 15
 """
@@ -66,8 +61,7 @@ def pixels(data, kind, index):
     sys.exit("unknown kind")
 
 def ramp(n):
-    """Fixed false-colour ramp: hue sweeps, value rises. Distinguishes
-    neighbouring pen indices, which a plain grey ramp does not."""
+    """False-colour ramp (hue sweeps, value rises) so neighbouring pens differ."""
     out = []
     for i in range(n):
         f = i / max(1, n - 1)
@@ -100,7 +94,6 @@ def main():
     trans = a.transparent if a.transparent is not None else depth - 1
     pal = ramp(depth)
 
-    # Survey the pen range actually used before drawing anything.
     lo, hi = depth - 1, 0
     for r in range(a.rows):
         for c in range(a.cols):

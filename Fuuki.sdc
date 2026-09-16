@@ -1,13 +1,11 @@
 ## ---------------------------------------------------------------------------
 ## Fuuki core timing constraints.
 ##
-## The stock MiSTer .sdc (derive_pll_clocks + derive_clock_uncertainty) leaves
-## every external interface unanalysed, SDRAM included. Read
-## output_files/<rev>.sta.summary after every build: the Fitter reports
-## success on a design that fails timing.
+## Read output_files/<rev>.sta.summary after every build: the Fitter reports
+## success on a design that fails timing. External interfaces, SDRAM
+## included, are not analysed.
 ##
-## The exceptions below were derived in rtl/cpu/synth_check/. Each carries the
-## audit that justifies it; keep the audit with the constraint.
+## Each exception carries the audit that justifies it; keep them together.
 ## ---------------------------------------------------------------------------
 
 derive_pll_clocks
@@ -117,11 +115,10 @@ if {[get_collection_size $jtsrc] > 0 && [get_collection_size $jtdst] > 0} {
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
-# OPL4 PCM engine: 2-cycle inside, because it advances only on opl4.sv's
-# pcm_cen, high every other clk_sys cycle. The whole case statement in
+# OPL4 PCM engine: multicycle 2. It advances only on opl4.sv's pcm_cen, high
+# every other clk_sys cycle; the whole case statement in
 # rtl/sound/opl4/opl4_pcm.sv sits inside `if (cen)`. In simulation with all
-# 24 channels keyed on a pass takes 962 of the 1948 clk_sys cycles between
-# sample ticks.
+# 24 channels keyed on, a pass takes 962 of the 1948 cycles between samples.
 # Excluded, because they are written at full rate:
 #   * fr_mem_valid / fr_mem_data, tick_pending, load_pending / load_ch:
 #     latches for one-clk pulses (mem_rd_valid, sample_tick, wavesel_stb).

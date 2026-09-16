@@ -1,29 +1,23 @@
 #!/usr/bin/env python3
 """Decode a VGA debug-tap screenshot back into the values the RTL was driving.
 
-The bring-up technique this supports is documented in docs/LESSONS_LEARNED.md:
-with no JTAG available, internal state is driven straight onto VGA_R/G/B, a
-screenshot is pulled with scripts/mister_hw_test.py, and the pixels are read
-back here. Each pixel carries 24 bits (R<<16 | G<<8 | B).
+Internal state is driven onto VGA_R/G/B, a screenshot is pulled with
+scripts/mister_hw_test.py, and each pixel is read back as 24 bits
+(R<<16 | G<<8 | B). See docs/LESSONS_LEARNED.md.
 
-There is deliberately no PIL/numpy dependency -- neither is installed in this
-environment -- so the PNG is decoded by hand (zlib + the five filter types).
-Only the 8-bit truecolour PNGs MiSTer's screenshot API produces are supported.
+No PIL/numpy (not installed): the PNG is decoded by hand, 8-bit truecolour
+only, as MiSTer's screenshot API produces.
 
-Modes, matching the three tap shapes used so far:
+Modes:
 
-  counters   Histogram of distinct colours. For taps that drive a few live
-             counters/flags, where the whole screen is one or a handful of
-             solid colours.
-               e.g. R=ROM fetches, G=IACK count, B=palette writes
+  counters   Histogram of distinct colours, for taps driving a few counters
+             (e.g. R=ROM fetches, G=IACK count, B=palette writes).
 
-  scanline   One value per scanline, read from mid-line. For a BRAM trace
-             indexed by vcnt, where each scanline shows one captured entry.
-             This is the useful one for bus traces.
+  scanline   One value per scanline, from mid-line, for a BRAM trace indexed
+             by vcnt.
 
-  raster     Every pixel in raster order, run-length compressed. For a tap
-             driving a live value that changes faster than the frame, giving
-             ~71680 consecutive samples in one screenshot.
+  raster     Every pixel in raster order, run-length compressed, for a value
+             that changes faster than the frame.
 
 Examples:
   python scripts/decode_debug_screenshot.py shot.png --mode counters

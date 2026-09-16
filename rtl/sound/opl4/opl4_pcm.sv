@@ -20,7 +20,7 @@ module opl4_pcm (
 	input  logic        clk,
 	input  logic        reset,
 	input  logic        sample_tick,   // pulse: produce one output sample
-	// The engine advances only on cen (clk/2); build/Fuuki.sdc states its
+	// The engine advances only on cen (clk/2); Fuuki.sdc states its
 	// internal paths as a multicycle. sample_tick, wavesel_stb and
 	// mem_rd_valid are one clk wide, so they are latched at full rate,
 	// after the case, and are excluded from that multicycle.
@@ -29,6 +29,8 @@ module opl4_pcm (
 	// register file access (opl4_regs.sv)
 	output logic [7:0] pcm_raddr,
 	input  logic [7:0] pcm_rdata,
+	output logic        pcm_rlive,   // the header load reads live registers
+	output logic        pcm_snap,    // pulse at the start of each sample pass
 	output logic        pcm_hdr_we,
 	output logic [7:0] pcm_hdr_waddr,
 	output logic [7:0] pcm_hdr_wdata,
@@ -187,8 +189,7 @@ module opl4_pcm (
 	logic signed [15:0] w_sample;
 	logic [7:0]  w_byte0;
 
-	// Full-rate latches. Named fr_* because build/Fuuki.sdc excludes them
-	// from the opl4_pcm multicycle: they are written on every clk edge.
+	// Full-rate latches; Fuuki.sdc excludes fr_* from the multicycle.
 	logic        fr_mem_valid;
 	logic [7:0]  fr_mem_data;
 
@@ -225,6 +226,8 @@ module opl4_pcm (
 	// one DAC on the mixed output, so a channel routed to DO1 is not muted.
 	logic signed [19:0] acc_l, acc_r;
 
+	assign pcm_rlive = (state == S_RD0) || (state == S_HDR_REQ);
+
 	// ---- derived slot math ----
 	// pitch step: ((0x400|fnum) << (oct+7)) >> 2 as a .16 value; 0x400 is
 	// bit 10, above fnum's 10 bits, so the OR is a plain concatenation.
@@ -234,10 +237,9 @@ module opl4_pcm (
 	wire [31:0] step_exact = ({21'd0, 1'b1, c_fnum} << shamt) >> 3;
 
 	// Envelope rate correction: RC 15 -> none, else (oct+rc)*2 + fnum[9],
-	// signed: oct is -8..7, so the sum is -8..21 and the correction -16..43,
-	// which ymfm adds to raw*4 as int32_t before clamping. Do not build it
-	// unsigned: a negative correction then clamps the rate to 63 (instant),
-	// which is oct=-1 with RC=0, as Asura Buster's coin chime (wave 289).
+	// signed (-16..43), added to raw*4 as int32_t in ymfm. Unsigned, a
+	// negative correction clamps the rate to 63 (instant): oct=-1 with RC=0,
+	// as in Asura Buster's coin chime (wave 289).
 	wire signed [5:0] rc_sum = {{2{c_oct[3]}}, c_oct} + {2'b00, c_rc};     // -8..21
 	wire signed [7:0] corr = (c_rc == 4'd15) ? 8'sd0
 	                       : {{2{rc_sum[5]}}, rc_sum, c_fnum[9]};          // -16..43
@@ -259,7 +261,11 @@ module opl4_pcm (
 
 	// envelope clocking math (ymfm clock_envelope, env_counter>>1 domain)
 	wire [22:0] envc = env_counter[23:1];
-	wire [5:0]  cur_rate = slot_rate(w_state_eg);
+	// always_comb, not a continuous assignment: slot_rate reads c_ar..c_rr,
+	// corr and c_damp outside its argument list, and a simulator re-evaluates
+	// an assign only when an argument changes, leaving a stale rate.
+	logic [5:0] cur_rate;
+	always_comb cur_rate = slot_rate(w_state_eg);
 	wire [3:0]  rate_shift = cur_rate[5:2];
 
 	// rate_shift has twelve values, so the two barrel shifts of envc are a
@@ -350,6 +356,7 @@ module opl4_pcm (
 			load_pending <= 1'b0;
 			load_ch      <= 5'd0;
 			key_consume  <= 1'b0;
+			pcm_snap     <= 1'b0;
 			hdr_idx      <= 4'd0;
 			fr_mem_valid <= 1'b0;
 			fr_mem_data  <= 8'd0;
@@ -363,11 +370,12 @@ module opl4_pcm (
 			end
 		end else begin
 			// Cleared at full rate so these stay one clk cycle wide, as
-			// opl4.sv's arbiter and opl4_regs expect; build/Fuuki.sdc excludes
+			// opl4.sv's arbiter and opl4_regs expect; Fuuki.sdc excludes
 			// them from the multicycle.
 			pcm_hdr_we  <= 1'b0;
 			mem_rd_req  <= 1'b0;
 			key_consume <= 1'b0;
+			pcm_snap    <= 1'b0;
 
 			if (cen) begin
 			case (state)
@@ -380,6 +388,7 @@ module opl4_pcm (
 						pcm_raddr <= 8'h08 + {3'd0, load_ch};
 					end else if (tick_pending) begin
 						tick_pending <= 1'b0;
+						pcm_snap     <= 1'b1;
 						env_counter  <= env_counter + 24'd1;
 						acc_l        <= '0;
 						acc_r        <= '0;
@@ -459,14 +468,12 @@ module opl4_pcm (
 							if (ch_eg_state[ch] < EG_RELEASE) ch_eg_state[ch] <= EG_RELEASE;
 						end
 					end
-					// quiet early-out: released and silent -> skip the rest
-					if (!ch_key[ch][2] && ch_eg_state[ch] >= EG_RELEASE
-					     && ch_env[ch] >= EG_QUIET) begin
-						state <= S_NEXT;
-					end else begin
-						pcm_raddr <= 8'h38 + {3'd0, ch};
-						state     <= S_RD2;
-					end
+					// Every channel is clocked every sample, silent or not, as
+					// ymfm does. Do not skip released silent channels: one
+					// re-keyed without a wave load then starts from a stale
+					// level and envelope. Silent channels skip only the fetch.
+					pcm_raddr <= 8'h38 + {3'd0, ch};
+					state     <= S_RD2;
 				end
 				S_RD2: begin
 					c_oct       <= pcm_rdata[7:4];
@@ -565,18 +572,19 @@ module opl4_pcm (
 					ch_lfo[ch]      <= w_lfo;
 					// pitch step plus vibrato; consumed in S_ENV3
 					w_step          <= step_exact + 32'($signed(pm_add));
-					// total level interpolation (19 up / 38 down per sample)
+					// total level interpolation (19 up / 38 down per sample).
+					// Compare the distance, not ch_tl - 38 against the target:
+					// unsigned, that wraps within 38 of a target near 0 and
+					// snaps the channel to full attenuation.
 					if (c_lvl_direct) ch_tl[ch] <= {c_tl_reg, 10'd0};
 					else if (ch_tl[ch] < {c_tl_reg, 10'd0})
-						ch_tl[ch] <= ((ch_tl[ch] + 17'd19) > {c_tl_reg, 10'd0})
+						ch_tl[ch] <= (({c_tl_reg, 10'd0} - ch_tl[ch]) <= 17'd19)
 						            ? {c_tl_reg, 10'd0} : ch_tl[ch] + 17'd19;
 					else if (ch_tl[ch] > {c_tl_reg, 10'd0})
-						ch_tl[ch] <= ((ch_tl[ch] - 17'd38) < {c_tl_reg, 10'd0})
+						ch_tl[ch] <= ((ch_tl[ch] - {c_tl_reg, 10'd0}) <= 17'd38)
 						            ? {c_tl_reg, 10'd0} : ch_tl[ch] - 17'd38;
-					// Fetch address, computed unconditionally so the envelope
-					// chain is not in series with it; opl4.sv's arbiter only
-					// latches it with mem_rd_req, so a silent channel's address
-					// is never sampled.
+					// Fetch address, unconditional so the envelope chain is not
+					// in series; the arbiter samples it only with mem_rd_req.
 					case (ch_format[ch])
 						2'd0: mem_rd_addr <= ch_baseaddr[ch] + 22'(w_curpos[31:16]);
 						2'd2: mem_rd_addr <= ch_baseaddr[ch] + {5'd0, w_curpos[31:16], 1'b0};
@@ -592,13 +600,11 @@ module opl4_pcm (
 				S_ENV3: begin
 					ch_env[ch]      <= p_env_next;
 					ch_eg_state[ch] <= p_st_next;
-					// Position advance and loop wrap, unconditional: a channel
-					// that goes quiet still advances.
+					// unconditional: a quiet channel still advances
 					es_np = w_curpos + w_step;
 					if (es_np >= {c_end, 16'd0})
 						es_np = es_np + {c_loop, 16'd0} - {c_end, 16'd0};
 					ch_nextpos[ch] <= es_np;
-					// silent? skip the ROM fetch entirely
 					if (p_env_next > EG_QUIET) state <= S_NEXT;
 					else begin
 						state <= S_FETCH0;

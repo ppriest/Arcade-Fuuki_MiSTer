@@ -40,6 +40,13 @@ Some links discussing the games and hardware:
 
 ## History
 
+* Arcade-Fuuki_20260916.rbf
+  * **gogomile's music stopping mid-game.** The main CPU ran faster than the original between sound commands
+  * **FG-2 sample playback no longer stalls** after minutes of play (OKI ROM fetch deadlock).
+  * **Asura Blade's coin jingle** is no longer scratchy or quiet (three OPL4 PCM fixes, checked against ymfm).
+  * OSD: Audio mix (mono by default), CRT H-Size and V-Size.
+  * The .mra files name the core `Fuuki`, and every part carries its CRC32.
+
 * Arcade-Fuuki_20260909.rbf
   * **Beta release**
   * **pbancho's flickering black bands fixed** (sprite engine prefetch).
@@ -105,45 +112,14 @@ FG-3 (Asura Blade / Asura Buster) needs **64MB or more SDRAM module**
 
 ## Status
 
-**Runs on MiSTer, with sound.** All four parent sets boot and play on a DE10-nano
-with 0.482 ns of setup slack on `clk_sys`.
-
-What is built and running:
-
-* **68000 and 68EC020 from one TG68K.C instance**
-* **All three interrupts** — level 1 at scanline 248, level 3 vblank, level 5 on a programmable raster line — held until acknowledged, and nesting correctly.
-* **FI-003K tilemaps** (`rtl/video/tilemap_line_engine.sv`): three layers, 16×16×4, 16×16×8 and 8×8×4, rendered per scanline. Every register the renderer reads is latched once per line, so a   raster interrupt can still move a layer mid-frame.
-* **FI-002K sprites**: sprite RAM snapshotted once per frame (a real copy, not a bank swap), a candidate list built in vblank, then a per-scanline engine into a double-buffered 320-pixel line buffer. No whole-frame pixel buffer anywhere.
-* **Compositor** with the bit-indexed pdrawgfx-style priority rule, and the backdrop as the last palette pen.
-* **Fast ROM loading.**
-
 Known issues:
-
-* (Fixed) One line of gogomile's title cloud scrolled with the wrong band — a raster effect on
-  layer 2. The per-line display record measured the band boundaries one line above MAME's with
-  the raster interrupt two lines early, and exactly on MAME's with it one line early; the core
-  now fires it one line early, and the picture confirms it.
-* **gogomile's music stops minutes into play** — the OKI's sample fetch deadlocked against the
-  sample cache when the chip moved its address on the clock the fetch completed. Measured with
-  the probe, reproduced in simulation, fixed in the OKI ROM bridge; to be confirmed by ear.
-* (Fixed) pbancho's attract-mode black bands ending partway across the screen were sprite-engine
-  overrun, not a compositor fault; the sprite engine now prefetches the next sub-tile while drawing.
-
-See `docs/ROADMAP.md` for the measurements behind each, and what has been ruled out.
-`docs/RELEASE_PROCESS.md` says how a build becomes a release: two Quartus revisions, `Fuuki_stp`
-(debug: JTAG probe, Debug OSD page) and `Fuuki` (release), and the timing gate between them.
+* Unsure about the raster effects at the end of a match on Asura Buster/Blade. Same as MAME, but would love to see real hardware
 
 ### Todo
 
-- [x] gogomile's title-cloud raster line
-- [x] gogomile's music stopping mid-play (OKI fetch deadlock; to be confirmed by ear)
-- [x] Sound: Z80, and the FG-2 chip set (YM2203, YM3812, OKI M6295)
-- [x] Sound: OPL4 PCM and the FG-3 Z80 — built, and measured playing on MiSTer
-- [x] Sound: the OPL4's FM half — [gtaylormb/opl3_fpga](https://github.com/gtaylormb/opl3_fpga),
-      measured synthesising on Asura Blade
-- [x] HDMI rotation and Flip 180, vertical crop, integer scaling, CRT offset
+- [x] HDMI rotation and Flip 180, vertical crop, integer scaling, CRT Adjust (H-Position, V-Shift, H-Size, V-Size)
 - [ ] Hiscore support
-- [ ] The DIP Flip Screen in the renderer (both MAME drivers are marked inaccurate. Hidden in MRAs)
+- [ ] The DIP Flip Screen in the renderer
 
 ### Resource usage
 
@@ -151,21 +127,19 @@ Whole core, on the DE10-nano's Cyclone V 5CSEBA6, speed grade 7, for the bitstre
 
 | resource | used | available |
 | --- | --- | --- |
-| Logic (ALMs) | 12,761 (30%) | 41,910 |
-| Registers | 17,947 | -- |
-| Block memory bits | 2,748,161 (49%) | 5,662,720 |
-| RAM blocks | 356 (64%) | 553 |
-| DSP blocks | 43 (38%) | 112 |
+| Logic (ALMs) | 24,695 (59%) | 41,910 |
+| Registers | 33,312 | -- |
+| Block memory bits | 3,287,455 (58%) | 5,662,720 |
+| RAM blocks | 445 (80%) | 553 |
+| DSP blocks | 65 (58%) | 112 |
 | PLLs | 3 | 6 |
 
-**+0.482 ns** of setup slack on `clk_sys` (85.909091 MHz).
+**+0.224 ns** of setup slack on `clk_sys` (85.909091 MHz).
 
 ## AI Attestation
 
-This core is being developed with heavy use of a frontier coding assistant, in the same manner as
-[Arcade-Psikyo_MiSTer](https://github.com/ppriest/Arcade-Psikyo_MiSTer). The MAME drivers being
-ported here, `fuukifg2.cpp` and `fuukifg3.cpp`, carry the author among their copyright holders, so
-the reference and the port share an author.
+This core is being developed with heavy use of a frontier coding assistant. The MAME drivers being
+ported here, `fuukifg2.cpp` and `fuukifg3.cpp` are based on my and others, work.
 
 What the assistant is held to, and what shows in the repository:
 
@@ -236,9 +210,7 @@ where they matter (both Fuuki drivers flag raster effects and flipped-screen scr
   [Hiscores_MiSTer](https://github.com/JimmyStones/Hiscores_MiSTer), with per-game configuration
   from MAME's own
   [hiscore.dat](https://github.com/mamedev/mame/blob/master/plugins/hiscore/hiscore.dat).
-- **I Beceri Videoludici** ([rmonic79](https://github.com/rmonic79)) for CRT Offset.
-- **Arcade-Psikyo_MiSTer**, the completed core this project reuses the CPU, SDRAM stack and OPL4
-  PCM engine from, and inherits its `LESSONS_LEARNED.md` from.
+- **I Beceri Videoludici** ([rmonic79](https://github.com/rmonic79)) for CRT Adjust (`crt_adjust.sv`, `crt_vsize.sv`).
 
 ## Layout
 

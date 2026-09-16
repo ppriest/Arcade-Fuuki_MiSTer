@@ -1,31 +1,18 @@
 #!/usr/bin/env python3
-"""Keep JTAG and Quartus off this machine at the same time.
+"""Keep JTAG and Quartus/ModelSim off this machine at the same time.
 
-Shared by the Fuuki, Psikyo and Seta cores -- one PC, one USB-Blaster, one
-Quartus, and a marker outside any of the repos so all three see each other.
+A JTAG session (read_issp.tcl, memdump.py, the tracer readout) running beside
+a Quartus compile has bugchecked this PC (KERNEL_SECURITY_CHECK_FAILURE,
+0x139). Enforced both ways:
 
-Running a JTAG session (read_issp.tcl, memdump.py, the tracer readout) while
-a Quartus compile is in flight has taken this PC down three times:
-KERNEL_SECURITY_CHECK_FAILURE, bugcheck 0x139 -- a corrupted kernel list
-entry -- on 2026-09-06 at 12:20, 12:27 and again that evening. Each one cost
-a running measurement, and the third cost a frozen fault state that had
-taken a while to reach.
+  * a JTAG tool refuses to start while Quartus or ModelSim is running;
+  * a build or simulation refuses to start while a JTAG tool holds the marker.
 
-It was written down as a caution after the first two and happened anyway, so
-it is enforced here rather than remembered. Both directions:
+Quartus and ModelSim may run side by side, several of each.
 
-  * a JTAG tool refuses to start while Quartus OR ModelSim is running;
-  * a build, or a simulation, refuses to start while a JTAG tool holds the
-    marker.
-
-Quartus and ModelSim are NOT a hazard to each other: builds and simulations
-may run side by side, and several of either at once.
-
-The marker is a file rather than a lock object because the JTAG side is a
-mix of Python and quartus_stp Tcl, and a file is the only thing both can
-agree on. It carries the pid and what the session was for, and a stale one
-(whose pid is gone) is cleared automatically -- a crashed tool must not
-wedge every later build.
+The marker is a file because the JTAG side is both Python and quartus_stp
+Tcl. It holds the pid and purpose; a marker whose pid is gone is cleared, so
+a crashed tool does not block later builds.
 """
 import os
 import subprocess
@@ -35,21 +22,13 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 
-# MACHINE-WIDE, not per-repo. There are three MiSTer cores on this PC --
-# Fuuki, Psikyo and Seta -- sharing one USB-Blaster and one Quartus install,
-# and the bugcheck does not care which repo started which half. A marker
-# under one repo's build/ would let a Seta compile start while a Fuuki probe
-# was reading, which is exactly the combination being guarded against. It
-# lives beside the user profile so every copy of this file agrees on it.
+# Machine-wide, not per-repo: the Fuuki, Psikyo and Seta cores share one
+# USB-Blaster and Quartus install, and every copy of this file must agree.
 MARKER = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "mister_jtag_running"
 
 
 def quartus_processes():
-    """Names of running Quartus AND ModelSim processes, empty if none.
-
-    Both are a hazard to a concurrent JTAG session; they are not a hazard
-    to each other, and several builds or simulations may run side by side.
-    """
+    """Names of running Quartus and ModelSim processes, empty if none."""
     try:
         r = subprocess.run(
             ["powershell", "-NoProfile", "-Command",
@@ -58,8 +37,7 @@ def quartus_processes():
             capture_output=True, text=True, timeout=30)
         return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
     except Exception:
-        # If the check itself cannot run, do not block the tool -- an
-        # unavailable guard is not a reason to stop working.
+        # If the check cannot run, do not block the tool.
         return []
 
 
@@ -77,9 +55,7 @@ def _pid_alive(pid):
 
 def read_marker():
     """(pid, what) if a live JTAG session holds the marker, else None.
-
-    A marker whose process has gone is stale and is removed here.
-    """
+    A stale marker is removed."""
     if not MARKER.exists():
         return None
     try:

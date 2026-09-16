@@ -12,26 +12,15 @@ Connection settings come from ./mister.env (gitignored):
     MISTER_USER=...
     MISTER_PASSWORD=...
 
-Transport is PuTTY's plink/pscp, because Windows has no OpenSSH password-auth
-automation without sshpass and that is not commonly installed there.
+Transport is PuTTY's plink/pscp: Windows OpenSSH cannot take a password
+non-interactively without sshpass.
 
-WHY THE BUILD GUARD IS HERE
----------------------------
-Ported from the Psikyo core's scripts/deploy_rbf.py, which records the reason:
-a Quartus build died mid-Fitter, Quartus left the PREVIOUS build's .rbf in
-output_files/, the deploy copied that stale bitstream under a new name, and the
-verification screenshot came back healthy -- because it was verifying the
-previous build. A green result against a stale artifact is worse than a red
-one, because it looks like evidence.
-
-So two independent checks, either of which alone can be fooled:
+Build guard (ported from the Psikyo core, where a failed build left the
+previous .rbf in output_files/ and it was deployed and tested as new):
   1. the build log contains Quartus's success line;
-  2. the .rbf is not meaningfully older than that log.
-
-A third check is specific to this project: the timing summary must contain no
-negative slack. Quartus reports "Fitter was successful" on a design that
-grossly fails timing (Fuuki.sdc's header says so), and a bitstream that failed
-timing is not worth the time it takes to test.
+  2. the .rbf is not meaningfully older than that log;
+  3. the timing summary has no negative slack -- Quartus reports "Fitter was
+     successful" on a design that fails timing.
 """
 import argparse
 import re
@@ -47,10 +36,8 @@ REMOTE_CORES = "/media/fat/_Arcade/cores"
 REMOTE_ARCADE = "/media/fat/_Arcade/_Fuuki"
 SUCCESS = "Full Compilation was successful"
 
-# FG-3 needs the SDRAM controller widened past 32 MB before it can run at all
-# (rtl/memory/fuuki_sdram_top.sv). Its .mra files are proven and correct, but
-# putting them on the device invites launching a game that cannot work, so they
-# are opt-in rather than default.
+# FG-3 .mra files are opt-in (--all): FG-3 needs the SDRAM controller widened
+# past 32 MB (rtl/memory/fuuki_sdram_top.sv) before it can run.
 FG3_SETS = ("Asura Blade", "Asura Buster")
 
 
@@ -92,8 +79,7 @@ class Mister:
         if self.dry:
             print(f"    [dry-run] ssh: {command}")
             return ""
-        # -batch refuses interactively rather than hanging; the host key is
-        # accepted automatically, matching the plain plink -pw flow.
+        # -batch fails instead of hanging on a prompt.
         p = subprocess.run([self.plink, "-ssh", "-batch", "-pw", self.pw,
                             f"{self.user}@{self.host}", command],
                            capture_output=True, text=True, timeout=60)
@@ -114,12 +100,8 @@ class Mister:
 
 
 def print_timing(sta):
-    """Print every clock's worst setup/hold slack from the STA summary.
-
-    Always printed, met or not, so the timing of the build being deployed is
-    on the record next to the deploy rather than having to be dug out of
-    output_files/ afterwards.
-    """
+    """Print every clock's worst slack from the STA summary, met or not, so
+    the deployed build's timing is on the record."""
     kind = None
     rows = []
     for line in sta.read_text(encoding="utf-8").splitlines():
@@ -148,12 +130,9 @@ def print_timing(sta):
 def check_build(rbf, log, sta, allow_timing_miss=False):
     """Refuse to deploy a bitstream the build did not actually produce.
 
-    Returns (hard_problems, warnings). The STALE-ARTIFACT checks are hard: a
-    bitstream that is not the one just built makes every later measurement a
-    lie. A TIMING miss is different -- during bring-up a design that misses by
-    a fraction of a nanosecond usually still runs, and finding out whether it
-    boots at all is worth more than a green report. So that one is
-    downgradeable with --allow-timing-miss, and never by --force alone.
+    Returns (hard_problems, warnings). Stale-artifact checks are always hard.
+    A timing miss becomes a warning with --allow-timing-miss, for bring-up
+    builds that miss by a small margin.
     """
     problems = []
     warnings = []
@@ -191,18 +170,16 @@ def check_build(rbf, log, sta, allow_timing_miss=False):
 
 
 # ---------------------------------------------------------------------------
-# Remote naming: Arcade-Fuuki_NNNNNNNN.rbf, the number incrementing per deploy.
+# Remote naming: Fuuki_NNNNNNNN.rbf, the number incrementing per deploy.
 #
-# MiSTer resolves the .mra's <rbf>Arcade-Fuuki</rbf> to the highest-sorting
-# Arcade-Fuuki_*.rbf in the cores folder, so every deploy leaves the previous
-# builds in place as fallbacks: rename the newest to .held (any name that no
-# longer ends in .rbf) and the one before it is what the .mra launches. The
-# counter starts at 10000001 and is read back from the device, .held files
-# included, so a held build's number is never reused. A plain Arcade-Fuuki.rbf
-# from before this convention is moved aside to .held rather than left to
-# compete with the numbered ones.
+# MiSTer resolves <rbf>Fuuki</rbf> to the highest-sorting Fuuki_*.rbf, so
+# previous builds stay as fallbacks: rename the newest to .held to launch the
+# one before. The counter is read from the device, .held and old
+# Arcade-Fuuki_* names included, so no number is reused. A plain Fuuki.rbf is
+# moved aside to .held.
 # ---------------------------------------------------------------------------
-RBF_STEM = "Arcade-Fuuki"
+RBF_STEM = "Fuuki"
+RBF_OLD_STEMS = ("Arcade-Fuuki",)
 RBF_FIRST = 10000001
 
 
@@ -210,8 +187,8 @@ def next_rbf_name(m):
     if m.dry:
         return f"{RBF_STEM}_{RBF_FIRST}.rbf"   # a dry run never asks the device
     listing = m.run(f"ls -1 {REMOTE_CORES} 2>/dev/null; true")
-    numbers = [int(n) for n in
-               re.findall(rf"^{RBF_STEM}_(\d+)\.rbf(?:\.held)?$", listing, re.M)]
+    numbers = [int(n) for stem in (RBF_STEM,) + RBF_OLD_STEMS for n in
+               re.findall(rf"^{stem}_(\d+)\.rbf(?:\.held)?$", listing, re.M)]
     plain = f"{RBF_STEM}.rbf"
     if plain in listing.split():
         print(f"    {plain} -> {plain}.held  (pre-numbering build, moved aside)")
@@ -223,15 +200,14 @@ def next_rbf_name(m):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rbf", default=str(REPO / "output_files" / "Fuuki.rbf"))
-    # Default to the NEWEST compile*.log: several build flows write differently
-    # named logs (compile.log, compile_fix.log, compile_phase.log), and the
-    # guard must check the log of the build that actually produced the .rbf.
+    # Default to the newest compile*.log: build flows write differently named
+    # logs, and the guard must check the one that produced the .rbf.
     logs = sorted((REPO / "output_files").glob("compile*.log"), key=lambda f: f.stat().st_mtime)
     ap.add_argument("--log", default=str(logs[-1]) if logs else str(REPO / "output_files" / "compile.log"))
     ap.add_argument("--sta", default=str(REPO / "output_files" / "Fuuki.sta.summary"))
     ap.add_argument("--name", default=None,
                     help="remote core filename. Default: the next numbered "
-                         "Arcade-Fuuki_NNNNNNNN.rbf on the device (see "
+                         "Fuuki_NNNNNNNN.rbf on the device (see "
                          "next_rbf_name); the .mra's <rbf> tag must match the "
                          "part before the underscore")
     ap.add_argument("--all", action="store_true",
@@ -291,9 +267,8 @@ def main():
             if remote_dir not in made:
                 m.run(f'mkdir -p "{remote_dir}"')
                 made.add(remote_dir)
-            # NOT quoted: pscp takes argv directly, so shell quotes would
-            # become part of the remote path. The mkdir above IS quoted,
-            # because that one is interpreted by a remote shell.
+            # Not quoted: pscp takes argv directly (the mkdir above goes
+            # through a remote shell, so it is).
             m.put(f, f"{remote_dir}/{f.name}")
 
         if skipped:

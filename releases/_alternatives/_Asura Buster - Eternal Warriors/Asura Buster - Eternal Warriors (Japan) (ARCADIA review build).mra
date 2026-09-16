@@ -2,7 +2,7 @@
 	<about author="Paul Priest" webpage="https://github.com/ppriest/Arcade-Fuuki_MiSTer" source="MAME fuukifg3.cpp"/>
 	<name>Asura Buster - Eternal Warriors (Japan) (ARCADIA review build)</name>
 	<setname>asurabusjr</setname>
-	<rbf>Arcade-Fuuki</rbf>
+	<rbf>Fuuki</rbf>
 	<year>2000</year>
 	<manufacturer>Fuuki</manufacturer>
 	<category>Fight</category>

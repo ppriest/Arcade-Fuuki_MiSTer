@@ -1,22 +1,7 @@
-// Widened copy of sim/sdram_tb/sdram_chip_model.sv, used ONLY by
-// tb_psikyo_top_realrom.sv. That shared model deliberately folds row
-// addresses to 8 bits ("sized for what existing tests exercise, not full
-// 32MB capacity" -- its own header) -- fine for every prior test's small
-// address footprint, but this test's real maincpu+audiocpu ROM regions span
-// word addresses 0x000000-0x0FFFFF and 0x100000-0x10FFFF respectively, and
-// an 8-bit row fold makes those alias onto the SAME cells (word_addr[16:9]
-// is identical for both regions' base addresses), silently corrupting the
-// downloaded maincpu program and leaving the rest as never-written X --
-// which is what actually caused this test's first run to flood with
-// TG68K 'X in arithmetic operand' warnings for hours, not a real CPU/RTL
-// bug. Fixed here, in an isolated copy rather than the shared model, by
-// using the REAL 13-bit row width (matching rtl/memory/sdram/sdram.sv's own
-// `row=a[22:10]` split and this file's own `open_row` storage, which was
-// already 13 bits -- only the address-computation call sites truncated it
-// to 8) -- eliminates aliasing across the full real 32MB address range, not
-// just this test's specific footprint. Otherwise byte-for-byte identical to
-// the original; see that file for the CAS-latency/burst-length protocol
-// modeling this preserves unchanged.
+// SDRAM chip model: decodes nRAS/nCAS/nWE, honours the mode register's CAS
+// latency and burst length, and stores the full 32 MB with the 13-bit row, so
+// no two addresses alias (a folded row silently corrupts downloads).
+// Open rows are tracked for banks 0-1 only.
 module sdram_chip_model_wide (
 	input  logic         clk,
 
@@ -39,8 +24,7 @@ module sdram_chip_model_wide (
 
 	wire [2:0] cmd = {SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE};
 
-	// Full real width: {bank[1:0], row[12:0], col[8:0]} = 24 bits = 16.7M
-	// words (32MB) -- matches the real MT48LC16M16 chip's actual capacity.
+	// {bank[1:0], row[12:0], col[8:0]}: 16.7M words, MT48LC16M16 capacity.
 	logic [15:0] mem [0:16777215];
 
 	function automatic int unsigned addr_of(input logic [1:0] bank, input logic [12:0] row, input logic [8:0] col);
@@ -124,11 +108,8 @@ module sdram_chip_model_wide (
 		return mem[addr_of(bank, row, col)];
 	endfunction
 
-	// Mirrors sdram.sv's own address decomposition exactly, same bit
-	// mapping as the original model's word_addr_to_chip helpers
-	// (word_addr[i] == addr0[i+1]; addr0's row=addr0[22:10] => here
-	// word_addr[21:9]): bank=word_addr[23:22], row=word_addr[21:9] (now the
-	// FULL 13 bits, not folded to [16:9]), col=word_addr[8:0].
+	// Word address split as sdram.sv splits its byte address (row=a[22:10]):
+	// bank=word_addr[23:22], row=word_addr[21:9], col=word_addr[8:0].
 	function automatic void poke_word_addr(input logic [23:0] word_addr, input logic [15:0] data);
 		poke_word(word_addr[23:22], word_addr[21:9], word_addr[8:0], data);
 	endfunction

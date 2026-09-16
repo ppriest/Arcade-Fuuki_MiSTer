@@ -4,18 +4,14 @@
 // Reads debug/gogomile-title/fg2_spriteram.bin directly -- the same 8 KB MAME
 // was rendering from when it drew debug/gogomile-title/0000.png.
 //
-// The expected answer was derived INDEPENDENTLY, by decoding that file in
-// Python against fuukispr.cpp, not by running this RTL and writing down what
-// it produced. At the title screen exactly two records survive:
+// Expected records were decoded independently from that file in Python
+// against fuukispr.cpp, not taken from this RTL's output:
 //
 //   record 1000   (105, 108)  2x2 tiles, span 32x32, pri 0, col 32
 //   record  148   (260, 230)  4x1 tiles, span 64x16, pri 0, col  8   "CREDIT 0"
 //
-// and they pin the depth order too. The scan runs from record 1023 down to 0,
-// so record 1000 is found FIRST and record 148 LAST -- which is what makes 148
-// win, since the engine renders the list in order and later writes overwrite
-// earlier ones. A forward scan would produce the same two entries in the
-// opposite order and silently invert sprite depth.
+// They also pin depth order: the scan is forward, so 148 is entry 0 and 1000
+// (drawn on top) is entry 1 (sprite_line_list.sv, "Depth order").
 
 `timescale 1ns/1ps
 
@@ -128,8 +124,6 @@ module tb_spritelist;
 			         $signed(yt1[18:9]), yt1[8:0],
 			         rc1[63:48], rc1[47:32], rc1[31:16], rc1[15:0]);
 
-			// The scan is forward, so the lower record number comes first and the
-			// higher one last: it is drawn on top (sprite_line_list.sv, DEPTH ORDER).
 			// Record 148 is "CREDIT 0" at (260,230), 4x1 tiles -> span 16.
 			check($signed(yt0[18:9]) == 230 && yt0[8:0] == 9'd16,
 			      "entry 0 is record 148: y 230, span 16");
@@ -144,8 +138,7 @@ module tb_spritelist;
 			      "forward scan puts the HIGHER record number last (it wins)");
 		end
 
-		// A second build must produce the same answer -- n_entries has to be
-		// cleared on start, not accumulated.
+		// A second build must clear n_entries, not accumulate.
 		@(posedge clk);
 		build_start <= 1'b1;
 		@(posedge clk);

@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """Decode Fuuki graphics tiles from a real ROM set and render them as ASCII.
 
-Proving the bit layout OFFLINE, before writing the RTL that depends on it.
-A wrong gfx layout produces plausible-looking garbage on MiSTer and is
-expensive to diagnose there; here it takes seconds and the answer is visual.
+Checks a bit layout offline before the RTL depends on it.
 
 Layouts, transcribed from the drivers' gfx_layout structs:
 
@@ -17,15 +15,12 @@ Layouts, transcribed from the drivers' gfx_layout structs:
       256 bytes/tile, 16 bytes/row.
       planeoffset { STEP4(0,1), STEP4(16,1) } = {0,1,2,3, 16,17,18,19}
       xoffset     { STEP4(0,4), STEP4(16*2,4), STEP4(16*4,4), STEP4(16*6,4) }
-      MAME builds a pixel with planeoffset[0] as the MSB, and counts bits
-      MSB-first within each byte, which works out to 4 groups of 4 bytes per
-      row, each group holding 4 pixels:
+      With planeoffset[0] as MSB and bits MSB-first per byte, each row is 4
+      groups of 4 bytes, 4 pixels per group:
           pixel 4g+0 = { b[4g+0][7:4], b[4g+2][7:4] }
           pixel 4g+1 = { b[4g+0][3:0], b[4g+2][3:0] }
           pixel 4g+2 = { b[4g+1][7:4], b[4g+3][7:4] }
           pixel 4g+3 = { b[4g+1][3:0], b[4g+3][3:0] }
-      i.e. the first two bytes of each group carry the HIGH nibble of the
-      pixel value and the next two carry the LOW nibble.
 """
 import argparse, zipfile, sys
 
@@ -87,8 +82,7 @@ def main():
     names = {n.split('/')[-1]: n for n in z.namelist()}
     data = bytearray(z.read(names[a.member]))
     if a.member2:
-        # ROM_LOAD32_WORD_SWAP pair. Built from the ROM_START offsets, not
-        # reasoned about: the map-digit rule is mechanical, so check it.
+        # ROM_LOAD32_WORD_SWAP pair, built from the ROM_START offsets.
         d2 = z.read(names[a.member2])
         out = bytearray(len(data) * 2)
         for i in range(0, len(data), 2):

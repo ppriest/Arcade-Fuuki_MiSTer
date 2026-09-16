@@ -8,8 +8,7 @@
 //          low 3 bits are ignored).
 //   WRITE: single BYTE in (`wdata`), `addr` selects the lane via DDRAM_BE.
 //
-// DDRAM_BURSTCNT is always 1. The only client is the ROM loader; wider
-// bursts are the throughput improvement if the copy ever needs one.
+// DDRAM_BURSTCNT is always 1; the only client is the ROM loader.
 
 module ddram_phy (
 	input  logic clk,

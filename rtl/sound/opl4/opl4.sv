@@ -38,15 +38,10 @@ module opl4 (
 	input  logic signed [15:0] fm_l,
 	input  logic signed [15:0] fm_r,
 
-	// Runtime mutes.
-	input  logic        en_fm,
-	input  logic        en_pcm,
-
 	output logic signed [15:0] snd_l,
 	output logic signed [15:0] snd_r,
 
-	// Probes. FM/PCM selection is ymfm's: bit 9 of the register address
-	// (ymf278b::write_data vs write_data_pcm).
+	// Probes. FM/PCM is bit 9 of the register address, as ymfm.
 	output logic        dbg_fm_wr,      // any write to an FM register
 	output logic        dbg_fm_keyon,   // FM key-on (regs B0-B8, bit 5)
 	output logic        dbg_pcm_keyon,
@@ -72,9 +67,9 @@ module opl4 (
 		end
 	end
 
-	// PCM engine enable, clk/2, so build/Fuuki.sdc can state its internal
-	// paths as a multicycle. A pass with all 24 channels playing measured
-	// 553 clk of the 1948 between sample ticks, so about 1106 at half rate.
+	// PCM engine enable, clk/2, so Fuuki.sdc can state its internal paths as
+	// a multicycle. A measured 24-channel pass took 553 of the 1948 clk
+	// between sample ticks, so ~1106 at half rate.
 	logic pcm_cen;
 	always_ff @(posedge clk or posedge reset) begin
 		if (reset) pcm_cen <= 1'b0;
@@ -114,6 +109,7 @@ module opl4 (
 
 	// ---- register block ----
 	logic [7:0] pcm_raddr, pcm_rdata;
+	logic       pcm_rlive, pcm_snap;
 	logic        pcm_hdr_we;
 	logic [7:0] pcm_hdr_waddr, pcm_hdr_wdata;
 	logic        keyon_stb, keyon_val, wavesel_stb;
@@ -127,6 +123,7 @@ module opl4 (
 		.addr(addr), .rd(rd_stb), .wr(wr_stb), .din(din), .dout(dout),
 		.irq_n(irq_n),
 		.pcm_raddr(pcm_raddr), .pcm_rdata(pcm_rdata),
+		.pcm_rlive(pcm_rlive), .pcm_snap(pcm_snap),
 		.pcm_hdr_we(pcm_hdr_we), .pcm_hdr_waddr(pcm_hdr_waddr), .pcm_hdr_wdata(pcm_hdr_wdata),
 		.pcm_keyon_stb(keyon_stb), .pcm_keyon_ch(keyon_ch), .pcm_keyon_val(keyon_val),
 		.pcm_wavesel_stb(wavesel_stb), .pcm_wavesel_ch(wavesel_ch),
@@ -176,6 +173,7 @@ module opl4 (
 	opl4_pcm u_pcm (
 		.clk(clk), .reset(reset), .cen(pcm_cen), .sample_tick(sample_tick),
 		.pcm_raddr(pcm_raddr), .pcm_rdata(pcm_rdata),
+		.pcm_rlive(pcm_rlive), .pcm_snap(pcm_snap),
 		.pcm_hdr_we(pcm_hdr_we), .pcm_hdr_waddr(pcm_hdr_waddr), .pcm_hdr_wdata(pcm_hdr_wdata),
 		.keyon_stb(keyon_stb), .keyon_ch(keyon_ch), .keyon_val(keyon_val),
 		.wavesel_stb(wavesel_stb), .wavesel_ch(wavesel_ch),
@@ -187,12 +185,10 @@ module opl4 (
 
 	// ---- wave ROM read arbitration (one in flight) ----
 	logic owner_rw;   // 0 = pcm engine owns the in-flight read, 1 = reg window
-	// Both clients pulse their request for one cycle and then wait for a
-	// valid, so requests are latched into pending flags, not sampled when
-	// idle: a pulse raised during the other client's fetch would otherwise
-	// be dropped, and opl4_regs's mem_pending would stick forever. The
-	// register side is served first when both wait: its reads are rare, so
-	// the PCM stream loses nothing and cannot starve it.
+	// Both clients pulse their request once and wait for valid, so requests
+	// are latched into pending flags: a pulse during the other client's fetch
+	// would otherwise be dropped and opl4_regs's mem_pending stick forever.
+	// The register side goes first; its reads are rare.
 	logic busy_mem;
 	logic        pcm_pend, rw_pend;
 	logic [21:0] pcm_addr_q, rw_addr_q;
@@ -281,10 +277,10 @@ module opl4 (
 		else                      sat16 = 16'(v);
 	endfunction
 	always_ff @(posedge clk) begin
-		pmix_l <= en_pcm ? pcm_l * $signed({1'b0, mix_scale(mix_pcm[2:0])}) : 28'sd0;
-		pmix_r <= en_pcm ? pcm_r * $signed({1'b0, mix_scale(mix_pcm[5:3])}) : 28'sd0;
-		fmix_l <= en_fm  ? fm_l  * $signed({1'b0, mix_scale(mix_fm[2:0])})  : 28'sd0;
-		fmix_r <= en_fm  ? fm_r  * $signed({1'b0, mix_scale(mix_fm[5:3])})  : 28'sd0;
+		pmix_l <= pcm_l * $signed({1'b0, mix_scale(mix_pcm[2:0])});
+		pmix_r <= pcm_r * $signed({1'b0, mix_scale(mix_pcm[5:3])});
+		fmix_l <= fm_l  * $signed({1'b0, mix_scale(mix_fm[2:0])});
+		fmix_r <= fm_r  * $signed({1'b0, mix_scale(mix_fm[5:3])});
 		snd_l  <= sat16((29'(pmix_l) + 29'(fmix_l)) >>> 11);
 		snd_r  <= sat16((29'(pmix_r) + 29'(fmix_r)) >>> 11);
 	end

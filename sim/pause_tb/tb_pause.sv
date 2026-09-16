@@ -1,9 +1,7 @@
 // pause_control checks. RUN FROM THE REPOSITORY ROOT (scripts/run_sim.sh pause_tb).
 //
-// The behaviours worth pinning are the ones a level-driven implementation gets
-// wrong: a press must toggle exactly once however long it is held, either
-// player's button must work, and an internal pause reason must not be able to
-// clobber the user's own toggle when it releases.
+// Checks: a press toggles once however long it is held; either player's button
+// works; an internal pause reason does not clobber the user's toggle.
 
 `timescale 1ns/1ps
 
@@ -33,12 +31,9 @@ module tb_pause;
 		else begin $display("  FAIL  %s", what); errors++; end
 	endtask
 
-	// Press and release, holding for `hold` cycles.
-	//
-	// Takes a player INDEX rather than a `ref` to the joystick word: a
-	// non-blocking assignment may not target an automatic variable, which is
-	// what a ref argument is. Blocking assignment is correct here because it
-	// happens after the clock edge, so the DUT samples it on the next one.
+	// Press and release, holding for `hold` cycles. Takes a player INDEX, not a
+	// `ref`: a non-blocking assignment may not target a ref argument. Blocking
+	// assignment after the edge is sampled by the DUT on the next one.
 	task automatic press(input int player, input int hold);
 		@(posedge clk);
 		if (player == 0) joy0[PB] = 1'b1; else joy1[PB] = 1'b1;
@@ -55,10 +50,6 @@ module tb_pause;
 
 		check(pause_cpu == 1'b0 && pause_latched == 1'b0, "starts unpaused");
 
-		// -------------------------------------------------------------
-		// A press toggles ONCE, no matter how long it is held. A
-		// level-driven pause would only hold while the button was down,
-		// which is useless for inspecting a frame.
 		// -------------------------------------------------------------
 		$display("\n--- toggle on press ---");
 		press(0, 1);
@@ -80,8 +71,7 @@ module tb_pause;
 		press(1, 2);
 		check(pause_latched == 1'b0, "player 2 unpauses");
 
-		// Both at once is one event, not two: they are ORed before the
-		// edge detector, so a simultaneous press must not cancel itself.
+		// Buttons are ORed before the edge detector: a simultaneous press is one toggle.
 		$display("\n--- both players at once is a single toggle ---");
 		@(posedge clk);
 		joy0[PB] = 1'b1; joy1[PB] = 1'b1;
@@ -93,11 +83,8 @@ module tb_pause;
 		check(pause_latched == 1'b0, "back to running");
 
 		// -------------------------------------------------------------
-		// An internal pause reason (hiscore borrowing a RAM port, a debug
-		// auto-pause) must hold the CPU while asserted and release cleanly
-		// -- WITHOUT disturbing the user's own toggle. Keeping the two
-		// separate is the whole reason ext_pause is not fed through the
-		// same latch.
+		// ext_pause (hiscore RAM access, debug auto-pause) holds the CPU
+		// without touching the user's latch.
 		// -------------------------------------------------------------
 		$display("\n--- internal pause reasons ---");
 		ext_pause = 1'b1;

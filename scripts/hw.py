@@ -8,19 +8,15 @@
 Needs MiSTer Remote (wizzomafizzo/mrext) listening on port 8182, and the same
 ./mister.env that scripts/deploy.py uses.
 
-TWO BEHAVIOURS HERE ARE NOT OPTIONAL, both carried over from the Psikyo core
-where each cost a false positive:
+Two required behaviours (from the Psikyo core, where each caused a false
+positive):
 
-1. LAUNCH BOUNCES THROUGH menu.rbf FIRST. Launching a .mra while any core is
-   already running -- including the very core the .mra targets -- does NOT
-   reprogram the FPGA or reload the ROM; it silently reuses what is loaded.
-   That produced a run where deploy, launch and screenshot all reported
-   success and the screenshot was of an earlier build.
+1. Launch bounces through menu.rbf first. Launching a .mra while a core is
+   running, even the same core, reuses the loaded FPGA image and ROM, so a
+   screenshot can show an earlier build.
 
-2. THE SCREENSHOT POST IS RE-SENT, not just polled for longer. The API call
-   returns an empty body and is sometimes simply lost; the signal is a new
-   file appearing in the core's screenshot folder. Polling harder after one
-   POST does not help, so each attempt re-triggers.
+2. The screenshot POST is re-sent. The call returns an empty body and is
+   sometimes lost; the only signal is a new file in the screenshot folder.
 """
 import argparse
 import re
@@ -113,10 +109,8 @@ class Mister:
         self.post("/launch", {"path": mra_path})
 
     def core_name(self):
-        """MiSTer names the screenshot folder from the MRA SETNAME (it writes
-        it to /tmp/CORENAME), not from the core's CONF_STR name. Looking under
-        the CONF_STR name found nothing and reported "no screenshot produced"
-        while the screenshots were being written normally."""
+        """MiSTer names the screenshot folder from the MRA setname (in
+        /tmp/CORENAME), not the CONF_STR name."""
         n = self.sh("cat /tmp/CORENAME 2>/dev/null || true", check=False).strip()
         return n or CORE_NAME
 
@@ -126,11 +120,9 @@ class Mister:
 
     def screenshot(self, out_path, core=None, settle=4,
                    poll_timeout=15, attempts=4):
-        # Settle BEFORE reading /tmp/CORENAME: straight after a launch it
-        # still names the previous core, so the poll watched the wrong
-        # folder and every trigger looked dropped (twice, after each of the
-        # first two game launches). A retry seconds later always worked.
-        time.sleep(settle)              # let the core actually render a frame
+        # Settle before reading /tmp/CORENAME: straight after a launch it
+        # still names the previous core.
+        time.sleep(settle)
         core = core or self.core_name()
         print(f"  screenshot folder: {REMOTE_SHOTS}/{core}")
         before = self.shots(core)
@@ -142,8 +134,7 @@ class Mister:
                 if new:
                     name = sorted(new)[-1]
                     out_path.parent.mkdir(parents=True, exist_ok=True)
-                    # NOT quoted: pscp takes the remote path as one argv
-                    # element, so shell quotes become part of the path.
+                    # Not quoted: pscp takes the path as one argv element.
                     self.get_file(f"{REMOTE_SHOTS}/{core}/{name}", out_path)
                     print(f"  screenshot -> {out_path} (remote {name})")
                     return out_path
@@ -156,10 +147,8 @@ class Mister:
 
 def resolve_mra(m, name):
     """Find the .mra on the device, so a typo fails here and not silently."""
-    # Git Bash rewrites a leading-slash argument into a Windows path before
-    # python sees it ("/media/fat/x" -> "C:/Program Files/Git/media/fat/x"),
-    # which silently launched nothing. Recover the MiSTer path from wherever
-    # the mangling left it.
+    # Git Bash rewrites a leading-slash argument into a Windows path
+    # ("/media/fat/x" -> "C:/Program Files/Git/media/fat/x"); recover it.
     hit = re.search(r"/media/fat/.*", name)   # not `m` -- that is the Mister object
     if hit:
         return hit.group(0)

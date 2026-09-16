@@ -337,6 +337,21 @@ the old logic deadlocking and the new not). Two model faults in writing that ben
 lesson from the server's side: re-sampling a still-high request after its own valid, and not
 resetting the model with the DUT, both put the answer to one request into the next.
 
+### A continuous assignment that calls a function is sensitive only to the arguments
+
+`wire [5:0] cur_rate = slot_rate(w_state_eg);` where `slot_rate` reads `c_rr`, `corr` and
+`c_damp` from module scope: ModelSim re-evaluates the assign only when `w_state_eg` changes, so
+the release rate stayed at a previous channel's value and the simulated envelope never moved.
+Quartus builds it as plain logic, so the FPGA and the simulation disagreed. Use `always_comb`
+(sensitive to everything the function reads) or pass every input as an argument.
+
+### When the reference is software, run the software
+
+A translated engine that "reads identically" to its source still diverged in three places that
+only showed as a wrong sound. Running ymfm itself on the captured writes, with the RTL bench's
+pacing, and diffing per-channel traces found each fault at the first differing sample, where
+reading the two side by side had found none.
+
 ### Treat any direct, non-arbitrated connection to a req/valid transport as suspect
 
 `sdram_phy.sv` asserts `valid` and returns to `S_IDLE` on the same cycle. Arbitrated consumers get a

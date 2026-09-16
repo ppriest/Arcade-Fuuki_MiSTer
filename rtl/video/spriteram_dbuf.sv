@@ -50,11 +50,10 @@ module spriteram_dbuf (
 
 
 	localparam logic BOARD_FG2 = 1'b0, BOARD_FG3 = 1'b1;   // .mra mod byte bit 0
-	// Two arrays, each with one write port and one read port. Asking one
-	// array for two read addresses plus a write makes Quartus duplicate the
-	// whole array silently (LESSONS_LEARNED, "Driving a dual-port RAM's second
-	// read port can silently REPLICATE the whole array"). Confirm against
-	// `Block Memory Bits` after fitting: 2 x 65,536 bits.
+	// Two arrays, each one write and one read port: two reads plus a write on
+	// one array makes Quartus silently duplicate it (LESSONS_LEARNED, "Driving
+	// a dual-port RAM's second read port can silently REPLICATE the whole
+	// array"). Expect `Block Memory Bits` 2 x 65,536 after fitting.
 	logic [15:0] live [0:4095];
 	logic [15:0] snap  [0:4095];   // the frame's snapshot
 

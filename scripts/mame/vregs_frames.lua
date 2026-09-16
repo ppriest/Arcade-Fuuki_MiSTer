@@ -1,8 +1,6 @@
 -- Log the video registers at the end of each of several consecutive frames.
--- Decides whether a capture's dumps can be trusted against its own snapshot:
--- if a scrolling layer's registers change every frame, then any skew between
--- when the image is rendered and when the registers are read shows up as a
--- displaced layer.
+-- If a scrolling layer's registers change every frame, any skew between
+-- snapshot and register read in a capture shows as a displaced layer.
 local prog = manager.machine.devices[":maincpu"].spaces["program"]
 local scr  = manager.machine.screens[":screen"]
 local out  = assert(io.open(os.getenv("FUUKI_OUT") or "D:/Arcade-Fuuki_MiSTer/debug/vregs_frames.txt", "w"))

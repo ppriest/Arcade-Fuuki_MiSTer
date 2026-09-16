@@ -1,21 +1,13 @@
 -- Bootstrap that makes Lua failures VISIBLE to the calling script.
 --
--- MAME reports a broken autoboot script with a modal dialog. Headless, that is
--- close to invisible: the process sits on the dialog until something kills it,
--- the capture directory looks untouched, and the only symptom is "it quietly
--- did nothing". Two separate faults in this project hid that way for a while --
--- a syntax error from a stray newline inside a string literal, and a runtime
--- error after a careless edit deleted a function that was still being called.
+-- MAME reports a broken autoboot script with a modal dialog, which leaves a
+-- headless run sitting with no output. This writes the error to
+-- lua_error.txt for the Python runner:
 --
--- This wrapper catches both classes and writes them to a file the Python
--- runner reads back, so a Lua fault becomes a printed error instead of a hunt:
---
---   syntax errors    loadfile() returns nil plus a message, BEFORE any of the
---                    target script runs. pcall cannot catch these, because
---                    there is nothing to call yet -- it has to be loadfile.
---   runtime errors   pcall around the call, and again around each frame
---                    notifier, since an error inside a notifier is reported by
---                    MAME but does not reach the loader.
+--   syntax errors    loadfile() returns nil plus a message; pcall cannot
+--                    catch these.
+--   runtime errors   pcall around the call. Errors inside a frame notifier
+--                    do not reach here; the notifier must pcall itself.
 --
 -- Point -autoboot_script at THIS file and pass the real script in FUUKI_SCRIPT.
 
@@ -37,7 +29,6 @@ if not SCRIPT then
     return
 end
 
--- Syntax errors surface here, before anything is executed.
 local chunk, lerr = loadfile(SCRIPT)
 if not chunk then
     record("syntax", lerr)
@@ -45,7 +36,6 @@ if not chunk then
     return
 end
 
--- Runtime errors during the script's own top level.
 local ok, rerr = pcall(chunk)
 if not ok then
     record("runtime", rerr)

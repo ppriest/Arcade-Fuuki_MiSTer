@@ -88,7 +88,8 @@ module tilemap_line_engine (
 	logic signed [9:0] tile_x;  // screen x of the current tile's pixel 0
 
 	// How much of the first tile column is off the left edge. Named wires
-	// because Quartus 17.0 cannot parse `-10'(expr)`.
+	// because Quartus 17.0 rejects `-10'(signed'(...))` (ModelSim accepts it).
+	// The top bit is clear, so unary minus on the wire is bit-identical.
 	wire [9:0] first_off16 = {6'd0, c_scroll_x[3:0]};
 	wire [9:0] first_off8  = {7'd0, c_scroll_x[2:0]};
 
@@ -194,7 +195,6 @@ module tilemap_line_engine (
 			case (st)
 			S_IDLE: begin
 				if (line_start) begin
-					// Latch every configuration input for the whole line.
 					c_bank     <= vram_bank;
 					c_tile16   <= tile16;
 					c_bpp8     <= bpp8;
@@ -223,11 +223,7 @@ module tilemap_line_engine (
 			end
 
 			S_SETUP: begin
-				// First tile column and how much of it is off the left edge.
-				// Do not write `-10'(signed'(...))`: Quartus 17.0 rejects
-				// both casts, though ModelSim accepts them. The operand's top
-				// bit is clear, so unary minus on the 10-bit wire is
-				// bit-identical.
+				// First tile column; see first_off16 for the negation.
 				if (c_tile16) begin
 					tile_col   <= c_scroll_x[9:4];
 					first_skip <= c_scroll_x[3:0];

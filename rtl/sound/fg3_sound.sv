@@ -57,10 +57,6 @@ module fg3_sound (
 	input  logic        wave_valid,
 	input  logic [7:0]  wave_data,
 
-	// Runtime mutes.
-	input  logic        en_fm,
-	input  logic        en_pcm,
-
 	output logic signed [15:0] audio_l,
 	output logic signed [15:0] audio_r,
 
@@ -116,8 +112,7 @@ module fg3_sound (
 	logic [7:0] ram_rd_data;
 	always_ff @(posedge clk) ram_rd_data <= ram[a[11:0]];
 
-	// ---- shared RAM, 16 bytes, two write ports ----
-	// Flops, not an inferred dual-port RAM: no read-during-write rules.
+	// ---- shared RAM, 16 bytes, two write ports, flops ----
 	logic [7:0] shared [0:15];
 	assign host_rdata = shared[host_addr];
 
@@ -134,15 +129,10 @@ module fg3_sound (
 	logic signed [15:0] opl4_l, opl4_r;
 
 	// ---- FM: the OPL3 on ports 0x40-0x43 ----
-	// !a[2] covers all four ports; 0x42-0x43 carry bank 1, including 0x105
-	// (NEW/NEW2). en_fm also takes the OPL3 off the bus, not only out of the
-	// mix: Asura Buster's driver was seen to wedge on MiSTer with the OPL3 on
-	// the bus, so the switch separates "on the bus" from "in the design".
-	//
-	// >>> 5 undoes dac_prep.sv's DAC_LEFT_SHIFT (24 - 16 - 3) and recovers
-	// the clamped 16-bit sample at the scale opl4_pcm works in. Do not use
-	// >>> 8 (the field-width difference): 18 dB too quiet.
-	wire io_opl4_fm = io_opl4 && !a[2] && en_fm;
+	// >>> 5 undoes dac_prep.sv's DAC_LEFT_SHIFT (24 - 16 - 3), giving the
+	// 16-bit sample at opl4_pcm's scale. Not >>> 8 (the field-width
+	// difference): 18 dB too quiet.
+	wire io_opl4_fm = io_opl4 && !a[2];
 	logic signed [23:0] opl3_l, opl3_r;
 
 	opl3 u_opl3 (
@@ -164,7 +154,7 @@ module fg3_sound (
 		.addr(a[2:0]), .din(d_out), .dout(opl4_dout), .irq_n(opl4_irq_n),
 		.mem_rd_req(wave_req), .mem_rd_addr(wave_addr),
 		.mem_rd_valid(wave_valid), .mem_rd_data(wave_data),
-		.fm_l(fm_l), .fm_r(fm_r), .en_fm(en_fm), .en_pcm(en_pcm),
+		.fm_l(fm_l), .fm_r(fm_r),
 		.snd_l(opl4_l), .snd_r(opl4_r),
 		.dbg_fm_wr(), .dbg_fm_keyon(dbg_fm_keyon), .dbg_pcm_keyon(dbg_pcm_keyon),
 		.dbg_new2(dbg_new2), .dbg_mix_pcm(dbg_mix_pcm)
@@ -204,8 +194,7 @@ module fg3_sound (
 		end else begin
 			if (mem_active_wr && is_ram)    ram[a[11:0]]    <= d_out;
 			if (io_active_wr && io_bank)    bank            <= d_out[3:0];
-			// The 68020 wins a same-cycle collision.
-			if (host_we)                    shared[host_addr] <= host_wdata;
+			if (host_we)                   shared[host_addr] <= host_wdata;
 			else if (mem_active_wr && is_shared) shared[a[3:0]] <= d_out;
 		end
 	end
@@ -230,8 +219,7 @@ module fg3_sound (
 	end
 	assign rom_req = is_rom_read && !rom_pending && !rom_done;
 
-	// Stretch the one-clock valid into a level held until the M-cycle ends;
-	// the data is latched alongside so di is stable for the whole window.
+	// Stretch the one-clock valid into a level held until the M-cycle ends.
 	always_ff @(posedge clk or posedge reset) begin
 		if (reset) begin
 			rom_done      <= 1'b0;

@@ -36,6 +36,9 @@ module fg2_sound (
 	// sound latch, from the main CPU
 	input  logic [7:0]  latch_data,
 	input  logic        latch_write, // pulse
+	// Latch pacing: high from a latch write until LATCH_SETTLE clk after the
+	// Z80 reads it (capped at LATCH_CAP), holding the main CPU's write access.
+	output logic        latch_busy,
 
 	// Z80 program ROM, 128 KB, byte req/valid: req pulses once per access,
 	// data must be valid on the cycle valid pulses
@@ -51,23 +54,31 @@ module fg2_sound (
 	input  logic        oki_valid,
 	input  logic [7:0]  oki_data,
 
-	// Runtime mutes. FM is the YM2203 + YM3812 pair, PCM the OKI: the same
-	// split as FG-3, so one pair of OSD entries serves both.
-	input  logic        en_fm,
-	input  logic        en_pcm,
-
 	// mono, signed
 	output logic signed [15:0] audio,
 
 	// probes
 	output logic        dbg_m1,      // one pulse per Z80 opcode fetch
 	output logic        dbg_ym_wr,   // one pulse per write to either FM chip
-	// How a stopped sound CPU is stopped: halted, waiting on a ROM fetch,
-	// or running with its interrupt line dead.
 	output logic        dbg_int_n,   // the YM3812 timer interrupt, as the Z80 sees it
 	output logic        dbg_nmi_n,   // the sound-latch NMI pulse
 	output logic        dbg_halt_n,
-	output logic        dbg_rom_wait // a ROM fetch is outstanding on the SDRAM
+	output logic        dbg_rom_wait,// a ROM fetch is outstanding on the SDRAM
+	// Per-chip output peaks, writes and key-ons, the last sound command.
+	// Cleared by dbg_clear (the JTAG source bit, never a core reset).
+	input  logic        dbg_clear,
+	output logic [151:0] dbg_chips,
+	output logic [87:0] dbg_oki,
+	// Z80 resets seen, PC, last I/O write, bus pins.
+	output logic [95:0] dbg_z80,
+	output logic [143:0] dbg_cmd,
+	// The last 16 commands, newest low: {pair flag when the NMI handler read
+	// it, log2 clk since the previous write, the byte}, 16 bits each.
+	output logic [255:0] dbg_cmd_hist,
+	// The history frozen at the first read of a byte >= 0x80 while the
+	// driver expects a second byte, and counts of the pair flag's other
+	// movers.
+	output logic [327:0] dbg_cmd_frz
 );
 
 	// =====================================================================
@@ -111,6 +122,39 @@ module fg2_sound (
 	wire io_ym2     = (a[7:1] == 7'h28);           // 50-51
 	wire io_oki_rd  = (a[7:0] == 8'h60);
 	wire io_oki_wr  = (a[7:0] == 8'h61);
+
+	// ---- latch pacing ----
+	// The driver takes commands in pairs, alternating on a flag its NMI
+	// handler updates ~100 T-states after IN A,(0x11) (z80 0x1E05-0x1E1D,
+	// ~17 us at 6 MHz). A command written before then nests the NMI, both
+	// handlers read the second byte, and every later pair is swapped: music
+	// stops and effects play the wrong phrase until F0 F0 F0. The 16 MHz
+	// 68000 does not send commands that close; TG68K does (probe D: 24-48 us
+	// apart). So the main CPU's write is held until the Z80 has read the byte
+	// plus LATCH_SETTLE clk. LATCH_CAP bounds the hold if the Z80 never reads.
+	localparam int LATCH_SETTLE = 4300;      // 50 us
+	localparam int LATCH_CAP    = 172000;    // 2 ms
+	logic        lp_unread;
+	logic [17:0] lp_cnt;                     // clk since the write, or since the read
+	logic        lp_settle;
+	always_ff @(posedge clk or posedge reset) begin
+		if (reset) begin
+			lp_unread <= 1'b0; lp_settle <= 1'b0; lp_cnt <= 18'd0;
+		end else if (latch_write) begin
+			lp_unread <= 1'b1; lp_settle <= 1'b0; lp_cnt <= 18'd0;
+		end else if (lp_unread) begin
+			lp_cnt <= lp_cnt + 18'd1;
+			if (io_active_rd && io_latch) begin
+				lp_unread <= 1'b0; lp_settle <= 1'b1; lp_cnt <= 18'd0;
+			end else if (lp_cnt == 18'(LATCH_CAP)) begin
+				lp_unread <= 1'b0;
+			end
+		end else if (lp_settle) begin
+			lp_cnt <= lp_cnt + 18'd1;
+			if (lp_cnt == 18'(LATCH_SETTLE)) lp_settle <= 1'b0;
+		end
+	end
+	assign latch_busy = lp_unread || lp_settle;
 
 	// ---- sound latch and NMI ----
 	// NMI held low for NMI_PULSE clock enables: T80 detects the falling edge
@@ -190,7 +234,6 @@ module fg2_sound (
 		.sound(oki_snd), .sample()
 	);
 
-	// Level ROM bus to one held req/valid fetch at a time; see oki_rom_bridge.sv.
 	oki_rom_bridge u_oki_bridge (
 		.clk(clk), .reset(reset),
 		.rom_addr(oki_rom_addr), .rom_data(oki_rom_data), .rom_ok(oki_rom_ok),
@@ -243,8 +286,7 @@ module fg2_sound (
 	end
 	assign rom_req = is_rom_read && !rom_pending && !rom_done;
 
-	// Stretch the one-clock valid into a level held until the M-cycle ends;
-	// the data is latched alongside so di is stable for the whole window.
+	// Stretch the one-clock valid into a level held until the M-cycle ends.
 	always_ff @(posedge clk or posedge reset) begin
 		if (reset) begin
 			rom_done      <= 1'b0;
@@ -264,12 +306,9 @@ module fg2_sound (
 	// =====================================================================
 	// Mix, as the driver routes to its mono speaker:
 	//   YM2203 0.15    YM3812 0.30    M6295 0.85
-	// in 1/32 steps: 5, 10, 27. The OKI's 14-bit output is widened to 16
-	// bits first. The gains sum past unity, so the sum saturates.
-	//
-	// Three register stages: in one clock, from the chips' combinational
-	// outputs, this was the design's worst timing path. The latency is
-	// three clk cycles on a signal sampled at 48 kHz.
+	// in 1/32 steps: 5, 10, 27. The gains sum past unity, so the sum
+	// saturates. Three register stages: in one clock, from the chips'
+	// combinational outputs, this is the design's worst timing path.
 	// =====================================================================
 	wire signed [15:0] oki16 = {oki_snd, 2'b00};
 
@@ -278,10 +317,10 @@ module fg2_sound (
 	logic signed [22:0] s3_sum;
 
 	always_ff @(posedge clk) begin
-		// 1: gate
-		s1_ym1 <= en_fm  ? ym1_snd : 16'sd0;
-		s1_ym2 <= en_fm  ? ym2_snd : 16'sd0;
-		s1_oki <= en_pcm ? oki16   : 16'sd0;
+		// 1: register the chip outputs
+		s1_ym1 <= ym1_snd;
+		s1_ym2 <= ym2_snd;
+		s1_oki <= oki16;
 		// 2: scale
 		s2_ym1 <= 22'(s1_ym1) * 22'sd5;
 		s2_ym2 <= 22'(s1_ym2) * 22'sd10;
@@ -308,5 +347,260 @@ module fg2_sound (
 	assign dbg_nmi_n    = nmi_n;
 	assign dbg_halt_n   = halt_n;
 	assign dbg_rom_wait = is_rom_read && !rom_done;
+
+	// ---- per-chip probe ----
+	wire ym1_wr = io_active_wr && io_ym1;
+	wire ym2_wr = io_active_wr && io_ym2;
+	wire oki_wr = io_active_wr && io_oki_wr;
+	logic ym1_wr_d, ym2_wr_d, oki_wr_d, latch_wr_d;
+	logic [7:0] ym1_sel, ym2_sel;              // the register each chip's address port holds
+	logic [7:0] pk_ym1, pk_ym2, pk_oki;        // peak |output|, bits 14:7
+	logic [15:0] n_ym1, n_ym2, n_oki;          // data and address writes, saturating
+	logic [7:0]  kon_ym1, kon_ym2;             // key-on writes, saturating
+	logic [7:0]  last_cmd, n_cmd, n_cmd_rd;
+	logic [31:0] cmd_hist;                     // the four commands before last_cmd, newest low
+	logic        latch_rd_d;
+	wire         latch_rd = io_active_rd && io_latch;
+	wire  [15:0] a_ym1 = ym1_snd[15] ? 16'(-ym1_snd) : ym1_snd;
+	wire  [15:0] a_ym2 = ym2_snd[15] ? 16'(-ym2_snd) : ym2_snd;
+	wire  [15:0] a_oki = oki16[15]   ? 16'(-oki16)   : oki16;
+	always_ff @(posedge clk) begin
+		ym1_wr_d <= ym1_wr; ym2_wr_d <= ym2_wr; oki_wr_d <= oki_wr; latch_wr_d <= latch_write;
+		if (dbg_clear) begin
+			pk_ym1 <= '0; pk_ym2 <= '0; pk_oki <= '0;
+			n_ym1 <= '0; n_ym2 <= '0; n_oki <= '0;
+			kon_ym1 <= '0; kon_ym2 <= '0; n_cmd <= '0; n_cmd_rd <= '0;
+		end else begin
+			if (a_ym1[14:7] > pk_ym1) pk_ym1 <= a_ym1[14:7];
+			if (a_ym2[14:7] > pk_ym2) pk_ym2 <= a_ym2[14:7];
+			if (a_oki[14:7] > pk_oki) pk_oki <= a_oki[14:7];
+			if (ym1_wr && !ym1_wr_d) begin
+				if (~&n_ym1) n_ym1 <= n_ym1 + 16'd1;
+				if (!a[0]) ym1_sel <= d_out;
+				// YM2203 key-on: register 0x28, operator bits 7:4 set
+				else if (ym1_sel == 8'h28 && d_out[7:4] != 4'd0 && ~&kon_ym1) kon_ym1 <= kon_ym1 + 8'd1;
+			end
+			if (ym2_wr && !ym2_wr_d) begin
+				if (~&n_ym2) n_ym2 <= n_ym2 + 16'd1;
+				if (!a[0]) ym2_sel <= d_out;
+				// YM3812 key-on: registers 0xB0-0xB8, bit 5
+				else if (ym2_sel >= 8'hB0 && ym2_sel <= 8'hB8 && d_out[5] && ~&kon_ym2) kon_ym2 <= kon_ym2 + 8'd1;
+			end
+			if (oki_wr && !oki_wr_d && ~&n_oki) n_oki <= n_oki + 16'd1;
+			if (latch_write && !latch_wr_d && ~&n_cmd) n_cmd <= n_cmd + 8'd1;
+			// the NMI handler's IN A,(0x11): a command actually taken
+			if (latch_rd && !latch_rd_d && ~&n_cmd_rd) n_cmd_rd <= n_cmd_rd + 8'd1;
+		end
+		latch_rd_d <= latch_rd;
+		if (latch_write && !latch_wr_d) begin
+			cmd_hist <= {cmd_hist[23:0], last_cmd};
+			last_cmd <= latch_data;
+		end
+	end
+	assign dbg_chips = {cmd_hist,                      // 151:120
+	                    n_cmd_rd,                      // 119:112
+	                    oki_bank, bank, 4'd0,          // 111:104
+	                    kon_ym1, kon_ym2,              // 103:88
+	                    n_oki, n_ym2, n_ym1,           //  87:40
+	                    pk_oki, pk_ym2, pk_ym1,        //  39:16
+	                    n_cmd, last_cmd};              //  15:0
+
+	// ---- OKI phrase-start probe ----
+	// From the chip's pins alone (jt6295 is vendored). The driver starts a
+	// phrase with a stop byte, the phrase byte, then a channel byte (z80
+	// 0x174C); the channel's status bit should then rise. A channel byte whose
+	// status bit has not risen 2^22 clk (~49 ms) later is a lost start.
+	logic        o_cmd;                     // a phrase byte was the last byte
+	logic [7:0]  o_phrase, o_chbyte;
+	logic [3:0]  o_pend, o_st_d;
+	logic [21:0] o_age;                     // since the oldest pending channel byte
+	logic [7:0]  o_n_ch, o_n_rise, o_n_lost, o_lat, o_n_stale, o_fl_max;
+	logic [15:0] o_n_fetch;
+	logic [11:0] o_fl;                      // current fetch age, clk
+	wire  [3:0]  o_st   = oki_dout[3:0];
+	wire  [3:0]  o_rise = o_st & ~o_st_d;
+	always_ff @(posedge clk) begin
+		o_st_d <= o_st;
+		if (reset) begin
+			o_cmd <= 1'b0; o_pend <= 4'd0;
+		end else begin
+			if (oki_wr && !oki_wr_d) begin
+				if (o_cmd) begin
+					o_cmd <= 1'b0; o_chbyte <= d_out;
+					o_pend <= o_pend | d_out[7:4];
+					if (o_pend == 4'd0) o_age <= 22'd0;
+				end else if (d_out[7]) begin
+					o_cmd <= 1'b1; o_phrase <= d_out;
+				end
+			end
+			if (o_pend != 4'd0 && ~&o_age) o_age <= o_age + 22'd1;
+			if ((o_pend & o_rise) != 4'd0) o_pend <= o_pend & ~o_rise;
+			if (&o_age && o_pend != 4'd0) o_pend <= 4'd0;
+		end
+		if (oki_req && !oki_valid) begin
+			if (~&o_fl) o_fl <= o_fl + 12'd1;
+		end else o_fl <= 12'd0;
+		if (dbg_clear) begin
+			o_n_ch <= '0; o_n_rise <= '0; o_n_lost <= '0; o_lat <= '0;
+			o_n_stale <= '0; o_fl_max <= '0; o_n_fetch <= '0;
+		end else begin
+			if (oki_wr && !oki_wr_d && o_cmd && ~&o_n_ch) o_n_ch <= o_n_ch + 8'd1;
+			if (o_rise != 4'd0 && ~&o_n_rise) o_n_rise <= o_n_rise + 8'd1;
+			if ((o_pend & o_rise) != 4'd0 && o_age[21:14] > o_lat) o_lat <= o_age[21:14];
+			if (&o_age && o_pend != 4'd0 && ~&o_n_lost) o_n_lost <= o_n_lost + 8'd1;
+			if (oki_valid) begin
+				o_n_fetch <= o_n_fetch + 16'd1;
+				// completed for an address the chip no longer presents
+				if (oki_addr != {oki_bank, oki_rom_addr} && ~&o_n_stale) o_n_stale <= o_n_stale + 8'd1;
+				if (o_fl[11:4] > o_fl_max) o_fl_max <= o_fl[11:4];
+			end
+		end
+	end
+	assign dbg_oki = {o_n_fetch,                        // 87:72  completed fetches, wrapping
+	                  o_n_stale, o_fl_max,              // 71:56  stale completions; worst fetch /16 clk
+	                  o_lat, o_n_lost,                  // 55:40  worst start latency /16384 clk; lost starts
+	                  o_n_rise, o_n_ch,                 // 39:24  status rises; channel bytes
+	                  o_chbyte, o_phrase,               // 23:8   last channel byte; last phrase byte
+	                  o_pend, o_st};                    //  7:0
+
+	// ---- Z80 probe ----
+	// z_rst_async counts every assertion of `reset` long enough to clock a
+	// flop -- what T80's asynchronous reset reacts to; z_rst_sync counts the
+	// ones a clk edge sees. Neither is cleared by the reset it counts.
+	logic [7:0]  z_rst_async = 8'd0;
+	always_ff @(posedge reset) z_rst_async <= z_rst_async + 8'd1;
+	logic        z_rst_d = 1'b0;
+	logic [7:0]  z_rst_sync;
+	logic [15:0] z_pc, z_m1_n64;
+	logic [5:0]  z_m1_pre;
+	logic [7:0]  z_io_port, z_io_data;
+	logic        z_iow_d;
+	logic [15:0] z_since_m1;                 // clk since the last opcode fetch, saturating
+	wire         z_iow = io_active_wr;
+	always_ff @(posedge clk) begin
+		z_rst_d <= reset;
+		z_iow_d <= z_iow;
+		if (dbg_m1) begin z_pc <= a; z_since_m1 <= 16'd0; end
+		else if (~&z_since_m1) z_since_m1 <= z_since_m1 + 16'd1;
+		if (z_iow && !z_iow_d) begin z_io_port <= a[7:0]; z_io_data <= d_out; end
+		if (dbg_clear) begin
+			z_rst_sync <= '0; z_m1_n64 <= '0; z_m1_pre <= '0;
+		end else begin
+			if (reset && !z_rst_d && ~&z_rst_sync) z_rst_sync <= z_rst_sync + 8'd1;
+			if (dbg_m1) begin
+				z_m1_pre <= z_m1_pre + 6'd1;
+				if (&z_m1_pre && ~&z_m1_n64) z_m1_n64 <= z_m1_n64 + 16'd1;
+			end
+		end
+	end
+	assign dbg_z80 = {z_rst_async, z_rst_sync,          // 95:80
+	                  z_pc,                             // 79:64  PC of the last opcode fetch
+	                  z_m1_n64,                         // 63:48  opcode fetches / 64
+	                  z_since_m1,                       // 47:32  clk since the last fetch
+	                  z_io_port, z_io_data,             // 31:16  last I/O write
+	                  4'd0, is_rom_read, rom_pending, rom_done, wait_n,   // 15:8
+	                  m1_n, mreq_n, iorq_n, rd_n, wr_n, halt_n, int_n, nmi_n};  // 7:0
+
+	// ---- command transport probe ----
+	// The driver takes commands in pairs (NMI handler, z80 0x1E01): a flag at
+	// 0x64A9 alternates first and second byte, so one byte lost or read twice
+	// swaps every later pair. Shadows of the driver's command state, captured
+	// on the Z80's writes, and the latch's write/read timing.
+	logic [7:0]  c_64a9, c_64ae, c_64c8, c_64c9, c_6217, c_6218;
+	logic        c_unread;                  // a latch write not yet read
+	logic [7:0]  c_lost, c_dup, c_nmi, c_busy;
+	logic [15:0] c_gap, c_lat, c_lat_max;   // clk, saturating
+	logic [15:0] c_gap_min = 16'hFFFF;      // power-up value: no clear has run yet
+	// the most recent overwrite of an unread byte: that byte, the new one, and
+	// clk since the write it overwrote.
+	logic [7:0]  c_lost_old, c_lost_new;
+	logic [15:0] c_lost_gap;
+	// history: the byte and its gap are known at the write, the driver's pair
+	// flag at the read; entry 0 is completed by the read.
+	logic [255:0] c_hist;
+	logic [23:0]  c_since;                  // clk since the previous write, saturating
+	logic [4:0]   c_log2;
+	logic         c_rd_d3, c_frz = 1'b0, c_64a9_w_d;
+	logic [255:0] c_frz_hist;
+	logic [7:0]   c_frz_nmi, c_64a9_at_rd;
+	logic [7:0]   c_64a9_other = 8'd0, c_f0_first = 8'd0, c_f0_second = 8'd0, c_b0 = 8'd0;
+	logic [15:0]  c_64a9_other_pc;
+	logic         c_b0_flag;
+	always_comb begin
+		c_log2 = 5'd0;
+		for (int i = 0; i < 24; i++) if (c_since[i]) c_log2 = 5'(i + 1);
+	end
+	logic        c_rd_d2, c_m1_d, c_iow_d;
+	wire         c_mem_wr = mem_active_wr && is_ram;
+	always_ff @(posedge clk) begin
+		c_rd_d2 <= latch_rd;
+		c_iow_d <= io_active_wr;
+		if (c_mem_wr) begin
+			case (a)
+				16'h64A9: c_64a9 <= d_out;
+				16'h64AE: c_64ae <= d_out;
+				16'h64C8: c_64c8 <= d_out;
+				16'h64C9: c_64c9 <= d_out;
+				16'h6217: c_6217 <= d_out;
+				16'h6218: c_6218 <= d_out;
+				default: ;
+			endcase
+		end
+		if (~&c_gap) c_gap <= c_gap + 16'd1;
+		if (c_unread && ~&c_lat) c_lat <= c_lat + 16'd1;
+		if (~&c_since) c_since <= c_since + 24'd1;
+		if (latch_write && !latch_wr_d) begin
+			c_unread <= 1'b1; c_gap <= 16'd0; c_lat <= 16'd0;
+			c_since <= 24'd0;
+			c_hist <= {c_hist[239:0], 3'b111, c_log2, latch_data};   // flag 7: not read yet
+		end else if (latch_rd && !c_rd_d2) begin
+			c_unread <= 1'b0;
+			c_hist[15:13] <= {2'b00, c_64a9[0]};
+		end
+		// freeze one clk after the read, with entry 0 completed
+		c_rd_d3 <= latch_rd && !c_rd_d2;
+		if (c_rd_d3 && !c_frz && c_64a9_at_rd[0] && c_hist[7] && c_hist[7:0] != 8'hB0 && c_hist[7:0] != 8'hF0) begin
+			c_frz <= 1'b1; c_frz_hist <= c_hist; c_frz_nmi <= c_nmi;
+		end
+		if (latch_rd && !c_rd_d2) c_64a9_at_rd <= c_64a9;
+		if (c_mem_wr && a == 16'h64A9 && !(z_pc >= 16'h1E00 && z_pc < 16'h1E70) && !c_64a9_w_d) begin
+			c_64a9_other <= c_64a9_other + 8'd1; c_64a9_other_pc <= z_pc;
+		end
+		c_64a9_w_d <= c_mem_wr && a == 16'h64A9;
+		if (latch_rd && !c_rd_d2) begin
+			if (latch_reg == 8'hF0 && !c_64a9[0]) c_f0_first  <= c_f0_first + 8'd1;
+			if (latch_reg == 8'hF0 &&  c_64a9[0]) c_f0_second <= c_f0_second + 8'd1;
+			if (latch_reg == 8'hB0) begin c_b0 <= c_b0 + 8'd1; c_b0_flag <= c_64a9[0]; end
+		end
+		if (dbg_clear) begin
+			c_lost <= '0; c_dup <= '0; c_nmi <= '0; c_busy <= '0;
+			c_gap_min <= 16'hFFFF; c_lat_max <= '0;
+		end else begin
+			if (latch_write && !latch_wr_d) begin
+				if (c_unread && ~&c_lost) c_lost <= c_lost + 8'd1;
+				if (c_unread) begin
+					c_lost_old <= latch_reg; c_lost_new <= latch_data; c_lost_gap <= c_gap;
+				end
+				if (c_gap < c_gap_min) c_gap_min <= c_gap;
+			end
+			if (latch_rd && !c_rd_d2) begin
+				if (!c_unread && ~&c_dup) c_dup <= c_dup + 8'd1;
+				if (c_lat > c_lat_max) c_lat_max <= c_lat;
+			end
+			if (dbg_m1 && a == 16'h0066 && ~&c_nmi) c_nmi <= c_nmi + 8'd1;
+			if (io_active_wr && !c_iow_d && a[7:0] == 8'h11 && ~&c_busy) c_busy <= c_busy + 8'd1;
+		end
+	end
+	assign dbg_cmd = {c_lost_old, c_lost_new,                         // 143:128
+	                  c_64a9, c_64ae, c_64c8, c_64c9, c_6217, c_6218,   // 127:80
+	                  c_lost, c_dup, c_nmi, c_busy,                     //  79:48
+	                  c_gap_min, c_lat_max,                             //  47:16
+	                  c_lost_gap};                                      //  15:0
+	assign dbg_cmd_hist = c_hist;
+	// None of these is cleared: they cover the whole run since load.
+	assign dbg_cmd_frz  = {c_frz_hist,                                   // 327:72
+	                       c_64a9_other_pc,                              //  71:56
+	                       c_frz, c_b0_flag, 6'd0, c_frz_nmi,             //  55:40
+	                       c_64a9_other, c_b0, c_f0_first, c_f0_second};  //  39:0
 
 endmodule

@@ -7,15 +7,12 @@
 // RUN FROM THE REPOSITORY ROOT (scripts/run_sim.sh video_tb), after
 //     python scripts/prep_tilemap_tb.py debug/gogomile-title gogomile
 //
-// This is the test the whole renderer has been building towards: it produces a
-// full composed frame from MAME's own VRAM, spriteram, scroll registers,
-// priority register and palette, which scripts/video_png.py then diffs against
-// the screenshot MAME rendered from exactly that state. Pixel counts, not eyes.
+// Renders a frame from MAME's captured VRAM, spriteram, scroll, priority and
+// palette state; scripts/video_png.py diffs it against MAME's screenshot.
 //
-// Each engine gets its own graphics-ROM model because the four regions are
-// separate images. Sharing one SDRAM port between them is the memory
-// backend's problem, not this one's, and conflating the two would make a
-// rendering test fail for bandwidth reasons and vice versa.
+// Each engine has its own graphics-ROM model and VRAM read: SDRAM/VRAM
+// sharing is tested elsewhere, and mixing it in would make rendering and
+// bandwidth failures indistinguishable.
 
 `timescale 1ns/1ps
 
@@ -54,10 +51,8 @@ module tb_video;
 	int cfg_bank [0:2], cfg_t16 [0:2], cfg_b8 [0:2], cfg_s4 [0:2];
 	int cfg_g256 [0:2], cfg_pb [0:2], cfg_tr [0:2], cfg_sx [0:2], cfg_sy [0:2];
 	int prio_reg;
-	// Board select and the FG-3 sprite tile bank. FG-3 replaces the top two
-	// bits of every sprite tile code with a 4-bit bank looked up here
-	// (spr_tile_cb), so a zero bank silently collapses four code ranges into
-	// one and draws the wrong sprites.
+	// FG-3 replaces the top two bits of each sprite tile code with a 4-bit
+	// bank from tilebank (spr_tile_cb); a zero bank draws the wrong sprites.
 	logic board = BOARD_FG2;
 	logic [31:0] tilebank = 0;
 
@@ -100,9 +95,8 @@ module tb_video;
 		end
 	end
 
-	// VRAM is one memory with three readers here. In the core it is a real
-	// arbitrated port; modelling it as three independent registered reads is
-	// deliberate for a RENDERING test -- see the header.
+	// Three independent registered reads; in the core this is an arbitrated
+	// port -- see the header.
 	always_ff @(posedge clk) begin
 		tm_vdata[0] <= vram[tm_vaddr[0]];
 		tm_vdata[1] <= vram[tm_vaddr[1]];
@@ -112,10 +106,8 @@ module tb_video;
 	genvar g;
 	generate
 		for (g = 0; g < 3; g++) begin : layer
-			// Start on the buffer's READY edge, not on line_start. Starting at
-			// line_start puts the engine's first ~320 writes inside the line
-			// buffer's clear pass, where the clear owns the write port and
-			// they are silently discarded.
+			// Start on the buffer's READY edge, not line_start: writes during
+			// the line buffer's clear pass are silently discarded.
 			tilemap_line_engine u_tm (
 				.clk(clk), .reset(reset),
 				.line_start(tm_ready_rise[g]), .render_line(vcnt_next2),
@@ -246,8 +238,7 @@ module tb_video;
 	`GFXMODEL(ms, gs, spr_req,   spr_addr,   spr_valid,   spr_gdata)
 
 	// ---- capture the composed frame ----
-	// The palette read is registered, so the RGB for hcnt lands two cycles
-	// later. Tracking the coordinate through the same delay keeps them paired.
+	// RGB for hcnt lands two cycles later; delay the coordinate to match.
 	logic [15:0] frame [0:H-1][0:W-1];
 	logic capture_on = 0;
 	logic [8:0] x_d1, x_d2, y_d1, y_d2;
@@ -346,7 +337,7 @@ module tb_video;
 		@(posedge frame_start);
 		capture_on = 0;
 
-		// Probe: sample the pipeline mid-frame to see where the X comes from.
+		// Probe: print pipeline state mid-frame.
 		begin
 			@(posedge frame_start);
 			while (!(vcnt == 9'd100 && hcnt == 9'd160)) @(posedge clk);

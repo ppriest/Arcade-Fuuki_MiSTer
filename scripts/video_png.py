@@ -3,10 +3,8 @@
 
     python scripts/video_png.py [capture-dir]
 
-tb_video writes raw xRGB-555 palette values, so this is a direct conversion --
-no palette lookup, no interpretation. The reference is the screenshot MAME
-rendered from exactly the state the testbench was fed, which makes this a
-pixel-for-pixel comparison rather than a judgement call.
+tb_video writes raw xRGB-555 values, so no palette lookup is needed. The
+reference is MAME's screenshot of the state the testbench was fed.
 
 Outputs sim/tilemap_tb/frame_rgb.png and, when the two differ,
 frame_diff.png marking every mismatched pixel.

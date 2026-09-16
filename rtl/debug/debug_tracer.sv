@@ -37,7 +37,7 @@ module debug_tracer #(
 	input  logic              cap_stb,    // ONE cycle per event
 	input  logic [WIDTH-1:0]  cap_data,
 
-	// ---- live control (OSD status bits; deliberately NOT reset-coupled) ----
+	// ---- live control (OSD status bits, not reset-coupled) ----
 	input  logic              ctl_rearm,  // any change restarts capture
 	input  logic [3:0]        ctl_window, // skip ctl_window*8191 events first
 	input  logic              ctl_ring,   // 1 = ring (latest N), 0 = first N
@@ -61,7 +61,6 @@ module debug_tracer #(
 
 	(* ramstyle = "no_rw_check" *) logic [WIDTH-1:0] mem [0:DEPTH-1];
 
-	// Initialisers and no reset: Quartus powers these to 0 at configuration.
 	logic [AW:0]  wptr      = '0;   // extra MSB is the "full" flag
 	logic [19:0]  skip_cnt  = '0;
 	logic         rearm_d   = 1'b0;

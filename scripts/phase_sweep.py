@@ -1,29 +1,20 @@
 #!/usr/bin/env python3
 """Sweep the SDRAM_CLK phase at runtime and measure the DQ eye with a pattern.
 
-NOT CURRENTLY RUNNABLE: the probe bits 47..32 that reported `phase_pos` now
-carry the interrupt state (Fuuki.sv). The stepping controls (source bits 1
-and 2) still exist; restore the field to the probe before using this.
+NOT CURRENTLY RUNNABLE: probe bits 47..32, which reported `phase_pos`, now
+carry the interrupt state (Fuuki.sv). Restore the field before using this.
 
     python scripts/phase_sweep.py --pattern ones --span 44 --step 4
 
-Loads one known-pattern .mra ONCE (see scripts/sdram_pattern_test.py), then
-walks the SDRAM_CLK phase over JTAG without relaunching: for each point it
-steps the PLL's C1 counter, re-arms the read-back walker in place, takes a
-screenshot, decodes it, and counts words that differ from the pattern. The
-output is the error count against phase -- the eye -- so the phase to ship is
-the CENTRE of the zero-error window, not the first point that happened to
-work.
+Loads one pattern .mra once (scripts/sdram_pattern_test.py), then over JTAG
+steps the PLL's C1 counter, re-arms the read-back walker, screenshots, and
+counts wrong words at each phase. Ship the centre of the zero-error window.
 
-Controls are the ISSP probe's source bits (see Fuuki.sv, "RUNTIME SDRAM_CLK
-PHASE STEPPING"): bit 1 / bit 2 step up / down by 1 << bits[5:3] steps of
-~132 ps; bit 6 toggles the walker re-arm. `phase_pos` in the probe reports
-where the sweep currently is, in steps from the build's phase.
-
-The sweep goes DOWN first to the start of the span and then UP across it, so
+Controls are ISSP source bits (Fuuki.sv, "Runtime SDRAM_CLK phase stepping"):
+bit 1 / bit 2 step up / down by 1 << bits[5:3] steps of ~132 ps; bit 6
+re-arms the walker. The sweep goes down first, then up across the span, so
 every point is approached from the same direction. A relaunch resets the
-phase to the build value; run --restore before relaunching a game if you want
-the device left where the build put it (it is harmless either way).
+phase to the build value.
 """
 import argparse
 import re

@@ -10,11 +10,9 @@ Produces, in sim/tilemap_tb/:
     config.txt      scroll and layer settings decoded from the captured vregs
     palette.bin     the captured palette, for turning indices back into pixels
 
-The point is to render the SAME state MAME rendered and compare against the
-screenshot it produced. Building the gfx images here rather than in the
-testbench keeps the interleave in one place -- the same place decode_gfx.py and
-the .mra generator will use -- so there is one definition of "the SDRAM image"
-rather than three that can drift.
+The bench renders the state MAME rendered, for comparison with its
+screenshot. The gfx images are built here so the interleave has one
+definition, shared with decode_gfx.py and the .mra generator.
 """
 import struct, sys, zipfile
 from pathlib import Path
@@ -25,11 +23,9 @@ from pathlib import Path
 #   "pair32"  a ROM_LOAD32_WORD_SWAP pair, first part supplying bytes 0,1 of
 #             each long -- which is the pixel's HIGH nibble
 #
-# Transcribed from each ROM_START, and the offsets matter: gogomile's layer 1
-# is an 8 MB region built from FOUR ROMs as two pairs, at 0x000000 and
-# 0x400000. Building only the first pair leaves every tile in the upper half
-# reading whatever the gap contains -- which rendered as a solid block rather
-# than failing, and is exactly the sort of thing only a picture catches.
+# Transcribed from each ROM_START; the offsets matter. gogomile's layer 1 is
+# 8 MB from four ROMs as two pairs, at 0x000000 and 0x400000; omitting the
+# second pair renders the upper-half tiles as solid blocks, without an error.
 GOGOMILE = {
     0: (0x200000, [(0x000000, "swap16", ["lh5370h6.rom3"])]),
     1: (0x800000, [(0x000000, "pair32", ["lh5370h7.rom15", "lh5370h8.rom11"]),
@@ -45,15 +41,11 @@ PBANCHO = {
     2: (0x200000, [(0x000000, "swap16", ["60.rom3"])]),
     "s": (0x200000, [(0x000000, "swap16", ["58.rom20"])]),
 }
-# FG-3. Note the pair ordering: bg1113 sits at ROM_START offset 0 and bg1012 at
-# offset 2, so bg1113 supplies each pixel's HIGH nibble -- the reverse of how the
-# names sort, which is exactly the sort of thing to take from ROM_START rather
-# than from filenames.
+# FG-3. bg1113 is at ROM_START offset 0 and bg1012 at offset 2, so bg1113
+# supplies the HIGH nibble -- the reverse of the filename sort order.
 #
-# Sprites are a 32 MB region of eight 4 MB ROMs on 4 MB boundaries. asurabld
-# leaves the FIRST one empty (sp01 is absent), so its sprite data starts at
-# 0x400000 -- a hole a generator assuming dense packing would silently close,
-# shifting every tile code in the set.
+# Sprites: 32 MB of eight 4 MB ROMs on 4 MB boundaries. asurabld has no sp01,
+# so its data starts at 0x400000; packing densely would shift every tile code.
 ASURABLD = {
     0: (0x800000, [(0x000000, "pair32", ["bg1113.u23", "bg1012.u22"])]),
     1: (0x800000, [(0x000000, "pair32", ["bg2123.u24", "bg2022.u25"])]),
@@ -121,12 +113,11 @@ def main():
     vregs = (cap / f"{pfx}_vregs.bin").read_bytes()
     w = lambda i: struct.unpack_from(">H", vregs, i * 2)[0]
 
-    # Decoded the same way vregs.sv does, INCLUDING the deliberate x/y offset
-    # pairing (docs/ROADMAP.md) -- reproduced here so the testbench gets the
-    # same numbers the RTL will compute, from an independent implementation.
-    # FG-3 has NO layer-2 X offset (set_layer2_xoffs is FG-2 only). The
-    # unflipped constants are identical on both boards; only the FLIPPED y
-    # offset differs (0x2c7 on FG-3, 0x2a7 on FG-2).
+    # Decoded as vregs.sv does, including the deliberate x/y offset pairing
+    # (docs/ROADMAP.md), as an independent check of the RTL. FG-3 has no
+    # layer-2 X offset (set_layer2_xoffs is FG-2 only). Unflipped constants
+    # match on both boards; only the flipped y offset differs (0x2c7 FG-3,
+    # 0x2a7 FG-2).
     XOFFS, YOFFS = 0x01F3, 0x03F6
     L2_XOFFS = 0x0000 if game in FG3 else 0x0010
     flip = w(15) & 1
@@ -144,11 +135,9 @@ def main():
     for f in ("vram", "palette", "spriteram", "priority"):
         (out / f"{f}.bin").write_bytes((cap / f"{pfx}_{f}.bin").read_bytes())
     if game in FG3:
-        # The tile bank is captured as TEXT, because it cannot be dumped from
-        # the address space at all -- fuukifg3.cpp maps 0xa00000 writeonly(),
-        # so a read returns 0. A zero bank collapses all four sprite code
-        # ranges into one, which on asurabld points them into the EMPTY first
-        # 4 MB of the sprite region and draws every sprite as a solid block.
+        # The tile bank is captured as text: fuukifg3.cpp maps 0xa00000
+        # writeonly(), so a memory dump reads 0. A zero bank points asurabld's
+        # sprites into the empty first 4 MB of the sprite region.
         tb = int((cap / f"{pfx}_tilebank.txt").read_text().strip(), 16)
         (out / "tilebank.bin").write_bytes(tb.to_bytes(4, "big"))
         print(f"  sprite tile bank 0x{tb:08X} -> banks " +
@@ -174,10 +163,8 @@ def main():
     #             colour >>= 4   colour >>= 4   colour as-is
     #             trans 0xff     trans 0xff     trans 0x0f
     #
-    # (*) FG-2's layer 1 is 8bpp with granularity SIXTEEN, set explicitly by
-    #     gfx(1)->set_granularity(16): "256 colour tiles with palette
-    #     selectable on 16 colour boundaries". The pen therefore legitimately
-    #     exceeds the granularity and must never be masked.
+    # (*) gfx(1)->set_granularity(16): 8bpp pens exceed the granularity and
+    #     must not be masked.
     #
     # FG-3 shifts tilemap colour right by 4 for layers 0 and 1 ONLY
     # (tmap_colour_cb), leaving two bits to select one of four 256-entry banks.

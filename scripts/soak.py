@@ -6,11 +6,9 @@
 Every `--every` seconds it clears the probe counters, waits, reads them back
 and takes a screenshot. It prints, per sample: frames rendered, ROM reads
 (saturates at 65535 = "lots"), irq1 pulses (one per frame when healthy), the
-level-1 acknowledges, the pending flags, the CPU's last ROM address, and
-whether the frame changed since the previous sample. A run of unchanged
-frames with the CPU parked in a short loop is a hang; the probe row says
-whether the interrupt it waits for is still being generated, stuck pending,
-or acknowledged and simply not doing what the game expects.
+level-1 acknowledges, the pending flags, sound counters, and whether the
+frame changed since the previous sample. For a hang, the probe row shows
+whether the awaited interrupt is generated, stuck pending, or acknowledged.
 
 Screenshots go to debug/hw/soak/<game>_<n>.png.
 """

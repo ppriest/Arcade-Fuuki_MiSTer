@@ -6,12 +6,11 @@
 
 The walker in rtl/fuuki_core.sv reads 256 consecutive words of the program
 ROM region through the CPU's own path and the tracer shows them one per
-scanline as {word index, data}. This decodes the screenshot, re-orders by the
-index it carries (so a rotated ring or a torn row cannot mis-attribute a
-word), and compares each word with the program image built exactly as
-scripts/build_mra.py builds it.
+scanline as {word index, data}. This decodes the screenshot, orders words by
+their embedded index (a rotated ring or torn row cannot mis-attribute one),
+and compares them with the program image as scripts/build_mra.py builds it.
 
-WHAT THE SHAPE OF THE ERRORS MEANS
+Error shapes:
   * no mismatches            what the CPU sees IS the ROM; look elsewhere
   * a consistent permutation the image is laid out wrong: interleave / map
   * scattered, and DIFFERENT between two dumps of the same page

@@ -34,6 +34,8 @@ module opl4_regs (
 	// pcm_hdr_we.
 	input  logic [7:0] pcm_raddr,
 	output logic [7:0] pcm_rdata,
+	input  logic        pcm_rlive,   // 1: read the live register, 0: the snapshot
+	input  logic        pcm_snap,    // pulse: copy the channel registers to the snapshot
 	input  logic        pcm_hdr_we,
 	input  logic [7:0] pcm_hdr_waddr,
 	input  logic [7:0] pcm_hdr_wdata,
@@ -72,7 +74,18 @@ module opl4_regs (
 
 	// ---- PCM register file ----
 	logic [7:0] pcm_regs [0:255];
-	assign pcm_rdata = pcm_regs[pcm_raddr];
+
+	// Channel registers 0x20-0xF7 as at the start of the sample pass, as
+	// ymfm's prepare() reads them. Read live, a slot falling between two
+	// driver writes latches the intermediate value: the drivers park TL at
+	// 127 with level-direct set before the real level, and a latched park
+	// ramps the note in from silence.
+	logic [7:0] pcm_snapshot [8'h20:8'hF7];
+	always_ff @(posedge clk)
+		if (pcm_snap)
+			for (int i = 8'h20; i <= 8'hF7; i++) pcm_snapshot[i] <= pcm_regs[i];
+	assign pcm_rdata = (pcm_rlive || pcm_raddr < 8'h20 || pcm_raddr > 8'hF7)
+	                 ? pcm_regs[pcm_raddr] : pcm_snapshot[pcm_raddr];
 
 	// ---- status / busy / ID ----
 	logic        next_status_id;
@@ -81,9 +94,7 @@ module opl4_regs (
 	wire         irq  = (flag_a & ~mask_a) | (flag_b & ~mask_b);
 	assign irq_n = ~irq;
 
-	// LD: a wavetable header load takes about 300 us (13 samples) in ymfm.
-	// The engine here loads faster, but the driver may poll the flag, so
-	// it is timed like the reference.
+	// LD: timed as ymfm's header load (13 samples), not this engine's.
 	logic [3:0] ld_cnt;
 	logic [9:0] ld_sample_div;      // counts chip_cen/768 like the sample tick
 

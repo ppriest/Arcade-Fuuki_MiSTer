@@ -1,12 +1,5 @@
 -- Log every write the Z80 makes to the OPL4, and insert a coin on cue.
 --
--- The question this answers: what does the sound driver actually SEND for a
--- given sound? The RTL's PCM engine has been read against ymfm line by line
--- and matches it, and the same engine plays Psikyo's effects on hardware --
--- so if Fuuki's one-shot effects come out far quieter than its music, the
--- difference is in what the driver asks for, and that is a register sequence
--- to capture rather than a mechanism to guess.
---
 -- Output: one line per OPL4 write, "frame 0 port value" (this MAME build has no
 -- screen.vpos, so the second column is a placeholder), plus a KEYON line
 -- for every PCM channel key-on carrying the channel's register state at that
@@ -36,7 +29,6 @@ if cpu == nil then say("FATAL: no :soundcpu"); mach:exit(); return end
 local io_space = cpu.spaces["io"]
 if io_space == nil then say("FATAL: no io space"); mach:exit(); return end
 
--- ---- find the coin input ----
 -- Port and field names are the driver's; the first field called exactly
 -- "Coin 1" is taken, or failing that the first whose name contains "Coin".
 local coin_field, coin_desc
@@ -60,7 +52,6 @@ local function find_coin()
 end
 find_coin()
 
--- ---- OPL4 write tap ----
 local fm_addr  = { [0] = 0, [1] = 0 }
 local pcm_addr = 0
 local pcm_regs = {}
@@ -120,7 +111,6 @@ _G.__opl4_tap = io_space:install_write_tap(0x40, 0x45, "opl4log", function(offse
     return data
 end)
 
--- ---- frame driver: logging window, the coin, the exit ----
 local coin_state = 0
 local done = false
 _G.__opl4_notifier = emu.add_machine_frame_notifier(function()

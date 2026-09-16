@@ -1,42 +1,23 @@
 #!/usr/bin/env python3
-"""Generate the `.mra` files for both boards, and prove each one byte-for-byte.
+"""Generate the `.mra` files for both boards and verify each byte-for-byte.
 
     python scripts/build_mra.py            # write releases/*.mra
     python scripts/build_mra.py --check    # verify only, write nothing
 
-HOW THIS AVOIDS THE CLASSIC .mra BUG
-------------------------------------
-docs/LESSONS_LEARNED.md is blunt: on the Psikyo core, *every* interleave that
-was DERIVED by reasoning about byte order was wrong, and "it boots" is weak
-evidence because a wrong map can boot far enough to look plausible. So nothing
-here reasons about map digits. Instead:
+Interleave maps are not derived by reasoning about byte order (LESSONS_LEARNED:
+on Psikyo every derived map was wrong, and a wrong map can still boot):
 
-  1. Each region's image is built DIRECTLY from the driver's ROM_START
-     semantics -- rom_load, rom_load16_byte, rom_load16_word_swap,
-     rom_load32_word_swap, rom_load32_byte -- implemented once, below. That is
-     the ground truth.
-  2. Candidate `.mra` forms are then TRIED against it, and the one that
-     reproduces the ground truth exactly is the one emitted.
-  3. The finished `.mra` is re-read with scripts/mra.py and the whole assembled
-     image compared byte-for-byte with the concatenation of the ground truths.
+  1. Each region is built from the driver's ROM_START loaders, below: the
+     ground truth.
+  2. Candidate `.mra` forms are tried; the one reproducing the truth is emitted.
+  3. The written `.mra` is re-read with scripts/mra.py and the whole image
+     compared with the truth. mra.py's map convention is checked against
+     mra-tools-c, not this file (see its `pattern_from_map()` selftest).
 
-Step 3 is only meaningful because mra.py's map convention was checked against
-mra-tools-c itself rather than against this file -- see mra.py's
-`pattern_from_map()` and its selftest. Two implementations sharing one wrong
-assumption would agree with each other and still be wrong on MiSTer.
+Every <part> carries the zip's CRC32, so mra-tools rejects a wrong ROM by name.
 
-EVERY <part> CARRIES ITS CRC32
-------------------------------
-Taken from the zip's own central directory (the CRC MAME checks against its
-ROM_LOAD entry), so mra-tools can refuse a wrong or corrupt ROM by name
-rather than load it and let the core fail somewhere downstream.
-
-THE ADDRESS MAP IS NOT DEFINED HERE
------------------------------------
-It is parsed out of rtl/memory/fuuki_sdram_top.sv, which is the authority. A
-`.mra` that loads to different offsets than the RTL reads from produces a
-black screen with no other symptom, so the two must not be able to drift.
-There are two tables there, one per board: `FG2_BASE_*` and `FG3_BASE_*`.
+The address map is parsed from rtl/memory/fuuki_sdram_top.sv (`FG2_BASE_*`,
+`FG3_BASE_*`) so the `.mra` and RTL cannot drift; a mismatch is a black screen.
 """
 import argparse
 import re
@@ -81,10 +62,8 @@ def rom_load16_byte(z, names, even_part, odd_part):
 def rom_load32_byte(z, names, p0, p1, p2, p3):
     """Four ROMs supplying successive bytes of a big-endian 32-bit long.
 
-    FG-3's 68EC020 program ROMs. The parts are named in ROM_START order, so
-    `p0` is the one loaded at offset 0 -- which is `pgm3`, the MOST significant
-    byte. Naming them by offset rather than by label keeps that inversion from
-    quietly reappearing here.
+    FG-3's program ROMs. Parts are in ROM_START order: `p0` is at offset 0,
+    which is `pgm3`, the most significant byte.
     """
     srcs = [z.read(names[p]) for p in (p0, p1, p2, p3)]
     out = bytearray(len(srcs[0]) * 4)
@@ -112,14 +91,11 @@ def G(kind, *parts):
 
 
 def GAP(n):
-    """A hole INSIDE a MAME ROM_REGION -- address space the region declares
-    but no ROM fills.
+    """A hole inside a MAME ROM_REGION that no ROM fills.
 
-    Filled with 0x00, which is what MAME's region actually contains there, and
-    deliberately not the 0xFF used to pad BETWEEN regions. asurabld leaves the
-    first 4 MB of its 32 MB sprite region empty and the sprite tile bank can
-    still address it, so a mismatched fill byte draws pen 0xff instead of pen
-    0x00 -- solid colour where there should be nothing.
+    Filled with 0x00 as in MAME, not the 0xFF padding between regions:
+    asurabld's sprite bank can address its empty first 4 MB, and 0xFF would
+    draw solid pen 0xff there.
     """
     return {"kind": "gap", "parts": [], "size": n}
 
@@ -127,13 +103,11 @@ def GAP(n):
 # ---------------------------------------------------------------------------
 # DIP switches, transcribed from each driver's INPUT_PORTS_START.
 #
-# Encoded as MAME encodes them -- mask, default, and the {value: label} map --
-# so the `.mra`'s `bits` and `ids` are DERIVED mechanically below rather than
-# hand-ordered. Hand-ordering an ids list is exactly the sort of silent
-# transcription error that ships a game stuck in service mode.
+# Encoded as MAME does (mask, default, {value: label}) so the `.mra`'s `bits`
+# and `ids` are derived, not hand-ordered.
 #
-# Each game carries a LIST of ports: FG-2 has one DSW word at $880000, FG-3 has
-# a second at $890000. Port N occupies switch bits 16N..16N+15.
+# Each game has a list of ports: FG-2 one DSW word at $880000, FG-3 a second at
+# $890000. Port N occupies switch bits 16N..16N+15.
 #
 # pbancho uses PORT_MODIFY on gogomile's port, so it inherits bits 0 and 1;
 # asurabus and asurabusa likewise inherit most of asurabld's two ports.
@@ -145,12 +119,8 @@ DEMO    = ("Demo Music",   0x0002, 0x0002, {0x0000: "Off", 0x0002: "On"})
 def U(mask, default):
     """A MAME PORT_DIPUNUSED bit.
 
-    It contributes to the DEFAULT byte string but is not emitted as a user
-    dip. Recording these is not optional: leaving them out silently produced
-    a gogomile default of FF,1D instead of FF,FF, because the four unused SW2
-    bits all default to 1. A wrong default is not a cosmetic problem -- a
-    fresh .CFG is all zeroes, and on Psikyo a wrong DIP byte silently enabled
-    service mode and another value hung a game outright.
+    Contributes to the default byte string but is not emitted as a dip.
+    Required: without them gogomile's default was FF,1D instead of FF,FF.
     """
     return ("(unused)", mask, default, None)
 
@@ -167,8 +137,7 @@ GOGOMILE_DIPS = [[
     ("Coinage", 0x1C00, 0x1C00,
      {0x0400: "4C 1C", 0x1400: "3C 1C", 0x0C00: "2C 1C", 0x1C00: "1C 1C",
       0x1800: "1C 2C", 0x0800: "1C 3C", 0x1000: "1C 4C", 0x0000: "Free Play"}),
-    # PORT_DIPUNUSED_DIPLOC: SW2:2, and SW2:6,7,8. The driver notes the manual
-    # calls SW2:2 unused, and that gogomile ignores Coin B entirely.
+    # PORT_DIPUNUSED_DIPLOC: SW2:2 and SW2:6,7,8 (gogomile ignores Coin B).
     U(0x0200, 0x0200),
     U(0x2000, 0x2000), U(0x4000, 0x4000), U(0x8000, 0x8000),
 ]]
@@ -197,13 +166,11 @@ PBANCHO_DIPS = [[
 # ---- FG-3 -----------------------------------------------------------------
 # Two 16-bit DIP ports, DSW1 at $880000 and DSW2 at $890000.
 #
-# Note DSW1's "Coinage Mode" defaults to 0x0000, not to its mask. It is the one
-# port in either driver whose default is not all-ones, and it is precisely the
-# sort of thing that is invisible until a coin does nothing.
+# DSW1's "Coinage Mode" defaults to 0x0000, not its mask -- the only such
+# setting in either driver.
 #
-# The two `0x0000` coinage settings carry PORT_CONDITION in MAME -- Coin A
-# reads Free Play only when Coin B is also 0. A `.mra` has no conditionals, so
-# the label says both and the condition is stated here rather than lost.
+# The `0x0000` coinage settings carry PORT_CONDITION in MAME (Free Play only
+# when both coins are 0). A `.mra` has no conditionals, so the label says both.
 def _coinage(shift):
     v = lambda x: x << shift
     return {
@@ -263,10 +230,8 @@ ASURABUS_DIPS = [
 #           0 = gogomile   bit 1 = SERVICE1, bit 8 = COIN2
 #           1 = pbancho    bit 1 = COIN2,    bit 8 = SERVICE1
 #
-# The second bit exists because pbancho does a PORT_MODIFY that SWAPS service
-# and coin 2 against gogomile's layout -- and asurabld happens to use pbancho's
-# arrangement, so one bit covers all six sets. Two games on the same board with
-# different input wiring is not something a board-select bit alone can express.
+# Bit 1 exists because pbancho's PORT_MODIFY swaps service and coin 2 against
+# gogomile; the asura sets use pbancho's arrangement.
 # ---------------------------------------------------------------------------
 MOD_FG3    = 0x01
 MOD_SYSALT = 0x02
@@ -274,10 +239,9 @@ MOD_SYSALT = 0x02
 # <category> for the MiSTer menu, per family; clones inherit their parent's.
 CATEGORY = {"gogomile": "Maze", "pbancho": "Puzzle", "asurabld": "Fight", "asurabus": "Fight"}
 
-# One slot count for every game, so Start / Coin / Pause always land on the
-# same joystick bits (8, 9, 10) whatever the game's button count. Unused slots
-# are named "-", which is the convention the Psikyo `.mra` files use and the
-# reason rtl/pause_control.sv can hard-code PAUSE_BIT = 10.
+# One slot count for every game, so Start / Coin / Pause always land on
+# joystick bits 8, 9, 10 (rtl/pause_control.sv hard-codes PAUSE_BIT = 10).
+# Unused slots are named "-", as in the Psikyo `.mra` files.
 BUTTON_SLOTS = 4
 
 
@@ -326,8 +290,7 @@ GAMES = {
             "audiocpu": [G("load", "no4.rom23")],
             "tiles_l0": [G("swap16", "60.rom3")],
             "tiles_l1": [G("pair32", "59.rom15", "61.rom11")],
-            # MAME loads 60.rom3 here too, commented "?maybe?" -- see the
-            # roadmap's open item. Reproduced as the driver has it.
+            # MAME loads 60.rom3 here too, marked "?maybe?"; reproduced as-is.
             "tiles_l2": [G("swap16", "60.rom3")],
             "sprites":  [G("swap16", "58.rom20")],
             "oki":      [G("load", "n03.rom25")],
@@ -486,8 +449,7 @@ def build_group(z, names, g):
 
 
 # Candidate `.mra` forms per group kind, tried in order until one reproduces
-# the ground truth. Deliberately includes the WRONG ones: if the right answer
-# were obvious there would be no need to search, and the search is the point.
+# the ground truth. Wrong forms are included on purpose.
 CANDIDATES = {
     "load":        [None],                                   # bare <part>
     "gap":         [None],
@@ -523,12 +485,8 @@ def dip_xml(ports):
     """Derive `bits`, `ids` and the default byte string from MAME's encoding.
 
     A MiSTer `<dip>`'s ids are indexed by the value assembled from the listed
-    bits, LSB first. Deriving that from the {value: label} map is what keeps
-    the ordering honest -- writing the ids by hand is how a game ends up
-    booting into service mode.
-
-    Port N is offset by 16 bits, so FG-3's DSW2 at $890000 lands on switch
-    bits 16..31 and reaches the core as the second pair of DIP bytes.
+    bits, LSB first. Port N is offset by 16 bits, so FG-3's DSW2 is switch
+    bits 16..31, the second pair of DIP bytes.
     """
     out = []
     default_bytes = []
@@ -547,29 +505,20 @@ def dip_xml(ports):
                     if idx & (1 << j):
                         value |= (1 << bp)
                 ids.append(settings.get(value, "-"))
-            # ids and bits are comma-separated lists: a comma inside a label
-            # shifts every later entry by one and the game reads a different
-            # setting than the OSD shows.
+            # ids is comma-separated: a comma in a label shifts later entries.
             for label in ids:
                 if "," in label:
                     sys.exit(f"dip '{name}': label {label!r} contains a comma")
             bits = [16 * port_index + b for b in bit_positions]
             out.append((esc(name), ",".join(str(b) for b in bits),
                         esc(",".join(ids))))
-        # Byte 0 is the low half of the port's word, byte 1 the high half;
-        # the core wires them that way.
+        # Byte 0 is the port word's low byte, byte 1 the high, as the core wires them.
         default_bytes += [default & 0xFF, (default >> 8) & 0xFF]
     return out, default_bytes
 
 
 def esc(s):
-    """XML-escape a value that came from MAME.
-
-    Not defensive padding: the driver's own dip name "Demo Sounds & Music"
-    contains a bare ampersand, and the well-formedness gate below rejected the
-    first FG-3 file because of it. A `.mra` MiSTer cannot parse loads nothing
-    and shows no DIPs, with every symptom pointing at the RTL.
-    """
+    """XML-escape a value from MAME (e.g. "Demo Sounds & Music")."""
     return escape(str(s), {'"': "&quot;"})
 
 
@@ -577,27 +526,17 @@ def esc(s):
 # Where each `.mra` goes, per the MiSTer MRA documentation
 # (https://mister-devel.github.io/MkDocs_MiSTer/developer/mra/).
 #
-# A parent set sits directly in the Arcade folder; every CLONE goes in
-# `_alternatives/_<parent>/`, so the top level lists one entry per game rather
-# than one per ROM revision. Files are named from the MAME description -- the
-# same string the `<name>` element carries -- not from the setname, because the
-# filename is what the user sees in the menu.
-#
-# The parent FOLDER drops the parenthesised qualifier: "Gunbird (World)" gives
-# `_Gunbird`, which is the grouping the sibling Psikyo core ships and what the
-# folder is for.
+# Parents go in the Arcade folder, clones in `_alternatives/_<parent>/`. Files
+# are named from the MAME description (what the menu shows), not the setname.
+# The parent folder drops the parenthesised qualifier: "Gunbird (World)" ->
+# `_Gunbird`.
 # ---------------------------------------------------------------------------
 _ILLEGAL = r'<>:"/\|?*'
 
 
 def mra_filename(title):
-    """MAME description -> a filename, keeping the description readable.
-
-    gogomile's description contains a slash ("Susume! Mile Smile / Go Go! Mile
-    Smile"), which is a path separator on every OS. It becomes " - ", matching
-    how MAME itself joins dual titles elsewhere; the `<name>` element keeps the
-    description verbatim.
-    """
+    """MAME description -> filename. gogomile's " / " becomes " - "; the
+    `<name>` element keeps the description verbatim."""
     name = title.replace(" / ", " - ")
     for ch in _ILLEGAL:
         name = name.replace(ch, "-")
@@ -646,10 +585,8 @@ def emit(setname, game, bases, zip_dir, out_dir, check_only):
             if base < cursor:
                 sys.exit(f"{setname}: {region} base 0x{base:X} overlaps the previous region")
             if base > cursor:
-                # Space BETWEEN regions -- MAME has no region here at all, so
-                # 0xFF marks it as unmapped rather than looking like real data
-                # in a probe dump. Holes INSIDE a region use GAP(), which
-                # fills 0x00 to match what MAME's region contains.
+                # Between regions: 0xFF marks unmapped space. Holes inside a
+                # region use GAP() (0x00).
                 pad = base - cursor
                 body.append(f'\t\t<part repeat="0x{pad:X}">FF</part>')
                 truth_image += b"\xFF" * pad
@@ -678,8 +615,7 @@ def emit(setname, game, bases, zip_dir, out_dir, check_only):
         if game["parent"]:
             zipattr += "|" + game["parent"] + ".zip"
 
-        # Flip Screen is left in the file but commented out: the core does not
-        # implement flipping yet, so offering the switch would only mislead.
+        # Flip Screen is commented out: the core does not implement flipping.
         sw = "\n".join(
             (f'\t\t<!-- <dip name="{n}" bits="{b}" ids="{i}"/> -->' if n == "Flip Screen"
              else f'\t\t<dip name="{n}" bits="{b}" ids="{i}"/>') for n, b, i in dips)
@@ -689,7 +625,7 @@ def emit(setname, game, bases, zip_dir, out_dir, check_only):
 \t<about author="Paul Priest" webpage="https://github.com/ppriest/Arcade-Fuuki_MiSTer" source="{SOURCE_FILE[board]}"/>
 \t<name>{game['title']}</name>
 \t<setname>{setname}</setname>
-\t<rbf>Arcade-Fuuki</rbf>
+\t<rbf>Fuuki</rbf>
 \t<year>{game['year']}</year>
 \t<manufacturer>Fuuki</manufacturer>
 \t<category>{CATEGORY[game['parent'] or game['zipname']]}</category>
@@ -718,16 +654,12 @@ def emit(setname, game, bases, zip_dir, out_dir, check_only):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(xml, encoding="utf-8")
 
-        # ---- the check that matters ----
         tmp = out_path if not check_only else out_dir / f".{setname}.check.mra"
         if check_only:
             tmp.parent.mkdir(parents=True, exist_ok=True)
             tmp.write_text(xml, encoding="utf-8")
-        # Well-formedness gate. LESSONS_LEARNED: an edited comment block once
-        # left stray character data containing a bare '<', MiSTer's parser
-        # rejected the file, and the result was DIPs gone from the OSD, the ROM
-        # never loaded, and a black screen -- with every symptom pointing at the
-        # RTL. Cheap to check, so check it every time rather than before deploy.
+        # Well-formedness gate: MiSTer silently fails on a malformed .mra (no
+        # DIPs, no ROM, black screen). See LESSONS_LEARNED.
         try:
             ET.parse(str(tmp))
         except ET.ParseError as e:

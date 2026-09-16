@@ -1,17 +1,9 @@
-// spriteram_dbuf + line_buffer #(.WIDTH(16)). RUN FROM THE REPO ROOT.
+// spriteram_dbuf + line_buffer #(.WIDTH(16)).
+// RUN FROM THE REPOSITORY ROOT (scripts/run_sim.sh spritebuf_tb).
 //
-// The two checks that matter here are the ones whose failures do not look like
-// failures:
-//
-//  * COPY, NOT SWAP. Under ping-pong a record the CPU does not rewrite every
-//    frame reads back what was written TWO frames ago. The test writes a
-//    record once, then leaves it alone across several frames and requires the
-//    CPU to keep reading it back. Ping-pong passes a single-frame test.
-//
-//  * TWO GENERATIONS, IN ORDER. FG-3 delays sprites by exactly two frames.
-//    Copying live->buf0 before buf0->buf1 would collapse that to one, and the
-//    symptom on screen is sprites arriving a frame early, which is not
-//    obviously wrong in motion.
+// COPY, NOT SWAP: with ping-ponged banks a record not rewritten every frame
+// reads back two frames stale, which a single-frame test does not show. The
+// bench writes a record once and reads it back across several frames.
 
 `timescale 1ns/1ps
 
@@ -98,8 +90,8 @@ module tb_spritebuf;
 		@(posedge clk);
 		copy_start <= 1'b0;
 		@(posedge clk);
-		// do/while, never while/do -- the latter races the always_ff
-		// updating copy_busy on the same edge.
+		// do/while, never while/do: the latter races the always_ff updating
+		// copy_busy on the same edge.
 		do @(posedge clk); while (copy_busy);
 	endtask
 
@@ -131,7 +123,7 @@ module tb_spritebuf;
 		end
 
 		// =============================================================
-		// A swap would pass everything above. This is what separates them.
+		// A swap would pass everything above.
 		$display("
 --- copy, not swap: a stale record survives many frames ---");
 		cpu_write(12'h100, 16'h1234);

@@ -86,7 +86,7 @@ synthesising audibly, measured rather than assumed — and it is what the mute s
 32,767. Buster's zero FM key-ons match the `fm_probe.lua` measurement exactly. What is NOT covered:
 the FM half is not built, so whatever Blade drives through FM produces silence.
 
-**The output chain is wired**: CRT offset (`crt_adjust`, from Psikyo) -> `arcade_video` ->
+**The output chain is wired**: CRT Adjust (`crt_vsize` -> `crt_adjust`, both vendored from Raiden) -> `arcade_video` ->
 `video_freak` (vertical crop 216p/224p, integer scale modes, aspect) -> the framework, with
 `screen_rotate_two` tapping the final output into a rotated (CW/CCW) or 180-flipped HDMI
 framebuffer in DDR3, muxed against the ROM loader on `ldr_active`. Untested on MiSTer at the
@@ -128,6 +128,22 @@ Signed now; `sim/opl4_chime_tb` replays the captured sequence and reads the enve
 after 100 ms. Confirmed by ear on MiSTer: sound effects at full level.
 
 **Still open:**
+- **FIXED in simulation, to be confirmed on MiSTer: Asura Blade's coin jingle came out scratchy
+  and much quieter than MAME.** MAME's YMF278B is ymfm, the source the OPL4 RTL was translated
+  from, so `scripts/ymfm_replay.cpp` runs ymfm on the exact writes MAME's driver sent
+  (`scripts/opl4_log.py`, `scripts/prep_opl4_replay.py`) and `sim/opl4_replay_tb` runs the RTL on
+  the same writes with the same pacing; a per-channel trace from each gave the first divergence.
+  Three RTL faults in `opl4_pcm.sv` / `opl4_regs.sv`:
+  1. The level ramp compared `level - 38` against its target unsigned; within 38 of a target near
+     0 it wrapped and snapped the channel to full attenuation for ~77 ms.
+  2. Each channel's registers were read during its slot, part way through the sample. The driver
+     parks a channel at TL 127 with level-direct before writing its real level, and a slot that
+     fell between the writes latched the park. The engine now reads a snapshot taken at the start
+     of each sample, as ymfm's `prepare()` does.
+  3. Released silent channels were skipped entirely, so position, envelope, level and LFO froze;
+     a note re-keyed without a wave load started from stale state.
+  Over 1.5 s around the coin, peak levels now agree with ymfm to within a few percent.
+  Open: attack rate 62 does not advance in the RTL (ymfm advances it); no current game hits it.
 
 - **gogomile's music stops minutes into play (first reported from stage 3, then seen on
   stage 1): the OKI's ROM fetch deadlocked against the sample cache. Fixed in
@@ -789,7 +805,7 @@ the build log says the compile succeeded, the `.rbf` is not older than that log,
 summary has no negative slack. A Psikyo build once died mid-Fitter and its deploy then verified the
 *previous* build's stale `.rbf` as green. `deploy.py` also prints every clock's slack before it
 copies anything, and names each core
-`Arcade-Fuuki_NNNNNNNN.rbf` with an incrementing number so earlier builds stay on the device as
+`Fuuki_NNNNNNNN.rbf` with an incrementing number so earlier builds stay on the device as
 fallbacks (rename the newest to `.held` to drop back one).
 
 Toolchain is Quartus Prime 17.0.2, per the

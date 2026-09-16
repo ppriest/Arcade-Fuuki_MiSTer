@@ -5,14 +5,9 @@
 // RUN FROM THE REPOSITORY ROOT (scripts/run_sim.sh sprite_tb), after
 //     python scripts/prep_tilemap_tb.py debug/gogomile-title gogomile
 //
-// Drives a real 456x262 line cadence rather than "pulse line_start and wait",
-// because the line pulse is a hard resync point and the interesting failure --
-// an engine still busy when the next line begins -- only exists if lines
-// actually arrive on time. LESSONS_LEARNED, "Ask of every stimulus whether it
-// is the shape the real system produces".
-//
-// Expected content, derived independently from the captured spriteram (see
-// tb_spritelist): "CREDIT 0" at (260,230) and a 32x32 sprite at (105,108).
+// Drives a real 456x262 line cadence: an engine still busy when the next line
+// begins only shows if lines arrive on time (LESSONS_LEARNED, "Ask of every
+// stimulus whether it is the shape the real system produces").
 
 `timescale 1ns/1ps
 
@@ -42,9 +37,8 @@ module tb_sprite;
 
 	wire line_tick   = ce_pix && (hcnt == 9'(H_ACTIVE));
 	wire frame_start = line_tick && (vcnt == 9'(V_ACTIVE));
-	// vcnt+2 wrapped: the sprite path needs one more line of lead than the
-	// tilemaps, because the line buffer swaps at line_start so a bank filled
-	// after one pulse is not displayed until after the next.
+	// vcnt+2 wrapped: a bank filled after one line pulse is displayed after the
+	// next, so the sprite path needs one line more lead than the tilemaps.
 	wire [8:0] vcnt_next2 = (vcnt >= 9'(V_TOTAL-2)) ? (vcnt - 9'(V_TOTAL-2)) : (vcnt + 9'd2);
 
 	// ---- sprite RAM (captured), read by the list builder ----
@@ -77,9 +71,8 @@ module tb_sprite;
 	logic [8:0]  lb_x;
 	logic [15:0] lb_wdata;
 
-	// Declared BEFORE the expressions that use them: referencing a signal
-	// before its declaration makes the tool infer an implicit net and then
-	// reject the real one (vlog-2388/2730).
+	// Declared before use: otherwise vlog infers an implicit net and rejects
+	// the real declaration (vlog-2388/2730).
 	logic        lb_ready;
 	logic        lb_ready_d, lb_ready_rise;
 	logic        capture_on = 0;
@@ -198,8 +191,7 @@ module tb_sprite;
 		repeat (20) @(posedge clk);
 		reset = 0;
 
-		// Let one frame build the list and prime the pipeline, then capture
-		// the next full frame.
+		// One frame to prime, then capture the next.
 		@(posedge frame_start);
 		@(posedge frame_start);
 		capture_on = 1;
@@ -210,12 +202,8 @@ module tb_sprite;
 		$display("  candidates: %0d", n_entries);
 		$display("  gfx fetches this run: %0d", gfx_reads);
 		$display("  line overruns: %0d", ovr_count);
-		// Deliberately NOT an exact count. This bench renders whatever capture
-		// is currently prepped into sim/tilemap_tb/, so pinning the number ties
-		// it to one scene and turns a re-prep into a false failure -- which is
-		// exactly what happened. The exact-content check lives in
-		// spritelist_tb, which reads a FIXED capture directory and names both
-		// records it expects.
+		// Not an exact count: sim/tilemap_tb/ holds whatever capture was last
+		// prepped. spritelist_tb checks exact content against a fixed capture.
 		check(n_entries > 0 && n_entries <= 11'd1024,
 		      "candidate list found a plausible number of sprites");
 		check(ovr_count == 0, "no scanline overran its budget");
@@ -227,9 +215,7 @@ module tb_sprite;
 				for (int x = 0; x < W; x++)
 					if (frame[y][x][15]) opaque_px++;
 			$display("  opaque pixels: %0d", opaque_px);
-			// Scene-independent bounds: something was drawn, and it did not
-			// cover the screen. A full 76,800 would mean every pixel opaque,
-			// which no sprite layer does.
+			// Scene-independent bounds: something drawn, not the whole screen.
 			check(opaque_px > 100 && opaque_px < 60000,
 			      "sprites drew a plausible amount of the screen");
 		end

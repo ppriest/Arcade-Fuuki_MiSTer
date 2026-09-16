@@ -1,8 +1,5 @@
-# Dump the worst setup-timing paths for the clk_sys domain from the
-# already-compiled Fuuki database, without a recompile. Run with:
-#   quartus_sta -t scripts/report_worst_paths.tcl Fuuki
-# The revision is taken from the trailing argument so this works against a
-# release database too; it defaults to the project revision.
+# Report the worst clk_sys setup paths from a compiled database, no recompile.
+#   quartus_sta -t scripts/report_worst_paths.tcl [revision]   # default Fuuki
 set rev "Fuuki"
 if {[llength $quartus(args)] > 0} { set rev [lindex $quartus(args) 0] }
 project_open $rev
@@ -16,7 +13,6 @@ report_timing -setup -npaths 15 -detail full_path -from_clock $clk -to_clock $cl
     -panel_name "Worst 15 setup paths (clk_sys)" -file "output_files/worst_paths_$rev.rpt"
 
 delete_timing_netlist
-# -dont_export_assignments: project_close otherwise RE-SAVES Fuuki.qsf,
-# reordering it and reverting hand edits -- which is how MISTER_FB=1 was
-# silently lost between a build and the next.
+# -dont_export_assignments: otherwise project_close re-saves the .qsf,
+# reverting hand edits (it lost MISTER_FB=1 once).
 project_close -dont_export_assignments

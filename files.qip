@@ -61,6 +61,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/compositor.sv
 # the Psikyo core) slides the picture for analog CRTs without moving sync.
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/screen_rotate_two.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/crt_adjust.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/crt_vsize.sv
 
 # CPU pause, as a joystick button (bit 10 -- see Fuuki.sv's J1 list).
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/pause_control.sv

@@ -1,12 +1,6 @@
--- Does an FG-3 game actually USE the OPL4's FM synthesis, or only its PCM?
+-- Does an FG-3 game use the OPL4's FM synthesis, or only its PCM?
 --
--- This decides roadmap open item 4. The OPL4 core inherited from
--- Arcade-Psikyo_MiSTer has a working 24-channel PCM wavetable engine but NO FM
--- synthesis -- that was milestone 2 and was never built. If Asura Blade and
--- Asura Buster never key on an FM channel, the missing half costs nothing and
--- FG-3 audio can ship without it.
---
--- Method. The Z80 reaches the chip through I/O ports 0x40-0x45, and
+-- The Z80 reaches the chip through I/O ports 0x40-0x45, and
 -- ymfm::ymf278b::write() maps those offsets as:
 --
 --     0  FM address, bank 0        1  FM data
@@ -14,10 +8,8 @@
 --     4  PCM address              5  PCM data
 --
 -- A key-on is a write to FM register 0xB0-0xB8 (or 0x1B0-0x1B8) with bit 5
--- set; rhythm-mode key-ons live in register 0xBD bits 0-4. Counting those
--- separately from every other FM write is what distinguishes "the driver
--- silences the FM section at boot and never touches it again" from "the music
--- is played on it".
+-- set; rhythm-mode key-ons are register 0xBD bits 0-4. Key-ons are counted
+-- apart from other FM writes, since a driver may initialise FM and never play.
 --
 -- Environment:
 --   FUUKI_OUT     directory for the report
@@ -38,14 +30,9 @@ if cpu == nil then
     return
 end
 
--- The Z80 I/O space. The driver applies map.global_mask(0xff), and MAME
--- applies that mask to the ADDRESS SPACE itself, so the space is 8 bits wide
--- and offsets arrive already masked. Installing a tap over 0x0000-0xFFFF is
--- rejected outright:
---     "In range 0-ffff mirror 0, end address is outside of the global address
---      mask ff, did you mean ff?"
--- and MAME reports it as a MODAL ERROR DIALOG, which under -video none
--- -nowindow means the run simply hangs with no console output at all.
+-- The driver's map.global_mask(0xff) makes the I/O space 8 bits wide, so a
+-- tap over 0x0000-0xFFFF is rejected ("end address is outside of the global
+-- address mask") with a modal dialog, which hangs a -video none run silently.
 local io_space = cpu.spaces["io"]
 if io_space == nil then
     local names = {}
@@ -66,9 +53,7 @@ local n_rhythm_on = 0
 local newflag     = -1    -- last value written to register 0x105 (OPL3 NEW)
 
 local fm_regs_seen = {}   -- set of FM registers ever written
-local fm_regs_last = {}   -- LAST value written to each, which is what decides
-                          -- audibility: a channel keyed on with its carrier
-                          -- Total Level at max attenuation makes no sound.
+local fm_regs_last = {}   -- last value written to each; decides audibility
 local keyon_ch     = {}   -- key-on count per channel
 local keyon_bucket = {}   -- key-ons per 600-frame bucket, to separate a
                           -- one-off boot sequence from ongoing music
@@ -151,10 +136,9 @@ _G.__fm_notifier = emu.add_machine_frame_notifier(function()
     table.sort(chs)
     say("key-ons per channel            " .. (#chs > 0 and table.concat(chs, " ") or "none"))
 
-    -- Carrier Total Level decides whether a keyed-on channel is audible.
-    -- TL lives in bits 5-0 of registers 0x40+op; 0x3F is maximum attenuation,
-    -- i.e. silence. Channel n's operators are (n, n+3) within each group of
-    -- three, so channels 0-2 use ops 0x00-0x05 and channels 6-8 use 0x08-0x0D.
+    -- Carrier Total Level: bits 5-0 of 0x40+op; 0x3F is silence. Channel n's
+    -- operators are (n, n+3) within each group of three: channels 0-2 use ops
+    -- 0x00-0x05, channels 6-8 use 0x08-0x0D.
     say("")
     say("Total Level registers (last value; TL 0x3F = silent):")
     local any_tl = false
@@ -172,9 +156,8 @@ _G.__fm_notifier = emu.add_machine_frame_notifier(function()
     end
     if not any_tl then say("  none written at all") end
 
-    -- Connection and 4-operator mode decide WHICH operator is the carrier, and
-    -- therefore whether a TL of 0x3F on one of them means silence. Without
-    -- these the TL table above cannot be interpreted:
+    -- Connection and 4-op mode decide which operator is the carrier, which the
+    -- TL table needs:
     --   0x104 bits 0-5 put channel pairs (0+3, 1+4, 2+5, 9+12, ...) into
     --                  4-operator mode
     --   0xC0+n bit 0   CNT: 0 = FM (op2 is the carrier), 1 = AM (both sound)
@@ -204,8 +187,7 @@ _G.__fm_notifier = emu.add_machine_frame_notifier(function()
     end
     say("  " .. bl)
 
-    -- Which FM registers were touched at all. "Only low registers, once" reads
-    -- very differently from "0xA0/0xB0 blocks hit thousands of times".
+    -- Which FM registers were written, and how often.
     local regs = {}
     for r, _ in pairs(fm_regs_seen) do regs[#regs+1] = r end
     table.sort(regs)

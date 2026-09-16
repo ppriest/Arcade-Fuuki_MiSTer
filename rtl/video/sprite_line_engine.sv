@@ -22,7 +22,7 @@ module sprite_line_engine (
 	input  logic clk,
 	input  logic reset,
 
-	// Raw per-line pulse. Fires every line, and is the resync point.
+	// Raw per-line pulse: the resync point.
 	input  logic        line_tick,
 	// Gated pulse: begin rendering `render_line` (the line buffer is ready).
 	input  logic        line_start,
@@ -84,8 +84,8 @@ module sprite_line_engine (
 	logic [63:0] gfx_row;
 
 	// ---- zoom lookups ----
-	// Outputs registered in S_DECODE for timing. w2 is latched in S_REC_W, so
-	// this costs no cycles and keeps the lookup off the chained-multiplier path.
+	// Registered in S_DECODE (w2 is latched in S_REC_W): no extra cycle, and
+	// the lookup stays off the chained-multiplier path.
 	wire [7:0]  zxt, zyt, dstx, dsty;
 	wire [17:0] stepx, stepy;
 	sprite_zoom_lut u_zx (.zoom_field(w2[15:12]), .zoom_t(zxt), .dst_size(dstx), .step(stepx));
@@ -101,9 +101,8 @@ module sprite_line_engine (
 	// multiplying, to keep a multiplier out of S_FINDROW's loop.
 	logic [12:0] yacc;
 	wire signed [11:0] row_origin = 12'(sy) + 12'(yacc >> 3);
-	// The zoom path scales by the next larger integer step, so a nominally
-	// full-size sprite drawn through it is 17 pixels tall. MAME keeps a
-	// separate non-zoomed path; so does this.
+	// Separate non-zoomed path, as MAME: the zoom path draws 17 pixels at
+	// full size (sprite_zoom_lut.sv).
 	wire [7:0] dst_h = nonzoom ? 8'd16 : dsty_r;
 
 	wire signed [11:0] line12 = 12'({3'd0, cur_line});

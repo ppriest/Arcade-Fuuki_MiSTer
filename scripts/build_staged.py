@@ -1,60 +1,43 @@
 #!/usr/bin/env python3
 """Build Quartus from a staged snapshot of HEAD, leaving the tree free.
 
-Ported from the Psikyo core (E:\\Arcade-Psikyo_MiSTer), where it exists for
-the reason this core kept paying for without it: a Quartus compile takes
-about thirteen minutes, and for all of it the tree has to be left alone.
-Editing sources during a run risks the build, and NOT editing them means
-every unrelated task waits. Both happened here repeatedly on 2026-09-06.
+Ported from the Psikyo core. A compile runs in a git worktree at <repo>/build
+(gitignored), so the main tree can be edited during it and Quartus scratch
+stays under build/.
 
-The compile runs in a dedicated git worktree at <repo>/build (gitignored),
-so the main tree is free the moment the build starts, and every scrap of
-Quartus scratch -- db/, incremental_db/, output_files/, the log -- lands
-under build/ instead of the repo root.
-
-The build is exactly HEAD:
-  * a dirty tree is refused by default, so what is in the editor and what is
-    compiled cannot silently diverge. --allow-dirty builds HEAD anyway,
-    explicitly acknowledging the uncommitted edits are EXCLUDED.
-  * the built commit is written to build/BUILT_COMMIT beside the log, so
-    every .rbf maps to one commit.
+The build is exactly HEAD: a tree with tracked edits is refused unless
+--allow-dirty (which still builds HEAD, without them), and the commit is
+written to build/BUILT_COMMIT.
 
     python scripts/build_staged.py                 # compile HEAD, revision Fuuki_stp
     python scripts/build_staged.py --rev Fuuki     # the release revision
     python scripts/build_staged.py --seed 12345    # try another placement
     python scripts/build_staged.py --allow-dirty   # HEAD, ignoring edits
 
-Two Quartus revisions build from the same source (Fuuki.sv, "DEBUG BUILD OR
-RELEASE"): Fuuki_stp carries the JTAG probe, the Debug OSD page and the sound
-mute switches; Fuuki is the release, with the probe compiled out and those
-settings hidden and forced off. They are held to different standards: a
-release must close timing on every clock, because it runs on machines we
-cannot see; a debug build may miss it, stated, because it runs on ours.
+Fuuki_stp carries the JTAG probe and Debug OSD page; Fuuki is
+the release with those compiled out (Fuuki.sv, "DEBUG BUILD OR RELEASE"). A
+release must close timing on every clock; a debug build may miss it, stated.
 docs/RELEASE_PROCESS.md.
 
-Outputs, all inside the stage:
+Outputs:
     build/q_staged.log                 the build log (deploy.py's gate reads it)
     build/output_files/<rev>.rbf       the bitstream
     build/output_files/<rev>.sta.summary
     build/BUILT_COMMIT
 
-Deploy it by pointing deploy.py at the stage (the script prints the exact
-command for the revision it built):
+Deploy (the script prints the exact command):
     python scripts/deploy.py --rbf-only --log build/q_staged.log \\
         --rbf build/output_files/<rev>.rbf --sta build/output_files/<rev>.sta.summary
 
-The worktree persists between builds -- Quartus's db/ with it, which costs
-nothing for full compiles and avoids re-checkout churn -- and each run
-hard-resets it to HEAD. A .build_running marker refuses two overlapping
-staged builds.
-
-scripts/build.sh still exists and still builds in-tree; use it when you want
-the compile to see uncommitted work and are willing to leave the tree alone.
+The worktree persists; each run hard-resets it to HEAD and deletes db/,
+incremental_db/ and output_files/. A .build_running marker refuses
+overlapping builds. scripts/build.sh builds in-tree, including uncommitted work.
 """
 import argparse
 import datetime
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -72,11 +55,8 @@ def run(cmd, **kw):
 
 
 def read_slacks(summary):
-    """Print every clock's setup slack; return the ones that fail.
-
-    All of them, not clk_sys alone: a violation on any clock is a violation,
-    and scripts/build.sh gates on exactly the same rule.
-    """
+    """Print clk_sys setup slack; return every clock that fails (same rule as
+    scripts/build.sh)."""
     out = []
     if not os.path.exists(summary):
         print("no timing summary at %s -- treating as unverified" % summary)
@@ -131,16 +111,13 @@ def main():
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     stage = os.path.join(here, "build")
 
-    # The other half of the guard in scripts/hwlock.py: a compile must not
-    # start while a JTAG tool is reading the device.
+    # scripts/hwlock.py: no compile while a JTAG tool is running.
     sys.path.insert(0, os.path.join(here, "scripts"))
     from hwlock import require_no_jtag
     require_no_jtag("this build")
 
     dirty = run(["git", "-C", here, "status", "--porcelain"])
-    # Untracked files are not part of HEAD either, but they are usually
-    # scratch; only tracked modifications are treated as a divergence worth
-    # refusing over.
+    # Untracked files are usually scratch; only tracked edits are refused.
     tracked_dirty = "\n".join(ln for ln in dirty.splitlines()
                               if not ln.startswith("??"))
     if tracked_dirty and not args.allow_dirty:
@@ -156,19 +133,15 @@ def main():
         sys.exit("a staged build already appears to be running (%s exists) -- "
                  "wait for it, or delete the marker if it is stale" % marker)
 
-    # Create or update the stage worktree to exactly HEAD.
     if not os.path.isdir(os.path.join(stage, ".git")) and \
        not os.path.isfile(os.path.join(stage, ".git")):
         run(["git", "-C", here, "worktree", "add", "--detach", stage, head])
     else:
-        # --force: a seed override patches the STAGED .qsf, and a leftover
-        # patch must never wedge the next build. The stage is a disposable
-        # copy of HEAD; local changes in it are always discardable.
+        # --force: discard a previous --seed patch to the staged .qsf.
         run(["git", "-C", stage, "checkout", "--force", "--detach", head])
         run(["git", "-C", stage, "reset", "--hard", head])
 
-    # Fitter seed override, patched into the STAGE only, so a build stays
-    # reproducible from its commit plus this flag.
+    # Seed is patched into the stage only: commit + flag reproduces the build.
     if args.seed is not None:
         qsf = os.path.join(stage, "%s.qsf" % REV)
         if not os.path.isfile(qsf):
@@ -192,6 +165,11 @@ def main():
     if dirty and args.allow_dirty:
         print("NOTE:   the tree has uncommitted changes and they are NOT in "
               "this build")
+
+    # After an interrupted compile, smart recompile can treat the old database
+    # as current and return the previous .rbf. Start empty.
+    for d in ("db", "incremental_db", "output_files"):
+        shutil.rmtree(os.path.join(stage, d), ignore_errors=True)
 
     quartus = os.path.join(QUARTUS_BIN, "quartus_sh.exe")
     log_path = os.path.join(stage, "q_staged.log")
@@ -220,11 +198,9 @@ def main():
     if not ok:
         sys.exit("BUILD FAILED -- see %s" % log_path)
 
-    # A debug build may ship with negative slack: it runs on our own DE10-nano,
-    # and the probe and tracer cost timing a release does not pay. A release
-    # may not -- once it leaves here we cannot know what it runs on, and a
-    # marginal path is exactly the fault that surfaces as someone else's
-    # intermittent glitch. docs/RELEASE_PROCESS.md.
+    # A debug build may miss timing (it runs on our own DE10-nano and pays for
+    # the probe); a release runs on unknown boards and may not.
+    # docs/RELEASE_PROCESS.md.
     is_release = (REV == "Fuuki")
     if violations and is_release and not args.allow_negative_slack:
         print("")

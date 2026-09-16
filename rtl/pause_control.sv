@@ -1,11 +1,10 @@
 // CPU pause. The Pause button toggles it; internal holds (ext_pause) OR in as
 // a level, so releasing one cannot clear the user's toggle.
 //
-// PAUSE_BIT follows the .mra <buttons> list: MiSTer numbers bits 0-3 as the
-// directions, then one bit per name in list order. The list is
-// "Button 1,Button 2,Button 3,Button 4,Start,Coin,Pause" for every game
-// (scripts/build_mra.py pads to four button slots), so Pause is bit 10.
-// Not yet confirmed on MiSTer; if the list changes, this must move with it.
+// PAUSE_BIT follows the .mra <buttons> list: bits 0-3 are directions, then one
+// bit per name. scripts/build_mra.py emits
+// "Button 1,Button 2,Button 3,Button 4,Start,Coin,Pause" for every game, so
+// Pause is bit 10. Unconfirmed on MiSTer; must move if the list changes.
 
 module pause_control #(
 	parameter int PAUSE_BIT = 10
@@ -13,11 +12,10 @@ module pause_control #(
 	input  logic        clk,
 	input  logic        reset,
 
-	// Either player's Pause works.
 	input  logic [31:0] joystick_0,
 	input  logic [31:0] joystick_1,
 
-	// Internal holds, ORed by the caller. A level, not a pulse.
+	// Level, not a pulse.
 	input  logic        ext_pause,
 
 	// CPU only. Video keeps scanning so the display holds sync.

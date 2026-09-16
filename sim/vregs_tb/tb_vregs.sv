@@ -1,10 +1,8 @@
-// vregs checks. RUN FROM THE REPOSITORY ROOT (scripts/run_sim.sh).
+// vregs checks. RUN FROM THE REPOSITORY ROOT (scripts/run_sim.sh vregs_tb).
 //
-// The scroll expectations below are HAND-COMPUTED from fuukitmap.cpp's
-// prepare(), not re-derived from the same formula the DUT uses. Re-deriving
-// would make the test agree with the RTL by construction and prove nothing --
-// including, in particular, the deliberate x/y offset pairing that looks like
-// a bug and is not.
+// Scroll expectations are HAND-COMPUTED from fuukitmap.cpp's prepare(), not
+// re-derived from the DUT's formula, which would agree by construction --
+// including the deliberate x/y offset pairing, which looks like a bug.
 
 `timescale 1ns/1ps
 
@@ -189,22 +187,12 @@ module tb_vregs;
 		end
 
 		// =============================================================
-		// Real captured state: gogomile title screen.
-		//
-		// Values dumped straight out of MAME with
+		// Captured state: gogomile title screen, dumped from MAME with
 		//     save fg2_vregs.bin,0x8c0000,0x20
-		// (debug/gogomile-title/, alongside the screenshot they produced).
-		// Every other case here was hand-derived; this one is what the game
-		// actually writes, so it is the case that cannot be wrong for the
-		// same reason the RTL might be.
-		//
-		// It settles the x/y offset pairing EMPIRICALLY. The game writes
-		// 0x01f3 to the Y offset register and 0x03f6 to the X offset
-		// register -- exactly the board XOFFS and YOFFS constants -- so the
-		// paired subtraction gives a net offset of ZERO on both axes, which
-		// is plainly the intent. Had the pairing been "corrected" to match
-		// the register names, it would yield -0x203 and +0x203 and put the
-		// whole picture 515 pixels out.
+		// (debug/gogomile-title/). The game writes XOFFS (0x01f3) to the Y
+		// offset register and YOFFS (0x03f6) to the X offset register, so the
+		// paired subtraction nets zero on both axes; pairing by register name
+		// would give -0x203/+0x203.
 		// =============================================================
 		$display("
 --- real capture: gogomile title screen ---");
@@ -231,12 +219,9 @@ module tb_vregs;
 		check(tf == 2'd1 && tm == 2'd2 && tb == 2'd0,
 		      "capture: priority 3 -> front 1, middle 2, back 0");
 
-		// The game parks the raster line at 0xfffe between raster chains.
-		// MAME hands the register to screen_device::time_until_pos(), which
-		// takes vpos modulo the screen height, and the driver declares a
-		// 256-line screen: 0xfffe fires at line 254, in vblank -- and
-		// gogomile depends on that IRQ5 every frame (it hung on MiSTer
-		// when the RTL let the value fire nothing; see vregs.sv).
+		// The game parks the raster line at 0xfffe between raster chains. MAME's
+		// time_until_pos() takes vpos modulo the 256-line screen, so it fires at
+		// line 254, in vblank; gogomile needs that IRQ5 every frame (see vregs.sv).
 		repeat (4) @(posedge clk);
 		check(raster_line == 9'd254, "capture: raster line 0xfffe -> 254 (low 8 bits), as MAME");
 

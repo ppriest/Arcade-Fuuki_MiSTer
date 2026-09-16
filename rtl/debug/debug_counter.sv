@@ -7,15 +7,12 @@
 // you are investigating"). Quartus powers registers to zero, so the count
 // is what happened since configuration. `clear` comes from the JTAG source
 // bus, never from core logic.
-//
-// Pair every "bad event" counter with a "total events" counter; a zero
-// means "never happened" only if the thing was seen to get the chance.
 
 module debug_counter #(
 	parameter int W = 16
 ) (
 	input  logic         clk,
-	input  logic         clear,   // from the JTAG source bus, NOT from core reset
+	input  logic         clear,   // JTAG source bus only
 	input  logic         ev,      // count one event per asserted cycle
 	output logic [W-1:0] count = '0
 );

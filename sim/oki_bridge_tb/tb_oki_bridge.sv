@@ -2,30 +2,24 @@
 // that can meet the chip's slot boundary. RUN FROM THE REPOSITORY ROOT
 // (scripts/run_sim.sh oki_bridge_tb).
 //
-// gogomile's music stopped minutes into play with the sample-ROM fetch
-// watch reading: one fetch outstanding, the stall flag set, worst completed
-// latency zero. The bridge that used to live inline in fg2_sound.sv tagged
-// each returned byte with the chip's LIVE address and derived its request
-// from it, so when jt6295 moved its address on the clock edge that
-// registered the valid, the request never dropped and sample_cache's
-// S_DRAIN never let go. This bench keeps that logic as `oki_rom_bridge_old`
-// and drives both bridges the same way:
+// Hazard: `oki_rom_bridge_old` derives its request from the chip's LIVE
+// address, so when jt6295 moves the address on the edge that registers valid,
+// the request never drops and sample_cache stays in S_DRAIN. Both bridges get:
 //
-//   * an address rotator that moves rom_addr every 344 / 430 clk
-//     alternately, as jt6295_rom's slots do at 1 MHz on the 85.9 MHz grid,
-//     to a fresh granule each time so every move is a cache miss;
-//   * a granule server of FIXED latency L behind the cache, swept over the
-//     range that puts the valid on and around the slot boundary.
+//   * an address rotator moving rom_addr every 344 / 430 clk alternately
+//     (jt6295_rom's 1 MHz slots on the 85.9 MHz grid), to a fresh granule
+//     each time so every move is a cache miss;
+//   * a granule server of FIXED latency L, swept so valid lands on and
+//     around the slot boundary.
 //
-// Checks: the old bridge deadlocks at some L in the sweep (the reproduction
-// -- if it stops doing so, the bench no longer exercises the hazard); the
-// new bridge never has a request outstanding longer than a fetch takes, at
-// any L; and every byte the new bridge marks ok is the ROM byte for the
-// address on the bus at that moment, under a random-latency, random-period
-// run with a bank change in the middle.
+// Checks: the old bridge deadlocks at some L (if not, the bench no longer
+// exercises the hazard); the new bridge never does; and every byte the new
+// bridge marks ok matches the address on the bus, under random latency and
+// slot period with a mid-run bank change.
 `timescale 1ns/1ps
 
-// ---- the previous inline logic, verbatim in behaviour ----
+// The OKI ROM bridge logic before 9714a18: the request follows the live
+// address, so it can deadlock against sample_cache (see oki_rom_bridge.sv).
 module oki_rom_bridge_old (
 	input  logic        clk,
 	input  logic        reset,
@@ -99,16 +93,12 @@ module oki_path #(parameter bit OLD = 0) (
 		rom_byte = a[7:0] ^ {a[15:8]} ^ {6'd0, a[17:16]} ^ 8'h5A;
 	endfunction
 
-	// Granule server: g_req is a level held until g_valid, one at a time,
-	// valid registered as sdram_arbiter's c_valid is. Requests are captured
-	// on the RISING EDGE of g_req as the arbiter captures them -- the first
-	// cut of this model re-sampled the still-high request in the cycle after
-	// its own valid and issued a duplicate fetch, whose late answer the cache
-	// then took as the reply to a later request. That is the re-sampling
-	// hazard LESSONS_LEARNED records for the phy, reproduced in a model.
-	// Reset WITH the cache, as the arbiter is in the core: a restart between
-	// sweep points otherwise leaves a pre-reset fetch in flight, and its
-	// answer lands in the first post-reset fill as the wrong granule.
+	// Granule server: g_req is a level held until g_valid, valid registered as
+	// sdram_arbiter's c_valid. Requests are captured on g_req's RISING EDGE, as
+	// the arbiter does: re-sampling the still-high level after valid issues a
+	// duplicate fetch whose late answer is taken as a later request's reply.
+	// Reset with the cache, as in the core, or a pre-reset fetch lands in the
+	// first post-reset fill.
 	int   lat = 0;
 	logic busy = 0, pend = 0, g_req_d = 0;
 	logic [25:0] g_addr_q;

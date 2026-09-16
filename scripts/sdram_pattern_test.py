@@ -5,41 +5,26 @@
     python scripts/sdram_pattern_test.py ones alt vec   # a subset
     python scripts/sdram_pattern_test.py --list
 
-Each pattern becomes a tiny .mra whose index-0 payload is INLINE HEX (no ROM
-zip), so MiSTer streams a known 512-byte page to SDRAM address 0 through the
-same ioctl/download path a game uses. The core's SDRAM read-back walker
-(trace source 3, rtl/fuuki_core.sv) then reads that page back through the
-CPU's own path and the tracer shows it on screen (scripts/tracer_readout.py
-reads it back). This diffs the readout against the pattern.
+Each pattern becomes a .mra whose index-0 payload is inline hex, so MiSTer
+streams a known 512-byte page to SDRAM address 0 through the same download
+path a game uses. The read-back walker (trace source 3, rtl/fuuki_core.sv)
+reads it through the CPU's path and scripts/tracer_readout.py decodes it
+from the screen; this diffs that against the pattern.
 
-WHY THIS INSTRUMENT EXISTS
---------------------------
-The first bring-up produced "corrupt ROM" symptoms that were consistent with
-half a dozen causes -- interleave, download logic, cache staleness, refresh,
-reset races, DQ timing. A game ROM cannot separate them: its data is
-arbitrary. Known patterns can:
-
-  zeros, ff, ramp   no or few bit transitions between adjacent words
+  zeros, ff, ramp   few bit transitions between adjacent words
   alt, inv          maximum transitions between adjacent words
-  ones              walking ones -- identifies which DATA LANES are weak and
-                    which neighbouring word each lane is really sampling
-  vec               gogomile's real vector page, the case that actually fails
+  ones              walking ones: which data lanes are weak, and which
+                    neighbouring word each lane really samples
+  vec               gogomile's real vector page
 
-A fault that depends on ADDRESS shows up in every pattern at the same words.
-A fault that depends on DATA TRANSITIONS leaves zeros/ff/ramp exact and mangles
-alt/inv/ones. That signature WAS seen -- and it was the READOUT, not the memory: the
-framework applies the user's gamma LUT (MiSTer.ini preset -> gamma_110.txt)
-to the core's RGB before the screenshot, so 0x40 read back as 0x38 and 0x02
-as 0x01, and only patterns whose bytes are fixed points of the curve (0x00,
-0xFF) survived. A quarter-period SDRAM_CLK phase change did not alter it at
-all, and JTAG-read values had agreed with the ROM throughout. Gamma is now
-forced off under the overlay (Fuuki.sv) and the readout is banded and
-self-checking (scripts/tracer_readout.py).
+An address-dependent fault hits the same words in every pattern; a
+transition-dependent one leaves zeros/ff/ramp exact. The readout itself can
+fake the latter: the framework's gamma LUT is applied before the screenshot
+(0x00 and 0xFF are fixed points), so gamma is forced off under the overlay
+(Fuuki.sv).
 
-EVERY RUN IS GUARDED. A result is only reported if the probe shows the device
-actually loaded the 4 KB test image (dl_writes_256 == 8). Without that guard
-a failed launch quietly re-dumps whatever was loaded before -- which happened,
-and produced four identical "results" from a game that was still running.
+A result is reported only if the probe shows the test image loaded
+(dl_writes_256 == 8); otherwise a failed launch re-dumps the previous content.
 """
 import argparse
 import json
@@ -82,10 +67,8 @@ PATTERNS = {
     "g1":    lambda: w(0x0040, 0x0000, 0x0000, 0x0000) * 64,
     "g2":    lambda: w(0x0040, 0xFFFC, 0x0000, 0x0000) * 64,
     "vec":   gogomile_page0,
-    # Zero words between walking ones. Written to separate memory damage from
-    # a capture-path transform: a transform touches the ones and leaves the
-    # zeros alone (0x00 is a fixed point of the gamma curve), memory damage
-    # would not respect that distinction.
+    # Zero words between walking ones: a capture-path transform leaves the
+    # zeros alone (0x00 is a gamma fixed point); memory damage would not.
     "ones_gap": lambda: w(*[(1 << ((k // 2) % 16)) if k % 2 == 0 else 0 for k in range(256)]),
 }
 
@@ -153,9 +136,8 @@ def run_one(name, e, keep_mra=False):
     dl = probe("dl_writes_256")
     if dl != "8":
         return dict(name=name, void=f"device did not load the test image (dl_writes_256={dl})")
-    # Banded, self-checking readout (scripts/tracer_readout.py). Each walker
-    # entry is {word index, data}; the embedded index is checked against the
-    # entry's position as a second guard against mis-attribution.
+    # Each walker entry is {word index, data}; the index is checked against
+    # the entry's position to catch mis-attribution.
     from tracer_readout import read_buffer
     ents, probs = read_buffer(tag=f"sdt_{name}")
     got, misidx = {}, 0
@@ -176,8 +158,7 @@ def report(res):
     if "void" in res:
         print(f"\n{res['name']:6s}: VOID -- {res['void']}"); return
     n, bad = res["name"], res["bad"]
-    # EXACT means all 256 words came back and every one matched. A partial
-    # recovery with no mismatches is a readout problem, not a pass.
+    # A partial recovery with no mismatches is a readout problem, not a pass.
     verdict = ("  <-- EXACT" if (not bad and res["recovered"] == 256) else
                "  <-- INCOMPLETE READOUT" if not bad else "")
     print(f"\n{n:6s}: {res['recovered']}/256 recovered, {len(bad)} wrong{verdict}")

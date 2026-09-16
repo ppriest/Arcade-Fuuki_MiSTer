@@ -117,3 +117,7 @@ __pycache__/
 sim/tilemap_tb/*.txt
 sim/tilemap_tb/*.png
 !sim/tilemap_tb/config.txt
+
+# opl4_replay_tb output
+sim/opl4_replay_tb/*.wav
+sim/opl4_replay_tb/*.txt

@@ -1,10 +1,9 @@
 // N-way round-robin arbiter onto one sdram_phy port, plus an absolute-priority
 // write path for the ROM download.
 //
-// Client contract: c_req[i] is a level held until c_valid[i] pulses. A
-// one-shot pulse arriving while another client is being served is lost.
-// One-shot sources (hps_io's ioctl_wr) go through a converter such as
-// sdram_download.sv.
+// Client contract: a rising edge on c_req[i] queues one read, so a pulse or
+// a level held until c_valid[i] both work; a level still high after c_valid
+// does not queue another. c_addr[i] must hold until c_valid[i].
 //
 // Use N = 1 rather than wiring a lone client to the phy: sdram_phy returns
 // to idle on its valid cycle and re-samples a still-high request as a second
@@ -34,7 +33,6 @@ module sdram_arbiter #(
 	input  logic [63:0]  phy_rdata,
 
 	// ---- read clients, packed ----
-	// c_req is a LEVEL held until the matching c_valid pulses.
 	input  logic [N-1:0]      c_req,
 	input  logic [26*N-1:0]   c_addr,
 	output logic [N-1:0]      c_valid,
@@ -55,7 +53,6 @@ module sdram_arbiter #(
 	logic [$clog2(N)-1:0] serving;
 
 	// Pending requests: set by a rising edge on c_req, cleared when served.
-	// This lets pulse clients and level clients share one arbiter.
 	logic [N-1:0] pend, c_req_d;
 
 	logic       have_pick;
@@ -76,7 +73,6 @@ module sdram_arbiter #(
 		end
 	end
 
-	// Address slice for the chosen client.
 	logic [25:0] pick_addr;
 	always_comb begin
 		pick_addr = 26'd0;

@@ -6,13 +6,10 @@
 // state machine's phrase-table address every internal slot (~350 clk),
 // whether or not we have answered.
 //
-// The address is registered when the request is issued and held with it;
-// the returned byte is stored under that address; req is the in-flight
-// flag alone, so it falls for at least one clock after every valid
-// whatever the chip does with its address. If the address moved meanwhile,
-// rom_ok reads false and the next fetch follows a clock later. The stored
-// byte stays valid for its own address, so the chip re-presenting it (the
-// control address, between sample slots) is answered without a fetch.
+// The address is registered when the request is issued and the byte stored
+// under it; req is the in-flight flag alone, so it falls for at least one
+// clock after every valid whatever the chip does with its address. The
+// stored byte answers the chip re-presenting that address without a fetch.
 //
 // Do not tag the fetch with the live rom_addr or derive req from it: an
 // address change on the clock edge that registers the valid then leaves

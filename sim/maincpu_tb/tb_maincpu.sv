@@ -1,20 +1,10 @@
-// maincpu smoke + boot test, FG-2 (68000 mode) against the real gogomile ROM.
+// maincpu smoke + boot test, FG-2 (68000 mode) against the real gogomile ROM:
+// no X on control signals, boot fetches diffed against a MAME trace, and a
+// level-3 interrupt with a synthetic program.
 //
-// RUN FROM THE REPOSITORY ROOT. $readmemh resolves relative to the
-// simulator's CWD, not to this file, and a wrong CWD makes it find nothing,
-// leave the ROM all zeroes and fail every check at once -- which reads
-// exactly like a catastrophic RTL regression. ModelSim reports it only as
-// "** Warning: (vsim-7) Failed to open readmem file", so grep the log for
-// `readmem` before touching RTL if everything fails together.
-//
-//     vlib work
-//     vcom -2008 -work work rtl/cpu/tg68k/*.vhd
-//     vlog -sv  -work work rtl/cpu/maincpu.sv sim/maincpu_tb/tb_maincpu.sv
-//     vsim -c -do "run -all; quit -f" work.tb_maincpu
-//
-// Order of business, per LESSONS_LEARNED ("Write a smoke test ... before a
-// functional test"): elaborate, run, prove nothing is X, and only then check
-// behaviour.
+// RUN FROM THE REPOSITORY ROOT (scripts/run_sim.sh maincpu_tb).
+// Needs sim/maincpu_tb/gogomile_maincpu.hex (scripts/build_maincpu_hex.py).
+// If every check fails at once, grep the log for `readmem` first.
 
 `timescale 1ns/1ps
 
@@ -92,20 +82,16 @@ module tb_maincpu;
 		.sharedram_addr(sharedram_addr), .sharedram_we(sharedram_we),
 		.sharedram_wdata(sharedram_wdata), .sharedram_rdata(sharedram_rdata),
 		.system_in(system_in), .p1p2_in(p1p2_in), .dsw_in(dsw_in), .dsw2_in(dsw2_in),
-		.latch_data(latch_data), .latch_write(latch_write),
+		.latch_data(latch_data), .latch_write(latch_write), .latch_busy(1'b0),
 		.tilebank(tilebank),
 		.irq1_trig(irq1_trig), .irq3_trig(irq3_trig), .irq5_trig(irq5_trig),
 		.pause(pause)
 	);
 
 	// ---------------------------------------------------------------
-	// ROM model: req/valid with REAL transport latency.
-	//
-	// The latency is deliberately not 1-2 cycles. A short-latency
-	// behavioural model returns its response while an FSM is between
-	// states, which is exactly how Psikyo's duplicate-request bug passed
-	// every module-level simulation and failed on MiSTer
-	// (LESSONS_LEARNED, "Re-run the failing case with the production
+	// ROM model: req/valid with transport-scale latency. A 1-2 cycle model
+	// answers while the FSM is between states and hides duplicate-request
+	// bugs (LESSONS_LEARNED, "Re-run the failing case with the production
 	// transport in place of behavioural models").
 	// ---------------------------------------------------------------
 	localparam int ROM_LAT = 12;
@@ -138,12 +124,9 @@ module tb_maincpu;
 	end
 
 	// ---------------------------------------------------------------
-	// BRAM models -- REGISTERED reads.
-	//
-	// Not a stylistic choice. A combinational model hides a consumer that
-	// does not spend the read-latency wait state, which is a whole class of
-	// stale-read bug (LESSONS_LEARNED, "Give a registered RAM its full read
-	// latency before consuming the data").
+	// BRAM models -- REGISTERED reads. A combinational model hides a consumer
+	// that skips the read-latency wait (LESSONS_LEARNED, "Give a registered
+	// RAM its full read latency before consuming the data").
 	// ---------------------------------------------------------------
 	`define BRAM(NAME, DEPTH, AW)                                            \
 		logic [15:0] NAME``_mem [0:DEPTH-1];                                  \
@@ -174,11 +157,8 @@ module tb_maincpu;
 	// ---------------------------------------------------------------
 	// Bus observation
 	// ---------------------------------------------------------------
-	// The 68000 boots with SR interrupt mask = 7, so levels 1/3/5 are all
-	// MASKED until the game lowers it. Exposed here because "no interrupt was
-	// taken" and "the interrupt was correctly masked" look identical from
-	// outside, and guessing between them is how a good IRQ path gets blamed
-	// for a test's own assumption.
+	// The 68000 boots with SR mask 7, so IRQs are masked until the game lowers
+	// it. Exposed to tell "not taken" from "correctly masked".
 	wire [2:0]  sr_mask   = dut.u_cpu.FlagsSR[2:0];
 
 	wire [31:0] cpu_a     = dut.a32;
@@ -186,7 +166,7 @@ module tb_maincpu;
 	wire        cpu_step  = dut.cpu_clkena;
 	wire [2:0]  cpu_fc    = dut.fc;
 
-	// Expected fetch addresses from the MAME trace (see the diff below).
+	// Expected fetch addresses from the MAME trace.
 	localparam int MAX_EXP = 512;
 	logic [31:0] exp_pc [0:MAX_EXP-1];
 
@@ -199,9 +179,8 @@ module tb_maincpu;
 	logic [31:0] trace_a [0:TRACE_N-1];
 	int          trace_i = 0;
 
-	// trace_rst rather than assigning the counters from the initial block:
-	// a variable driven inside always_ff may not be driven anywhere else
-	// (vlog-7061), and the second test case needs the trace restarted.
+	// trace_rst: a variable driven in always_ff may not be driven elsewhere
+	// (vlog-7061), and case 2 needs the trace restarted.
 	logic trace_rst = 0;
 
 	always_ff @(posedge clk) begin
@@ -239,10 +218,8 @@ module tb_maincpu;
 	initial begin
 		$display("=== tb_maincpu: FG-2 / 68000 / gogomile ===");
 
-		// ROM first, so nothing written afterwards can be overwritten by it.
-		// LESSONS_LEARNED, "Write preloaded vectors and tables AFTER
-		// $readmemh, never before" -- the inverse of that bug, which cost
-		// Psikyo weeks of blaming CPU microcode for a zeroed vector table.
+		// ROM first (LESSONS_LEARNED, "Write preloaded vectors and tables
+		// AFTER $readmemh, never before").
 		$readmemh("sim/maincpu_tb/gogomile_maincpu.hex", rom);
 
 		if (rom[0] !== 16'h0040 || rom[1] !== 16'hFFFC) begin
@@ -271,19 +248,11 @@ module tb_maincpu;
 		for (int i = 0; i < trace_i && i < 16; i++)
 			$display("  %2d: %08x", i, trace_a[i]);
 
-		// Entries 0-2 are the RESET VECTOR fetch: the kernel reads the PC
-		// vector with busstate=00, so it appears in the fetch trace before
-		// any instruction does. Find where execution actually starts rather
-		// than asserting on index 0 -- the first version of this check
-		// assumed trace_a[0] was the entry point and failed against a
-		// perfectly correct boot.
+		// The reset-vector read also has busstate=00 and precedes the first
+		// instruction in the trace; search for 0x400 rather than using index 0.
 		begin
-			// Declared and assigned SEPARATELY. A block-local variable with an
-			// initializer is implicitly STATIC (vlog-2244): the initializer
-			// runs once before time 0, not on entry to the block. Written as
-			// `bit seq_ok = ((start + 8) <= trace_i);` below, it evaluated
-			// against trace_i == 0 at elaboration and was false forever --
-			// failing a check the RTL was passing.
+			// Declared and assigned SEPARATELY: a block-local initializer is
+			// implicitly STATIC (vlog-2244) and runs once before time 0.
 			int start;
 			start = -1;
 			for (int i = 0; i < trace_i; i++)
@@ -303,22 +272,12 @@ module tb_maincpu;
 		$display("  SR interrupt mask after %0d fetches: %0d", n_fetch, sr_mask);
 
 		// =============================================================
-		// Diff against a REAL MAME boot trace.
-		//
-		// This is the check that makes the boot case ground truth rather
-		// than self-consistency: sim/maincpu_tb/gogomile_boot_pcs.txt is
-		// generated by scripts/parse_mame_trace.py from a MAME debugger
-		// trace of the same ROM, expanded from instruction starts into the
-		// words actually fetched.
-		//
-		// Matched as an in-order SUBSEQUENCE, because a couple of branch
-		// instructions cannot have their length inferred from the trace and
-		// so are left unexpanded. A real divergence -- wrong interleave,
-		// wrong branch target, a bus cycle that never completes -- still
-		// fails, because the expected address simply never turns up.
-		//
-		// The expected list stops at gogomile's boot delay loop (131,068
-		// instructions), which this run deliberately does not grind through.
+		// Diff against a MAME boot trace. gogomile_boot_pcs.txt comes from
+		// scripts/parse_mame_trace.py: instruction starts expanded into the
+		// words fetched. Matched as an in-order SUBSEQUENCE because some branch
+		// lengths cannot be inferred and are left unexpanded; a divergence
+		// still fails because the expected address never appears. The list
+		// stops at gogomile's boot delay loop.
 		// =============================================================
 		$display("
 --- diff against MAME boot trace ---");
@@ -349,14 +308,8 @@ module tb_maincpu;
 		end
 
 		// =============================================================
-		// Case 2: the interrupt path, with a synthetic program that
-		// actually ENABLES interrupts.
-		//
-		// Case 1 cannot test this. The 68000 boots at SR mask 7 and
-		// gogomile does not lower it until well into its own init, so
-		// asserting an IRQ during early boot proves nothing about this
-		// module -- the CPU is correctly ignoring it. A four-instruction
-		// program reaches the interesting state in microseconds instead.
+		// Case 2: interrupt path. gogomile keeps SR mask 7 through early boot,
+		// so a synthetic program lowers it:
 		//
 		//   0x000000  SP = 0x0040FFFC
 		//   0x000004  PC = 0x00000400
@@ -395,9 +348,8 @@ module tb_maincpu;
 			iacks = 0;
 			isr_entered = 0;
 
-			// HOLD_LINE: assert as a held LEVEL, the shape the real system
-			// produces. A one-clock pulse is what let a genuine set-vs-clear
-			// priority bug pass every test in Psikyo for an entire project.
+			// HOLD_LINE: a held LEVEL, as the real system drives it. A one-clock
+			// pulse hides set-vs-clear priority bugs.
 			irq3_trig = 1;
 
 			fork
@@ -414,10 +366,8 @@ module tb_maincpu;
 			check(iacks > 0,   "CPU ran an interrupt-acknowledge cycle (FC=7)");
 			check(isr_entered, "CPU fetched the ISR via the level-3 autovector (0x6C -> 0x500)");
 
-			// The decisive one: irq3_trig is STILL HIGH. If the acknowledge
-			// did not beat the held level, irq3_pending would still be set,
-			// ipl would stay asserted, and the ISR would re-enter after
-			// every RTE forever.
+			// irq3_trig is still high: acknowledge must win over the held level,
+			// or the ISR re-enters after every RTE.
 			check(dut.irq3_pending == 1'b0,
 			      "irq3_pending cleared while the source is still held high");
 

@@ -6,9 +6,8 @@
 
 Writes sim/fg2_sound_tb/z80.hex (the 128 KB Z80 program) and oki.hex (the
 sample ROM, padded to 1 MB so the bench's OKI model always has a byte to
-serve), one byte per line for $readmemh, straight out of roms/<set>.zip.
-Both land under sim/**/*.hex, which
-is gitignored: the ROMs are never committed.
+serve), one byte per line for $readmemh, from roms/<set>.zip. sim/**/*.hex
+is gitignored, so the ROMs are never committed.
 """
 import sys
 import zipfile
@@ -33,7 +32,6 @@ def main():
     if len(z80) != 0x20000:
         sys.exit(f"{z80_name}: {len(z80)} bytes, expected 0x20000")
     oki = oki.ljust(0x100000, b"\xff")
-    # One byte per line, for $readmemh.
     (out / "z80.hex").write_text("\n".join(f"{b:02x}" for b in z80) + "\n")
     (out / "oki.hex").write_text("\n".join(f"{b:02x}" for b in oki) + "\n")
     print(f"{game}: {z80_name} -> {out / 'z80.hex'} ({len(z80)} bytes), "

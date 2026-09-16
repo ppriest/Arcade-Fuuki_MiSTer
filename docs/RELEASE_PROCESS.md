@@ -8,7 +8,7 @@ on the Psikyo core's `Psikyo_stp` / `Psikyo` pair.
 | Project file | `Fuuki_stp.qpf` (this revision alone) | `Fuuki.qpf` (lists both) |
 | Settings | `Fuuki_stp.qsf`: a copy of `Fuuki.qsf` plus `DEBUG_ISSP=1` | `Fuuki.qsf` |
 | Built by | `build_staged.py` (default) | `build_staged.py --rev Fuuki` |
-| Contains | JTAG probe, Debug OSD page, Sound FM/PCM mute switches | none of it: the probe compiles out, the OSD lines are hidden and their status bits forced to zero (`Fuuki.sv`, "DEBUG BUILD OR RELEASE") |
+| Contains | JTAG probe, Debug OSD page | none of it: the probe compiles out, the OSD lines are hidden and their status bits forced to zero (`Fuuki.sv`, "DEBUG BUILD OR RELEASE") |
 | Timing | may ship with negative slack, stated | must close timing on every clock |
 | Goes to | our own DE10-nano | `releases/`, other people's hardware |
 

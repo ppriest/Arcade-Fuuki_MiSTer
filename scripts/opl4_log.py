@@ -5,23 +5,16 @@
     python scripts/opl4_log.py asurabus --coin 2400 --from 2300 --to 2700
 
 Runs MAME headlessly with scripts/mame/opl4_log.lua, which logs every OPL4
-write in the window and inserts a coin at --coin. MAME's own audio for the
-run is recorded to audio.wav. Then:
+write in the window, inserts a coin at --coin, and records audio.wav. Then:
 
-  * every PCM key-on in the window is decoded: the channel's registers at
-    that instant, and the wavetable header those registers point at in
-    opm.u6 (format, base, loop, end, and the ADSR/LFO bytes the chip loads
-    into the channel);
-  * the WAV is summarised as peak per 50 ms window, with the coin frame
-    marked, so the level of the sound the coin triggered can be read
-    against the music around it.
+  * each PCM key-on is decoded: the channel's registers and the opm.u6
+    wavetable header they point at (format, base, loop, end, ADSR/LFO);
+  * the WAV is summarised as peak per 50 ms window, coin frame marked.
 
-Everything lands in debug/opl4_log/<game>-c<coin>/ (gitignored: ROM-derived).
+Output: debug/opl4_log/<game>-c<coin>/ (gitignored: ROM-derived).
 
-Why: the RTL's PCM engine reads identically to ymfm and plays Psikyo's
-effects on MiSTer, yet Fuuki's one-shot effects come out far quieter than
-its music. What differs is what the driver asks of the engine, and that is
-a register sequence to capture rather than a mechanism to guess.
+Purpose: on MiSTer, Fuuki's one-shot effects are quieter than its music; this
+captures the register sequence the driver sends for comparison.
 """
 import argparse
 import os

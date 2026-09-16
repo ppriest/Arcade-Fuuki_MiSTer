@@ -2,7 +2,7 @@
 	<about author="Paul Priest" webpage="https://github.com/ppriest/Arcade-Fuuki_MiSTer" source="MAME fuukifg2.cpp"/>
 	<name>Gyakuten!! Puzzle Bancho (Japan, set 2)</name>
 	<setname>pbanchoa</setname>
-	<rbf>Arcade-Fuuki</rbf>
+	<rbf>Fuuki</rbf>
 	<year>1996</year>
 	<manufacturer>Fuuki</manufacturer>
 	<category>Puzzle</category>

@@ -1,18 +1,9 @@
-// Standalone synthesis/timing harness for maincpu + TG68K.C.
+// Synthesis/timing harness for maincpu + TG68K.C. Not a simulation model.
 //
-// maincpu has far more port bits than this device has pins, so the harness
-// funnels everything through a few registers: inputs come from a free-running
-// pattern register, outputs are XOR-reduced onto one pin. That keeps the
-// whole design ALIVE -- if the outputs were left unconnected, Quartus would
-// optimize the CPU away and report a beautifully fast empty design.
-//
-// The BRAM read-data paths are fed from registers rather than tied to
-// constants for the same reason: a constant lets the fitter fold the read
-// mux flat and flatters the timing report.
-//
-// This is a synthesis harness, NOT a simulation model. It does not execute
-// anything sensible; it exists so that quartus_map proves elaboration and
-// quartus_fit + quartus_sta produce a real Fmax on the real device.
+// maincpu has more port bits than the device has pins: inputs come from a
+// pattern register, outputs are XOR-reduced onto one pin. Unconnected outputs
+// would let Quartus optimise the CPU away. BRAM read data is registered, not
+// constant, so the fitter cannot fold the read mux and flatter the report.
 
 module maincpu_synth_top (
 	input  logic clk,
@@ -24,8 +15,6 @@ module maincpu_synth_top (
 	logic reset;
 	assign reset = ~rst_n;
 
-	// Free-running pattern register: gives every input a real, changing
-	// driver without needing a pin each.
 	logic [31:0] pat;
 	always_ff @(posedge clk or posedge reset)
 		if (reset) pat <= 32'h1234_5678;
@@ -65,7 +54,6 @@ module maincpu_synth_top (
 	logic        latch_write;
 	logic [31:0] tilebank;
 
-	// Registered stimulus for every input the DUT reads.
 	always_ff @(posedge clk) begin
 		rom_data        <= pat[15:0];
 		rom_valid       <= pat[16];
@@ -98,14 +86,12 @@ module maincpu_synth_top (
 		.sharedram_wdata(sharedram_wdata), .sharedram_rdata(sharedram_rdata),
 		.system_in(pat[15:0]), .p1p2_in(pat[31:16]),
 		.dsw_in(pat[15:0] ^ 16'hFFFF), .dsw2_in(pat[31:16] ^ 16'hFFFF),
-		.latch_data(latch_data), .latch_write(latch_write),
+		.latch_data(latch_data), .latch_write(latch_write), .latch_busy(1'b0),
 		.tilebank(tilebank),
 		.irq1_trig(pat[3]), .irq3_trig(pat[7]), .irq5_trig(pat[11]),
 		.pause(1'b0)
 	);
 
-	// XOR-reduce every output onto one registered pin: keeps the whole
-	// design live without spending a pin per bit.
 	always_ff @(posedge clk)
 		result <= ^{rom_req, rom_addr,
 		            workram_addr, workram_wel, workram_weh, workram_wdata,
