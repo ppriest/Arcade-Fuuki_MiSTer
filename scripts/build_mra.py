@@ -177,9 +177,9 @@ def _coinage(shift):
         v(0x8): "8C 1C",  v(0x9): "7C 1C",  v(0xA): "6C 1C",  v(0xB): "5C 1C",
         v(0xC): "4C 1C",  v(0xD): "3C 1C",  v(0xE): "2C 1C",  v(0x1): "2C 1C (dup)",
         v(0xF): "1C 1C",  v(0x6): "1C 2C",  v(0x5): "1C 3C",  v(0x4): "1C 4C",
-        v(0x3): "1C 5C",  v(0x2): "2C Start / 1C Continue",
+        v(0x3): "1C 5C",  v(0x2): "2C Start/1C Continue",
         v(0x7): "Error!!",
-        v(0x0): "1C 1C / Free Play if both 0",
+        v(0x0): "1C 1C (Free if both)",
     }
 
 ASURA_DSW2 = [
@@ -200,7 +200,7 @@ def _asura_dsw1(demo):
     return [
         SERVICE,
         ("Blood Color", 0x0002, 0x0002, {0x0002: "Red", 0x0000: "Green"}),
-        ("Demo Sounds & Music", 0x000C, 0x000C, demo),
+        ("Demo Sounds", 0x000C, 0x000C, demo),
         ("Timer", 0x0030, 0x0030,
          {0x0000: "Slow", 0x0030: "Medium", 0x0010: "Fast", 0x0020: "Very Fast"}),
         # Defaults to Joint (0x0000), NOT to the mask.
@@ -243,6 +243,16 @@ CATEGORY = {"gogomile": "Maze", "pbancho": "Puzzle", "asurabld": "Fight", "asura
 # joystick bits 8, 9, 10 (rtl/pause_control.sv hard-codes PAUSE_BIT = 10).
 # Unused slots are named "-", as in the Psikyo `.mra` files.
 BUTTON_SLOTS = 4
+
+# Button names as the game calls them, per set; a clone without an entry takes
+# its parent's. Fewer names than the set's button count leaves the rest as
+# "Button N", which validate_mra.py flags until someone finds the real name.
+BUTTON_NAMES = {
+    "gogomile": ["Escape"],
+    "pbancho":  ["Rotate"],
+    "asurabld": ["Light", "Medium", "Heavy"],
+    "asurabus": ["Light", "Medium", "Heavy"],
+}
 
 
 # ---------------------------------------------------------------------------
@@ -383,10 +393,11 @@ GAMES = {
                          G("swap16", "spcd.u19"), G("swap16", "spef.u20")],
             "oki":      [G("load", "opm.u6")],
         }),
-    # The ARCADIA review build is the only set with a fourth button
-    # (PORT_MODIFY on INPUTS, "has pause function on P1 button 4").
+    # The ARCADIA review build adds a fourth button (PORT_MODIFY on INPUTS,
+    # "has pause function on P1 button 4"). Not exposed: the core's own Pause
+    # input covers it, so the set has the parent's three buttons.
     "asurabusjr": dict(
-        board="fg3", mod=MOD_FG3 | MOD_SYSALT, buttons=4,
+        board="fg3", mod=MOD_FG3 | MOD_SYSALT, buttons=3,
         parent="asurabus", zipname="asurabusjr",
         title="Asura Buster - Eternal Warriors (Japan) (ARCADIA review build)",
         year="2000", region="Japan", dips=ASURABUS_DIPS,
@@ -556,9 +567,16 @@ def out_path_for(setname, game, out_dir):
             / mra_filename(game["title"]))
 
 
-def buttons_xml(n):
+def button_names(setname):
+    """The set's own button names, else its parent's (clones share controls)."""
+    game = GAMES[setname]
+    return BUTTON_NAMES.get(setname) or BUTTON_NAMES.get(game.get("parent") or "", [])
+
+
+def buttons_xml(n, known=()):
     """One `<buttons>` line, padded to BUTTON_SLOTS so Pause is always bit 10."""
-    names = [f"Button {i + 1}" for i in range(n)] + ["-"] * (BUTTON_SLOTS - n)
+    names = [known[i] if i < len(known) else f"Button {i + 1}" for i in range(n)]
+    names += ["-"] * (BUTTON_SLOTS - n)
     names += ["Start", "Coin", "Pause"]
     default = ["Y", "B", "A", "X"][:n] + ["Start", "Select", "R"]
     return (f'<buttons names="{",".join(names)}" '
@@ -641,7 +659,7 @@ def emit(setname, game, bases, zip_dir, out_dir, check_only):
 {chr(10).join(body).rstrip()}
 \t</rom>
 
-\t{buttons_xml(game['buttons'])}
+\t{buttons_xml(game['buttons'], button_names(setname))}
 
 \t<switches default="{dflt}">
 {sw}
