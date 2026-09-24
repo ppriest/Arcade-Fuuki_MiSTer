@@ -1,3 +1,5 @@
+**Moved to MiSTer-Devel**
+
 # Fuuki core for MiSTer
 
 MiSTer FPGA core for [Fuuki](https://en.wikipedia.org/wiki/Fuuki)'s FG-2 and FG-3 arcade
